@@ -1021,13 +1021,6 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
     std::string const clippedTo = "clipped-to-one-" + clipWhy;
     std::string const clippedEmpty = "clipped-" + clipWhy;
 
-    // A path that survives ResolveMovePath but comes out of ClipPath with a single point is
-    // the failure that actually bit us on 2026-10-03: DispatchMovement rejects a one-point
-    // spline, the caller counts a retry, and the bot looks "stuck" with no reason recorded.
-    // Log it here as well as the empty case below.
-    if (!movePath.empty() && movePath.GetPointPath().size() < 2)
-        LogMoveFail(ai, clippedTo.c_str(), startPos, endPos, pathPointsBeforeClip);
-
     // Degenerate clip: the pathfinder returned a path whose only survivor is the point the
     // bot already stands on, even though the destination is a yard or two away (measured:
     // the 1->1 ClipProbe rows, request distance 1, ClipPath keeps nothing usable). The move
@@ -1044,6 +1037,17 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
             return true;
         }
     }
+
+    // A one-point path that survived the direct step above really is a failure: DispatchMovement
+    // rejects a one-point spline, the caller counts a retry, and the bot looks "stuck" with no
+    // reason recorded (the case that bit us on 2026-10-03). Only log it here, after the direct
+    // step had its chance, so the counter means what A4's acceptance metric reads it as. Before
+    // this the line was written before the direct step, so every last-few-yards request that
+    // then succeeded was still counted: measured 2026-10-04, the whole clipped-to-one family was
+    // 9984 lines but the <=20 yd bucket (3676 lines) ended in a real short-path failure only 6%
+    // of the time, while the >20 yd buckets failed 34-47% of the time.
+    if (!movePath.empty() && movePath.GetPointPath().size() < 2)
+        LogMoveFail(ai, clippedTo.c_str(), startPos, endPos, pathPointsBeforeClip);
 
     // NOTE (2026-10-04 02:15): a second attempt here - walking straight at that far waypoint
     // with a 300 yard cap - was measured and REVERTED: MoveFail went from 14.4/min back to
