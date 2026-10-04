@@ -196,6 +196,21 @@ bool QuestRelationTravelDestination::IsPossible(const PlayerTravelInfo& info) co
             if (IsOverWorld(info.getPosition()))
                 return false;
         }
+
+        // The guard above asks IsOverWorld(info.getPosition()), and IsOverWorld answers for
+        // the DESTINATION's map (WorldSquare::IsOverWorld -> ClosestMapId), not for the map
+        // the bot stands on. It therefore refuses hand-ins whose taker is on a continent
+        // and lets the instance ones through - backwards for the case that matters.
+        // Measured 2026-10-03 20:14: Karwarn (level 19, solo, can fight boss = 0) picked
+        // the Shadowfang Keep taker of the completed quest 1098 from Silverpine Forest,
+        // walked into map 33 and could not get out for 13 h. Refuse instance-side hand-ins
+        // for the masterless random bots A1 is about; owned bots keep the old behaviour.
+        if (info.IsMasterlessRandom() && !info.GetBoolValue("can fight boss") &&
+            (quest->GetType() == QUEST_TYPE_ELITE || quest->GetType() == QUEST_TYPE_DUNGEON || quest->GetType() == QUEST_TYPE_RAID) &&
+            !IsOverWorld(info.getPosition()))
+        {
+            return false;
+        }
     }
 
     // Don't send a bot to a quest giver in a zone far above its level, or cross-zone for lowbies

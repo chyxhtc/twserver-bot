@@ -246,6 +246,13 @@ private:
     void SweepStrandedBots(uint32_t diff);
     uint32_t m_strandedSweepElapsedMs = 0;
     std::unordered_map<uint32_t, time_t> m_strandedSince; // key = guid counter
+    // Solo random bots that walked into a dungeon have no way back out: the travel layer
+    // kept re-picking the instance quest taker and the move-retry budget that arms the
+    // last-mile teleport never fills (see SweepInstanceDwellers). Track dwell time so the
+    // sweep can move them to a level-fitting overworld point.
+    void SweepInstanceDwellers(uint32_t diff);
+    uint32_t m_instanceSweepElapsedMs = 0;
+    std::unordered_map<uint32_t, time_t> m_instanceSince; // key = guid counter
     // Last successful cross-continent transfer per bot (key = guid counter), used for
     // the anti-bounce cooldown.
     std::unordered_map<uint32_t, time_t> m_lastTransfer;

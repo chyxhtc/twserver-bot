@@ -719,6 +719,70 @@ void BotManager::SweepStrandedBots(uint32_t diff)
     }
 }
 
+// Solo random bots that end up inside a dungeon never come back out on their own.
+//
+// Measured on Karwarn (level 19 rogue, guid 33): he picked the Shadowfang Keep taker of
+// the completed quest 1098 in Silverpine Forest on 2026-10-03 20:14, walked into map 33
+// and stayed there for 13 h - 0 xp, 60+ deaths, 1230 travel-target picks of the same
+// taker, 511 move failures, and not a single travel-target drop or last-mile teleport.
+// Two independent reasons, both handled here:
+//   1. the hand-in destination was never refused (TravelMgr's instance guard answered for
+//      the wrong map, fixed in TravelMgr.cpp) so the travel layer kept re-picking it;
+//   2. the last-mile teleport only arms above 10 move retries, which a target that lives
+//      ~25 s and is re-picked from 40 yd away never reaches.
+// A 5-minute sweep is far too slow for the acceptance metric (no random bot on a non-0/1
+// map), so this runs on its own 30 s cadence with a 60 s grace: a bot that legitimately
+// walks in behind a player, or is part of a dungeon crew, is excluded and left alone.
+constexpr uint32_t INSTANCE_SWEEP_INTERVAL_MS = 30 * 1000;
+constexpr time_t INSTANCE_GRACE_SEC = 60;
+
+void BotManager::SweepInstanceDwellers(uint32_t diff)
+{
+    m_instanceSweepElapsedMs += diff;
+    if (m_instanceSweepElapsedMs < INSTANCE_SWEEP_INTERVAL_MS)
+        return;
+    m_instanceSweepElapsedMs = 0;
+
+    time_t const now = time(nullptr);
+    for (auto& [key, entry] : m_bots)
+    {
+        BotRecord& rec = entry.record;
+        ::Player* p = nullptr;
+        bool const inside = rec.random && rec.lifecycle == BotLifecycle::InWorld && rec.masterGuid.IsEmpty() &&
+            (p = sObjectAccessor.FindPlayer(rec.characterGuid)) != nullptr &&
+            p->GetSession() && p->GetSession()->IsHeadless() && p->IsInWorld() &&
+            !p->IsBeingTeleported() && !p->InBattleGround() &&
+            p->GetMap() && p->GetMap()->IsDungeon() &&
+            !p->GetGroup() && !GroupHasRealPlayer(p) &&
+            !sRandomBotFacade.IsPinnedBot(key) &&
+            BotActivityLeaseManager::Instance().GetActivity(key) != BotActivity::Dungeon;
+        if (!inside)
+        {
+            m_instanceSince.erase(key);
+            continue;
+        }
+        auto it = m_instanceSince.find(key);
+        if (it == m_instanceSince.end())
+        {
+            m_instanceSince.emplace(key, now);
+            TB_LOG_BASIC("TortoiseBots: solo bot %s level %u is inside dungeon map %u, giving it %u s to walk out",
+                p->GetName(), p->GetLevel(), p->GetMapId(), (uint32)INSTANCE_GRACE_SEC);
+            continue;
+        }
+        if (now - it->second < INSTANCE_GRACE_SEC)
+            continue;
+        m_instanceSince.erase(it);
+        TeleportMisplacedBot(p, 0, "solo bot inside dungeon map " + std::to_string(p->GetMapId()));
+    }
+    for (auto it = m_instanceSince.begin(); it != m_instanceSince.end();)
+    {
+        if (m_bots.find(it->first) == m_bots.end())
+            it = m_instanceSince.erase(it);
+        else
+            ++it;
+    }
+}
+
 // A Headless session must never render an owned bot as an account-level GM.
 // Its Network owner retains all account privileges; this only normalizes the
 // separately logged-in bot character after the core restores saved GM flags.
@@ -1964,6 +2028,7 @@ void BotManager::OnWorldUpdate(uint32_t diff)
     sRandomBotFacade.SyncNativePlayers();
     UpdateBots(diff);
     SweepStrandedBots(diff);
+    SweepInstanceDwellers(diff);
 
     if (m_autoTestEnabled)
         UpdateAutoTest(diff);
