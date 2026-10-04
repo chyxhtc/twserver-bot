@@ -605,7 +605,9 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     if (!bot->IsAlive())
         return false;
 
-    if (bot->GetLevel() < 10)
+    // Below level 10 the start zone is normally home, but not when its mobs are all grey:
+    // see greyOnlyLowbie below, which is the only way a bot under 10 may leave.
+    if (bot->GetLevel() < 8)
         return false;
 
     // The area level is not the only way a zone can be finished: a bot whose quest log holds
@@ -642,6 +644,17 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
         AI_VALUE2(time_t, "manual time", "no travel purpose until::quest") > time(0);
     bool const nothingToDo = actionableQuests == 0 && questSupplyEmpty;
 
+    // Lowbie escape hatch. A level 8-9 bot sitting in a zone whose only mobs are grey has no
+    // xp supply and no acceptable quest, and before this the rule refused to run at all below
+    // level 10, so the whole cluster was frozen. GrindTargetValue records when the local mobs
+    // went grey-only; after ten minutes of that this counts as nothing to do here.
+    bool greyOnlyLowbie = false;
+    if (bot->GetLevel() < 10)
+    {
+        time_t const greySince = AI_VALUE2(time_t, "manual time", "grey-only grind since");
+        greyOnlyLowbie = greySince != 0 && time(0) - greySince >= 10 * MINUTE;
+    }
+
     // No IsActive early-out here: this value doubles as the travel condition
     // stored on the Grind target it requests, and bailing while a target is
     // active drops that target to cooldown on the first status check after it
@@ -667,7 +680,7 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
         // areaOutgrown drives the 10-minute escape hatch; nothingToDo is what actually lets
         // the bot go, so a bot with quests left in an outgrown zone stays and finishes them.
         bool const areaOutgrown = areaKnown && areaLevel + 5 < (int32)bot->GetLevel();
-        bool const outgrown = areaOutgrown || nothingToDo;
+        bool const outgrown = areaOutgrown || nothingToDo || greyOnlyLowbie;
         if (outgrown)
         {
             time_t outgrownSince = AI_VALUE2(time_t, "manual time", "outgrown since");
@@ -721,7 +734,7 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     // Otherwise leave only when there is genuinely nothing left to do here: no actionable
     // quest, and no acceptable quest giver reachable. This also covers the unknown-area case
     // (the signal does not depend on the area table).
-    return nothingToDo;
+    return nothingToDo || greyOnlyLowbie;
 }
 
 bool TravelTargetActiveValue::Calculate()

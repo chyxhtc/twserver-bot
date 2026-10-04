@@ -98,6 +98,31 @@ Unit* GrindTargetValue::Calculate()
                 " skipped=" + std::to_string(total),
                 out.str());
         }
+
+        // A bot whose only nearby mobs are grey gives no xp. Record since when that has been
+        // the case so the leave rule can treat "grey-only for ten minutes" as nothing to do
+        // here. Measured 2026-10-04 12:00: the level 8-9 cluster in Tirisfal stood among nine
+        // level 1-2 zombies (GrindNoTarget possible=9 skipped=9, all "not xp and not needed
+        // for quest") while the leave rule refused to run below level 10 and the zone had no
+        // acceptable quest left - the clearest form of the two frozen ends.
+        bool greyOnly = false;
+        if (!target && !g_grindSkipReasons.empty())
+        {
+            greyOnly = true;
+            for (auto const& [why, n] : g_grindSkipReasons)
+                if (why.find("not xp and not needed for quest") == std::string::npos)
+                {
+                    greyOnly = false;
+                    break;
+                }
+        }
+        if (greyOnly)
+        {
+            if (!AI_VALUE2(time_t, "manual time", "grey-only grind since"))
+                SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", time(nullptr));
+        }
+        else
+            SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", (time_t)0);
     }
 
     return target;
