@@ -806,30 +806,44 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             ordered.push_back(OrderedCandidate{ destination, position, distance, partition });
     }
 
-    // Ordering for quest destinations: the quest's own level first (easiest content first),
-    // distance second. The shared walk is distance-first, which for questing means a bot
-    // standing next to a level 1 quest giver never walks to the level 12 quest 1.7k yards
-    // away - and it cannot prefer the true "on the way" case because the travel layer has no
-    // route planning. Level-then-distance is the stand-in for that. Errands (city/vendor),
-    // gathering and grinding keep the distance-first order.
+    // A26: order quest destinations by viability first, distance second. It used to sort by
+    // ascending quest level - lowest first - which is the opposite of what the ordering was
+    // meant to do (a bot next to a level 1 giver should still walk to the level 12 quest) and
+    // ignores distance entirely across different levels. Measured 2026-10-05: 2715 of 4166
+    // quest travels (65%) went to quests the bot has outgrown, and 63% of its attack orders
+    // hit mobs five or more levels below it (1834 at 5-8 below, 718 grey), so the bot spends
+    // its day walking to and killing content that pays almost nothing. The band here is the
+    // same five levels the leave-outgrown rule and the landing window already use, and the
+    // quest level comes from GetQuestLevelForPlayer so custom quests scale like they do in
+    // the shared grey rule. Errands (city/vendor), gathering and grinding keep distance-first.
     if (AI_VALUE2(std::string, "manual string", "future travel purpose") == "quest")
     {
+        Player* const orderingBot = bot;
         std::stable_sort(ordered.begin(), ordered.end(),
-            [](OrderedCandidate const& a, OrderedCandidate const& b)
+            [orderingBot](OrderedCandidate const& a, OrderedCandidate const& b)
             {
-                auto const questLevelOf = [](TravelDestination* destination) -> int
+                auto const questOf = [](TravelDestination* destination) -> Quest const*
                 {
                     if (auto* questDestination = dynamic_cast<QuestTravelDestination*>(destination))
-                        if (Quest const* quest = sObjectMgr.GetQuestTemplate(questDestination->GetQuestId()))
-                            return (int)quest->GetQuestLevel();
-                    return 1000; // non-quest rows sort after every quest row
+                        return sObjectMgr.GetQuestTemplate(questDestination->GetQuestId());
+                    return nullptr;
                 };
 
-                int const levelA = questLevelOf(a.destination);
-                int const levelB = questLevelOf(b.destination);
-                if (levelA != levelB)
-                    return levelA < levelB;
-                return a.distance < b.distance;
+                Quest const* const questA = questOf(a.destination);
+                Quest const* const questB = questOf(b.destination);
+                if (!questA || !questB)
+                {
+                    if (questA != questB)
+                        return questA != nullptr; // quest rows sort before non-quest rows
+                    return a.distance < b.distance;
+                }
+
+                int32 const outgrownBelow = (int32)orderingBot->GetLevel() - 5;
+                bool const outgrownA = (int32)orderingBot->GetQuestLevelForPlayer(questA) < outgrownBelow;
+                bool const outgrownB = (int32)orderingBot->GetQuestLevelForPlayer(questB) < outgrownBelow;
+                if (outgrownA != outgrownB)
+                    return !outgrownA; // a quest this bot has not outgrown first
+                return a.distance < b.distance; // then the nearest; "on the way" stand-in
             });
     }
 
