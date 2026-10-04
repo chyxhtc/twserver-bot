@@ -576,6 +576,38 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
 // travel-node A* each time; with hundreds of bots that search dominated the
 // world thread. Gold, reputation and graph changes are picked up when the
 // entry expires.
+// A8: a completed quest whose taker keeps being refused by the structural gates can never be
+// handed in, and the whole-search strike counter cannot see it while another quest keeps the
+// search succeeding. Strike the quest at the rejection site instead, sharing the counter key
+// with the drain-failure path so both routes drop after the same three strikes.
+static void StrikeUnreachableTaker(PlayerbotAI* ai, Player* bot, TravelDestination* destination)
+{
+    QuestRelationTravelDestination* questDest = dynamic_cast<QuestRelationTravelDestination*>(destination);
+    if (!questDest || questDest->GetRelation() == 0)
+        return;
+
+    uint32 const questId = questDest->GetQuestId();
+    if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+        return;
+
+    Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+    if (!quest || quest->GetRequiredClasses())
+        return;
+
+    std::string const key = "hand-in fail::" + std::to_string(questId);
+    uint32 const strikes = sRandomBotFacade.GetValue(bot, key) + 1;
+    if (strikes < 3)
+    {
+        sRandomBotFacade.SetValue(bot, key, strikes, {}, 30 * 60);
+        return;
+    }
+
+    sRandomBotFacade.SetValue(bot, key, 0);
+    sPlayerbotAIConfig.logEvent(ai, "QuestDropped", quest->GetTitle(),
+        "taker-unreachable:" + std::to_string(questId));
+    ai->DropQuest(questId);
+}
+
 static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string& blocker, bool allowTransfer)
 {
     WorldPosition start(bot);
@@ -868,6 +900,9 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                             sPlayerbotAIConfig.log("travel_route_gate.csv", out.str().c_str());
                         }
                         reject("route:" + blocker);
+                        // A8: a completed quest whose taker the route gate refuses (the
+                        // Moonglade family) can never be handed in; strike the quest itself.
+                        StrikeUnreachableTaker(ai, bot, destination);
                         continue;
                     }
                 }

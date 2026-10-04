@@ -3,6 +3,7 @@
 #include "DropQuestAction.h"
 #include "playerbot/QuestGreyRule.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
+#include "playerbot/TravelMgr.h"
 
 using namespace ai;
 
@@ -153,6 +154,33 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
             return false;
         return true;
     }
+
+    // A8: a completed quest whose taker destinations are all refused by the structural gates
+    // can never be handed in, and the travel layer's strike counter cannot see it when the
+    // destination never even reaches the candidate list. Measured 2026-10-04: Karwarn's 1098
+    // has its taker inside Shadowfang Keep, which the A1 instance gate refuses for masterless
+    // bots, and it sat completed and unrewarded from the morning on while the hand-in drain
+    // latch (armed by any finished quest) kept steering him at takers.
+    if (status == QUEST_STATUS_COMPLETE && upkeep)
+    {
+        ai::PlayerTravelInfo const info(bot);
+        ai::DestinationList const takers = sTravelMgr.GetDestinations(info,
+            (uint32)ai::TravelDestinationPurpose::QuestTaker, { (int32)quest->GetQuestId() }, false, 0);
+
+        bool anyPossible = false;
+        for (ai::TravelDestination* dest : takers)
+        {
+            if (dest && dest->IsPossible(info))
+            {
+                anyPossible = true;
+                break;
+            }
+        }
+
+        if (!anyPossible)
+            return true;
+    }
+
     return false;
 }
 
