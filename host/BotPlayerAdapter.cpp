@@ -172,8 +172,67 @@ void BotPlayerAdapter::OnLogout(Player* player)
 }
 
 BotUnitAdapter::BotUnitAdapter()
-    : UnitScript("tortoisebots_units", { UNITHOOK_ON_UNIT_DEATH })
+    : UnitScript("tortoisebots_units", { UNITHOOK_ON_UNIT_DEATH, UNITHOOK_ON_DAMAGE })
 {
+}
+
+std::mutex BotUnitAdapter::s_recentAttackerMutex;
+std::map<uint32, std::map<ObjectGuid, time_t>> BotUnitAdapter::s_recentAttackers;
+
+void BotUnitAdapter::OnDamage(Unit* attacker, Unit* victim, uint32& /*damage*/)
+{
+    // Hot path: every point of damage in the world passes here, so the bot check comes first.
+    if (!victim || !victim->IsPlayer() || !attacker)
+        return;
+
+    Player* player = victim->ToPlayer();
+    uint32 const key = player->GetGUIDLow();
+    if (!BotManager::Instance().IsBot(player->GetObjectGuid()))
+        return;
+
+    time_t const now = time(nullptr);
+    std::lock_guard<std::mutex> lock(s_recentAttackerMutex);
+    auto& seen = s_recentAttackers[key];
+    seen[attacker->getObjectGuid()] = now;
+
+    // Keep the map bounded: drop anything older than the window on the way through.
+    for (auto it = seen.begin(); it != seen.end();)
+        it = (now - it->second > 20) ? seen.erase(it) : std::next(it);
+    if (seen.empty())
+        s_recentAttackers.erase(key);
+}
+
+std::vector<ObjectGuid> BotUnitAdapter::RecentAttackers(Player* bot)
+{
+    std::vector<ObjectGuid> out;
+    if (!bot)
+        return out;
+
+    time_t const now = time(nullptr);
+    std::lock_guard<std::mutex> lock(s_recentAttackerMutex);
+    auto found = s_recentAttackers.find(bot->GetGUIDLow());
+    if (found == s_recentAttackers.end())
+        return out;
+
+    for (auto it = found->second.begin(); it != found->second.end();)
+    {
+        if (now - it->second > 20)
+            it = found->second.erase(it);
+        else
+        {
+            out.push_back(it->first);
+            ++it;
+        }
+    }
+    return out;
+}
+
+void BotUnitAdapter::ForgetAttackers(Player* bot)
+{
+    if (!bot)
+        return;
+    std::lock_guard<std::mutex> lock(s_recentAttackerMutex);
+    s_recentAttackers.erase(bot->GetGUIDLow());
 }
 
 void BotUnitAdapter::OnUnitDeath(Unit* unit, Unit* killer)
@@ -187,6 +246,8 @@ void BotUnitAdapter::OnUnitDeath(Unit* unit, Unit* killer)
         return;
 
     ai->SetLastKiller(killer);
+    // Deliberately NOT cleared here: the deaths.csv row is written by the AI death handler,
+    // which reads this list; it clears the entry itself once the row is out.
 }
 
 } // namespace TortoiseBots

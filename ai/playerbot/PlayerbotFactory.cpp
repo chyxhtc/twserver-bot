@@ -1681,18 +1681,26 @@ void PlayerbotFactory::Shuffle(std::vector<uint32>& items)
 // One per-quality candidate query with the wearability descent: the cache
 // window holds items up to 20 levels above their bracket, so ItemLevel
 // alone accepts req-60 weapons for a 55 bot that CanEquipItem then rejects.
-// Descends until at least one candidate is wearable by this bot. Shared by
-// the main band loop, the epic path and the fallback — one copy.
+// Descends until it has looked at several levels that yield wearable items.
+// A14 archived the reason: the old version stopped at the FIRST level with a
+// single wearable candidate, and for head/shoulder slots the cache at a bot's
+// own level is almost entirely above its required level (measured 2026-10-04:
+// 30 candidates rejected 29, 78 rejected 77), so the descent ran far down and
+// the bot wore whatever old item happened to be wearable - the level-16..22
+// pool walking around in ilvl-5 head and shoulder pieces. Collecting the first
+// three levels that yield wearable items hands the caller (which sorts by stat
+// weight) a real choice instead of one leftover.
+static uint32 const kSeedDescentLevelsWithWearables = 3;
+
 void PlayerbotFactory::QuerySeedCandidates(Player* bot, uint32 specId, uint8 slot, uint32 searchLevel, uint32 maxItemLevel, uint32 q, std::vector<uint32>& ids)
 {
     uint32 currSearchLevel = searchLevel;
-    bool hasProperLevel = false;
-    while (!hasProperLevel && currSearchLevel > 0)
+    uint32 levelsWithWearables = 0;
+    while (currSearchLevel > 0 && levelsWithWearables < kSeedDescentLevelsWithWearables)
     {
         std::vector<uint32> newItems = sRandomItemMgr.Query(currSearchLevel, bot->GetClass(), uint8(specId), slot, q);
-        if (newItems.size())
-            ids.insert(ids.begin(), newItems.begin(), newItems.end());
-        for (auto id : ids)
+        bool levelHadWearable = false;
+        for (auto id : newItems)
         {
             ItemPrototype const* proto = sObjectMgr.GetItemPrototype(id);
             if (!proto)
@@ -1701,15 +1709,18 @@ void PlayerbotFactory::QuerySeedCandidates(Player* bot, uint32 specId, uint8 slo
                 continue;
             if (sRandomItemMgr.GetMinLevelFromCache(id) > (uint32)bot->GetLevel())
                 continue;
-            hasProperLevel = true;
-            break;
+            ids.push_back(id);
+            levelHadWearable = true;
         }
-        if (!hasProperLevel)
-        {
-            ids.clear();
-            currSearchLevel--;
-        }
+        if (levelHadWearable)
+            ++levelsWithWearables;
+        --currSearchLevel;
     }
+
+    // The per-level cache windows overlap; callers shuffle or sort by stat weight, so only
+    // duplicates have to go.
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
 }
 
 bool PlayerbotFactory::TrySeedEpicIds(Player* bot, uint32 specId, uint8 slot, uint32 searchLevel, std::vector<uint32>& ids)

@@ -12,6 +12,7 @@
 
 #include "../../runtime/ObservabilityEmitter.h"
 #include "../../runtime/BotActivityLease.h"
+#include "../../host/BotPlayerAdapter.h"
 #include "ByteBuffer.h"
 #include "ObjectAccessor.h"
 
@@ -1378,22 +1379,29 @@ void PlayerbotAI::OnDeath()
                 else
                     out << "\"none\",0,100,";
 
+                // M10: creatures that damaged this bot in the last 20 s, collected on the
+                // damage event (BotUnitAdapter::OnDamage). The list below used to be built
+                // from "all targets" here, after the bot was already a corpse - nothing
+                // targets a corpse, so the adds column was structurally always 0 and A11's
+                // pull-count question had no data. Both sources are merged so a creature
+                // still mid-swing at the moment of death is not lost.
+                std::vector<ObjectGuid> recentAttackers = TortoiseBots::BotUnitAdapter::RecentAttackers(bot);
                 std::list<ObjectGuid> targets = AI_VALUE_LAZY(std::list<ObjectGuid>, "all targets");
+                for (ObjectGuid const& target : targets)
+                    if (std::find(recentAttackers.begin(), recentAttackers.end(), target) == recentAttackers.end())
+                        recentAttackers.push_back(target);
 
                 out << "\"";
 
                 uint32 adds = 0;
 
-                for (auto target : targets)
+                for (auto target : recentAttackers)
                 {
                     if (!target.IsCreature())
                         continue;
 
                     Unit* unit = GetUnit(target);
                     if (!unit)
-                        continue;
-
-                    if (unit->GetVictim() != bot)
                         continue;
 
                     if (!killerName.empty() && unit->GetName() == killerName)
@@ -1405,6 +1413,8 @@ void PlayerbotAI::OnDeath()
                 }
 
                 out << "\"," << std::to_string(adds);
+
+                TortoiseBots::BotUnitAdapter::ForgetAttackers(bot);
 
                 TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target");
                 std::string travelInfo = "none";
