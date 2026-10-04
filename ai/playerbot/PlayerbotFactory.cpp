@@ -2399,6 +2399,33 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                         break;
                 }
 
+                // TEMP-DIAG(equip, A14): why does a slot whose item is more than five item levels
+                // below the bot keep that item? One line per bot per slot per ten minutes: the
+                // candidate pool size and the best stat weight in it, against the equipped item's
+                // weight. A zero pool means the query/filters emptied it for this spec; a pool
+                // whose best weight is not above the old one means GetLiveStatWeight is the gate.
+                // Remove once A14 is answered.
+                if (passingIds.empty() && oldItem && oldProto && oldProto->ItemLevel + 5 < (uint32)level)
+                {
+                    static std::map<std::pair<uint32, uint32>, time_t> lastEquipDiag;
+                    auto const diagKey = std::make_pair(bot->GetGUIDLow(), (uint32)slot);
+                    time_t const diagNow = time(nullptr);
+                    auto const diagIt = lastEquipDiag.find(diagKey);
+                    if (diagIt == lastEquipDiag.end() || diagNow - diagIt->second >= 600)
+                    {
+                        lastEquipDiag[diagKey] = diagNow;
+                        uint32 bestWeight = 0;
+                        for (uint32 const id : ids)
+                            bestWeight = std::max(bestWeight, sRandomItemMgr.GetLiveStatWeight(bot, id, specId));
+                        sPlayerbotAIConfig.logEvent(ai, "EquipDiag",
+                            "slot=" + std::to_string((uint32)slot) +
+                            " old=" + std::to_string(oldProto->ItemId) + "(ilvl" + std::to_string(oldProto->ItemLevel) +
+                            ",w" + std::to_string(oldStatValue) + ")",
+                            "pool=" + std::to_string((uint32)ids.size()) + " bestW=" + std::to_string(bestWeight) +
+                            " spec=" + std::to_string(specId));
+                    }
+                }
+
                 // Retry every passing candidate until one actually equips
                 // (owner spec: every slot filled). Seed order = uniform
                 // green/blue roll over the sample; earned order = best-first
