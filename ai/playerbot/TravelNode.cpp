@@ -1531,7 +1531,7 @@ TravelNode* TravelNodeMap::getNode(WorldPosition pos, std::vector<WorldPosition>
     return NULL;
 }
 
-TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Unit* unit)
+TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Unit* unit, std::vector<TravelNode*> const* avoid)
 {
     float unitSpeed = unit ? unit->GetSpeed(MOVE_RUN) : 7.0f;
 
@@ -1720,6 +1720,12 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
         {
             TravelNode* linkNode = link.first;
 
+            // Caller-supplied exclusions: the re-route must not step on a waypoint it was
+            // asked to avoid (A15). Checked before the cost call so an excluded node is
+            // never expanded, which is what makes the second search find a different path.
+            if (avoid && std::find(avoid->begin(), avoid->end(), linkNode) != avoid->end())
+                continue;
+
             float linkCost = link.second->GetCost(unit, currentNode->currentGold);
 
             if (linkCost <= 0)
@@ -1776,7 +1782,7 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
     return TravelNodeRoute();
 }
 
-TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition endPos, std::vector<WorldPosition>& startPath, std::vector<WorldPosition>& endPath, Unit* unit)
+TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition endPos, std::vector<WorldPosition>& startPath, std::vector<WorldPosition>& endPath, Unit* unit, std::vector<TravelNode*> const* avoid)
 {
     if (m_nodes.empty())
         return TravelNodeRoute();
@@ -1828,7 +1834,7 @@ TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition en
 
             float maxStartDistance = startNode->IsTransport() ? 20.0f : 1.0f;
 
-            TravelNodeRoute route = getRoute(startNode, endNode, unit);
+            TravelNodeRoute route = getRoute(startNode, endNode, unit, avoid);
 
             if (transportEntry)
                 return route;

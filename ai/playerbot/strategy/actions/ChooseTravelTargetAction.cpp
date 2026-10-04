@@ -506,95 +506,123 @@ inline std::string PrintPartion(uint32 sqPartition)
 // and crossing back later made no sense - measured: bots bounced between the
 // continents for ordinary grind targets - whereas a quest chain that points at the
 // other continent is exactly the case worth solving.
-static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, WorldPosition* position, std::string& blocker, bool allowTransfer)
-{
-    std::vector<WorldPosition> beginPath, endPath;
-    TravelNodeRoute route = sTravelNodeMap.getRoute(start, *position, beginPath, endPath, bot);
-    if (route.isEmpty())
-    {
-        if (start.getMapId() != position->getMapId())
-        {
-            // Cross-continent: the bundled node graph has no usable route between the
-            // continents (the boat rows exist but the runtime search returns empty), and
-            // the old code dropped the target here with a message that reads like the
-            // continents are disconnected. For quest destinations, put the bot on the
-            // destination map at a validated, level-fitting town point and treat the
-            // route as survivable; it walks the rest locally. Everything else keeps the
-            // old drop-the-target behaviour. Cooldown and eligibility live in BotManager.
-            if (allowTransfer &&
-                TortoiseBots::BotManager::Instance().TransferBotToMap(bot, position->getMapId()))
-                return true;
+// A15: how many waypoints the re-route may exclude before the destination is given up, and how
+// much extra zone level a *hand-in* leg may cross. Faecrash (level 18, limit 23) lost its route
+// to a level-24 Ashenvale waypoint by one level, so hand-ins get AreaLevelMargin() again on top;
+// the destination itself is still checked against the plain margin.
+static int const kRouteAvoidAttempts = 4;
+static int32 const kHandInWaypointMarginBonus = 5;
 
-            blocker = "no route to that continent";
+static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, WorldPosition* position, std::string& blocker, bool allowTransfer, bool handInReserve)
+{
+    int32 const limit = (int32)bot->GetLevel() + AreaLevelMargin() + (handInReserve ? kHandInWaypointMarginBonus : 0);
+    std::vector<TravelNode*> avoid;
+    for (int attempt = 0; attempt < kRouteAvoidAttempts; ++attempt)
+    {
+        std::vector<WorldPosition> beginPath, endPath;
+        TravelNodeRoute route = sTravelNodeMap.getRoute(start, *position, beginPath, endPath, bot, avoid.empty() ? nullptr : &avoid);
+        if (route.isEmpty())
+        {
+            // The first search found nothing: the old behaviour stands - same map means the
+            // pathfinder handles the last stretch directly, another map means transfer or drop.
+            if (avoid.empty() && start.getMapId() == position->getMapId())
+                return true;
+            if (start.getMapId() != position->getMapId())
+            {
+                // Cross-continent: the bundled node graph has no usable route between the
+                // continents (the boat rows exist but the runtime search returns empty), and
+                // the old code dropped the target here with a message that reads like the
+                // continents are disconnected. For quest destinations, put the bot on the
+                // destination map at a validated, level-fitting town point and treat the
+                // route as survivable; it walks the rest locally. Everything else keeps the
+                // old drop-the-target behaviour. Cooldown and eligibility live in BotManager.
+                if (allowTransfer &&
+                    TortoiseBots::BotManager::Instance().TransferBotToMap(bot, position->getMapId()))
+                    return true;
+
+                blocker = "no route to that continent";
+                return false;
+            }
+            // Same map but only reachable through an excluded waypoint: no alternative exists.
+            if (blocker.empty())
+                blocker = "no route left after avoiding " + (avoid.empty() ? std::string("a waypoint") : avoid.front()->getName());
             return false;
         }
-        return true; // same map without a node route: the pathfinder handles it directly
-    }
-    int32 const limit = (int32)bot->GetLevel() + AreaLevelMargin();
-    bool ok = true;
+        bool ok = true;
+        TravelNode* levelOffender = nullptr;
     // Hostile-town route leg (cheap: only the named route nodes are scanned, no
     // extra spawn-table walk beyond the per-node guard check; start/end legs and
     // the 1000 yd short-hop bypass above are untouched). Random masterless bots
     // only; the check needs an ai for the master gate, so callers pass it in.
-    PlayerbotAI* routeAi = PlayerbotAIStorage::Instance().GetAI(bot);
-    bool const avoidTowns = sPlayerbotAIConfig.avoidHostileTowns && routeAi && !routeAi->HasRealPlayerMaster();
-    for (TravelNode* node : route.getNodes())
-    {
-        WorldPosition* p = node ? node->getPosition() : nullptr;
-        if (!p)
-            continue;
-        int32 const level = p->GetAreaLevel();
-        if (level > 0 && level > limit)
+        PlayerbotAI* routeAi = PlayerbotAIStorage::Instance().GetAI(bot);
+        bool const avoidTowns = sPlayerbotAIConfig.avoidHostileTowns && routeAi && !routeAi->HasRealPlayerMaster();
+        for (TravelNode* node : route.getNodes())
         {
-            blocker = p->getAreaName(true, true) + " (level " + std::to_string(level) + ")";
-            // TEMP-DIAG(route, A15): a level-14 bot in Dun Morogh had nine of ten quest
-            // destinations refused with "Burning Steppes (level 55)" even though every one of
-            // them sits in Dun Morogh, so the offending node has to be named: its id, position
-            // and area, plus the route's endpoints and length. One line per bot per minute.
-            // Remove once the cause is known.
-            if (routeAi && !routeAi->HasRealPlayerMaster())
+            WorldPosition* p = node ? node->getPosition() : nullptr;
+            if (!p)
+                continue;
+            int32 const level = p->GetAreaLevel();
+            if (level > 0 && level > limit)
             {
-                static std::map<uint32, time_t> lastRouteDiag;
-                uint32 const botLow = bot->GetGUIDLow();
-                time_t const diagNow = time(nullptr);
-                auto const diagIt = lastRouteDiag.find(botLow);
-                if (diagIt == lastRouteDiag.end() || diagNow - diagIt->second >= 60)
-                {
-                    lastRouteDiag[botLow] = diagNow;
-                    auto const& nodes = route.getNodes();
-                    std::string firstNode = nodes.empty() || !nodes.front() ? "-" : nodes.front()->getName();
-                    std::string lastNode = nodes.empty() || !nodes.back() ? "-" : nodes.back()->getName();
-                    std::ostringstream diag;
-                    diag << "offender=" << (node ? node->getName() : "-") << ":" << p->getAreaName(true, true)
-                         << "(" << (int)std::floor(p->getX()) << "," << (int)std::floor(p->getY()) << ",z" << (int)std::floor(p->getZ()) << ")"
-                         << " limit=" << limit
-                         << " nodes=" << (uint32)nodes.size()
-                         << " first=" << firstNode << " last=" << lastNode
-                         << " dest=" << position->getMapId() << "(" << (int)std::floor(position->getX()) << "," << (int)std::floor(position->getY()) << ")";
-                    sPlayerbotAIConfig.logEvent(routeAi, "RouteDiag", diag.str(), blocker);
-                }
+                blocker = p->getAreaName(true, true) + " (level " + std::to_string(level) + ")";
+                // A15: the route is only refused because of this waypoint, so try a second
+                // search that may not step on it (and on any further offender) before giving
+                // the destination up. This is the fix for "a completed quest whose taker sits
+                // behind a high-level zone can never be handed in"; teleporting stays the
+                // fallback, not the answer.
+                levelOffender = node;
+                ok = false;
+                break;
             }
-            ok = false;
-            break;
+            // Hostile-town route leg. The destination itself is already checked separately
+            // (SetBestTarget's IsGuardedHostileTownFor on the target point), so vetoing the
+            // whole journey because the *route* passes a guarded camp refused perfectly good
+            // quest givers: measured with the rejection-reason instrumentation, 3 of 7 giver
+            // candidates for a level-15 bot were dropped with "route: The Barrens (hostile
+            // town guards)". Quest destinations may therefore pass such a node when the arm
+            // knob says so; grind/vendor/repair journeys keep the old veto.
+            bool const questPassAllowed = allowTransfer &&
+                sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "questtownpass", 0) != 0;
+            if (avoidTowns && !questPassAllowed && p->IsGuardedHostileTownFor(bot))
+            {
+                blocker = p->getAreaName(true, true) + " (hostile town guards)";
+                ok = false;
+                break;
+            }
         }
-        // Hostile-town route leg. The destination itself is already checked separately
-        // (SetBestTarget's IsGuardedHostileTownFor on the target point), so vetoing the
-        // whole journey because the *route* passes a guarded camp refused perfectly good
-        // quest givers: measured with the rejection-reason instrumentation, 3 of 7 giver
-        // candidates for a level-15 bot were dropped with "route: The Barrens (hostile
-        // town guards)". Quest destinations may therefore pass such a node when the arm
-        // knob says so; grind/vendor/repair journeys keep the old veto.
-        bool const questPassAllowed = allowTransfer &&
-            sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "questtownpass", 0) != 0;
-        if (avoidTowns && !questPassAllowed && p->IsGuardedHostileTownFor(bot))
+        route.cleanTempNodes();
+        if (ok)
         {
-            blocker = p->getAreaName(true, true) + " (hostile town guards)";
-            ok = false;
-            break;
+            // TEMP-DIAG(route, A15): the re-route succeeded, so name the waypoints it had to
+            // avoid. One line per success; remove with the rest of the A15 instrumentation.
+            if (!avoid.empty() && routeAi && !routeAi->HasRealPlayerMaster())
+            {
+                std::string names;
+                for (TravelNode* skipped : avoid)
+                    names += (names.empty() ? "" : ",") + (skipped ? skipped->getName() : "-");
+                sPlayerbotAIConfig.logEvent(routeAi, "RouteRerouted",
+                    "attempts=" + std::to_string(attempt + 1) + " avoided=" + names, blocker);
+            }
+            return true;
+        }
+        if (!levelOffender)
+            return false;   // hostile-town veto: no re-route, the knob decides
+        avoid.push_back(levelOffender);
+    }
+    // Every allowed re-route still crossed a zone above the limit: this is the residue that
+    // teleporting would otherwise paper over.
+    if (PlayerbotAI* giveUpAi = PlayerbotAIStorage::Instance().GetAI(bot))
+    {
+        if (!giveUpAi->HasRealPlayerMaster())
+        {
+            std::string names;
+            for (TravelNode* skipped : avoid)
+                names += (names.empty() ? "" : ",") + (skipped ? skipped->getName() : "-");
+            sPlayerbotAIConfig.logEvent(giveUpAi, "RouteDiag",
+                "gave up after " + std::to_string((int)avoid.size()) + " exclusions, avoided=" + names, blocker);
         }
     }
-    route.cleanTempNodes();
-    return ok;
+    return false;
 }
 
 // The verdict is cached per bot, level, hostile-town mode, start area (200 yd
@@ -635,7 +663,7 @@ static void StrikeUnreachableTaker(PlayerbotAI* ai, Player* bot, TravelDestinati
     ai->DropQuest(questId);
 }
 
-static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string& blocker, bool allowTransfer)
+static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string& blocker, bool allowTransfer, bool handInReserve = false)
 {
     WorldPosition start(bot);
     if (start.getMapId() == position->getMapId() && start.distance(*position) < 1000.0f)
@@ -655,7 +683,7 @@ static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string&
 
     std::ostringstream key;
     key << bot->GetGUIDLow() << ':' << bot->GetLevel() << ':' << avoidTowns << ':'
-        << allowTransfer << ':'
+        << allowTransfer << ':' << handInReserve << ':'
         << start.getMapId() << ':' << int32(std::floor(start.getX() / 200.0f)) << ':' << int32(std::floor(start.getY() / 200.0f)) << ':' 
         << position->getMapId() << ':' << int32(std::floor(position->getX() / 25.0f)) << ':' << int32(std::floor(position->getY() / 25.0f));
 
@@ -670,7 +698,7 @@ static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string&
         }
     }
 
-    bool const ok = RouteIsSurvivableUncached(bot, start, position, blocker, allowTransfer);
+    bool const ok = RouteIsSurvivableUncached(bot, start, position, blocker, allowTransfer, handInReserve);
 
     std::lock_guard<std::mutex> lock(cacheMutex);
     if (cache.size() > 50000)
@@ -925,7 +953,17 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     // Only quest destinations may trigger a cross-continent transfer;
                     // grind/gather/RPG targets are still dropped when unreachable.
                     bool const questDestination = dynamic_cast<ai::QuestTravelDestination*>(destination) != nullptr;
-                    if (!RouteIsSurvivable(bot, position, blocker, questDestination))
+                    // A15: a *hand-in* (the bot already holds the quest complete and this taker
+                    // is the one that pays) gets the wider waypoint margin; objectives and every
+                    // other destination keep the plain one.
+                    bool handInReserve = false;
+                    if (auto* relationDest = dynamic_cast<ai::QuestRelationTravelDestination*>(destination))
+                    {
+                        uint32 const questId = relationDest->GetQuestId();
+                        handInReserve = relationDest->GetRelation() != 0 &&
+                            bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
+                    }
+                    if (!RouteIsSurvivable(bot, position, blocker, questDestination, handInReserve))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - route crosses " + blocker, "debug travel");
                         if (sPlayerbotAIConfig.hasLog("travel_route_gate.csv"))

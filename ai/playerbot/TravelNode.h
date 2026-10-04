@@ -428,12 +428,15 @@ namespace ai
         TravelNode* GetRandomNode(WorldPosition pos) { return getRandomNode(pos); }
 
         //Finds the best nodePath between two nodes
-        TravelNodeRoute getRoute(TravelNode* start, TravelNode* goal, Unit* unit = nullptr);
-        TravelNodeRoute GetRoute(TravelNode* start, TravelNode* goal, Unit* unit = nullptr) { return getRoute(start, goal, unit); }
+        // avoid: nodes the search may not step on. The caller uses it to re-route around a
+        // waypoint that sits in a zone the bot must not walk through (see
+        // RouteIsSurvivableUncached); an empty/null list keeps the plain shortest path.
+        TravelNodeRoute getRoute(TravelNode* start, TravelNode* goal, Unit* unit = nullptr, std::vector<TravelNode*> const* avoid = nullptr);
+        TravelNodeRoute GetRoute(TravelNode* start, TravelNode* goal, Unit* unit = nullptr, std::vector<TravelNode*> const* avoid = nullptr) { return getRoute(start, goal, unit, avoid); }
 
         //Find the best node between two positions
-        TravelNodeRoute getRoute(WorldPosition startPos, WorldPosition endPos, std::vector<WorldPosition>& startPath, std::vector<WorldPosition>& endPath, Unit* unit = nullptr);
-        TravelNodeRoute GetRoute(WorldPosition startPos, WorldPosition endPos, std::vector<WorldPosition>& startPath, std::vector<WorldPosition>& endPath, Unit* unit = nullptr) { return getRoute(startPos, endPos, startPath, endPath, unit); }
+        TravelNodeRoute getRoute(WorldPosition startPos, WorldPosition endPos, std::vector<WorldPosition>& startPath, std::vector<WorldPosition>& endPath, Unit* unit = nullptr, std::vector<TravelNode*> const* avoid = nullptr);
+        TravelNodeRoute GetRoute(WorldPosition startPos, WorldPosition endPos, std::vector<WorldPosition>& startPath, std::vector<WorldPosition>& endPath, Unit* unit = nullptr, std::vector<TravelNode*> const* avoid = nullptr) { return getRoute(startPos, endPos, startPath, endPath, unit, avoid); }
 
         //Find the full path between those locations
         static TravelPath getFullPath(WorldPosition startPos, WorldPosition endPos, Unit* unit = nullptr);
