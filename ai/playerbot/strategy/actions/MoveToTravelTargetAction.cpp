@@ -64,6 +64,42 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
                         continue;
 
+                    // A quest objective can be a merchant who sells the very item the quest
+                    // asks for: 384 Beer Basted Boar Ribs needs a Rhapsody Malt from
+                    // Innkeeper Belm, 116 Dry Times three drinks from three innkeepers, 375
+                    // The Chill of Death a spool of Coarse Thread. The travel layer already
+                    // walks the bot to that counter (TravelMgr builds a
+                    // QuestObjectiveTravelDestination for the vendor and skips the killable
+                    // check for it), but every creature arrival here used to be handed to the
+                    // quest-giver path. The vendor has no quest relations, so the bot opened
+                    // an empty menu and walked off without the one purchase that completes
+                    // the quest. Measured 2026-10-05: Cralto stood 2-4 yards from 1247 with
+                    // menu=0 at 01:38:53 and again at 01:40:28, and no bot has ever handed in
+                    // 384; 11 bots across 116/375/384/40645 were pinned the same way. Buy
+                    // first and fall through to the old path when there was nothing useful,
+                    // so a vendor that also gives quests keeps its behaviour.
+                    if (QuestObjectiveTravelDestination* questDest =
+                            dynamic_cast<QuestObjectiveTravelDestination*>(target->GetDestination()))
+                    {
+                        Quest const* quest = sObjectMgr.GetQuestTemplate(questDest->GetQuestId());
+                        uint32 const objective = questDest->GetObjective();
+
+                        if (quest && quest->ReqItemId[objective] &&
+                            npc->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR))
+                        {
+                            bot->SetSelectionGuid(npc->getObjectGuid());
+
+                            if (ai->DoSpecificAction("buy", Event("travel work", "vendor"), true))
+                            {
+                                sPlayerbotAIConfig.logEvent(ai, "QuestBuyAtVendor", quest->GetTitle(),
+                                    std::to_string(questDest->GetQuestId()) + "|item=" +
+                                    std::to_string(quest->ReqItemId[objective]) + "|vendor=" +
+                                    std::to_string(workEntry));
+                                return true;
+                            }
+                        }
+                    }
+
                     bot->SetSelectionGuid(npc->getObjectGuid());
                     return ai->DoSpecificAction("talk to quest giver", event, true);
                 }
