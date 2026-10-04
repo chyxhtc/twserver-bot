@@ -2603,6 +2603,18 @@ void PlayerbotFactory::InitBags()
 {
     auto pmo = sPerformanceMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Bags");
     InitLevelBags();
+
+    // Junk sweep for every class: InitAmmo hands a quiver/pouch to hunters, rogues AND warriors
+    // that carry a bow or gun, and its old fallback added a copy per refresh when no bag slot was
+    // free, so the spare copies piled up inside the equipped bags. A quiver's only advantage over
+    // a plain bag is its ranged-haste aura (+10%) on 10 slots against the 16 a Traveler's
+    // Backpack holds, so for a warrior or rogue that merely carries a bow the quiver is pure
+    // weight, and a hunter keeps its bags unless a slot happens to be free. Measured 2026-10-04:
+    // 13 bots (warriors Khalku and Garzaryr, rogues Valzarustur and Zefeth among them) carried
+    // 20-64 quivers, 9 of their 10 free backpack slots were gone, and the pool skipped 6774 loot
+    // items in a day.
+    PurgeSpareQuivers(bot);
+
     // Hunters always want a quiver/ammo pouch (INVTYPE_BAG, same four
     // slots): InitAmmo runs after this and must find a free slot, so fill
     // at most three plain bags and leave one slot for the quiver.
@@ -3567,7 +3579,12 @@ void PlayerbotFactory::InitAmmo()
     // and a non-empty bag can never move from a specific slot
     // (CanUnequipItem), so a quiver full of ammo can neither be swapped
     // aside nor destroyed to make room.
-    if (subClass == ITEM_SUBCLASS_ARROW || subClass == ITEM_SUBCLASS_BULLET)
+    // Only a hunter gets an ammo container. A warrior or rogue carrying a bow needs the arrows
+    // to use it but has no use for the quiver: its only edge over a plain bag is the +10% ranged
+    // haste aura on 10 slots, against the 16 a Traveler's Backpack holds. That asymmetry is what
+    // produced the hoard (13 bots with 20-64 quivers, warriors Khalku and Garzaryr and rogues
+    // Valzarustur and Zefeth among them).
+    if (bot->GetClass() == CLASS_HUNTER && (subClass == ITEM_SUBCLASS_ARROW || subClass == ITEM_SUBCLASS_BULLET))
     {
         uint32 quiverId = sRandomItemMgr.GetQuiver(level);
         ItemPrototype const* bestQuiver = quiverId ? sObjectMgr.GetItemPrototype(quiverId) : nullptr;
@@ -3613,26 +3630,11 @@ void PlayerbotFactory::InitAmmo()
                     && !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, eDest & 0xFF);
                 if (freeDest)
                     bot->EquipNewItem(eDest, quiverId, true);
-                else if (bot->GetItemCount(quiverId, false) == 0)
-                {
-                    // No free bag slot at all (all four occupied). Carry
-                    // the better quiver in the backpack so nothing is
-                    // lost and the next InitAmmo/equip can retry. Silent:
-                    // this seed runs on login, never an error storm.
-                    // Once, not once per refresh: there is no retry path (the four bag slots
-                    // stay occupied), so this used to hand out a fresh copy every run.
-                    // Measured 2026-10-04: 13 hunters carried 20-64 quivers, 9 of their 10
-                    // free bag slots were gone, and the pool skipped 6774 loot items in a day.
-                    Item* pItem = Item::CreateItem(quiverId, 1, bot);
-                    if (pItem)
-                    {
-                        ItemPosCountVec dest;
-                        if (bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, pItem, false) == EQUIP_ERR_OK)
-                            bot->StoreItem(dest, pItem, true);
-                        else
-                            delete pItem;
-                    }
-                }
+                // No free bag slot: do nothing. The old fallback carried a copy in the backpack
+                // "so nothing is lost and the next InitAmmo can retry", but there is no retry -
+                // the four bag slots stay occupied - so it created one copy per refresh and left
+                // 13 bots (two warriors, two rogues among them) with 20-64 quivers, 9 of their 10
+                // free backpack slots gone, and 6774 skipped loot items in a day.
             }
             if (!haveGood && upgradeTarget && upgradeTarget->IsBag())
             {
