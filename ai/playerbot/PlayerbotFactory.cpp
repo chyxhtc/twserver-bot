@@ -3558,13 +3558,10 @@ void PlayerbotFactory::InitAmmo()
             // problem; each backpack quiver carried four to six more inside it.
             // Measured 2026-10-04 before this: Valzarustur (14) 11 spares in the backpack plus 45
             // nested, Garzaryr (21) 14 plus 49, free bag slots down to 9 of 80.
-            uint32 sparesSeen = 0;
             for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
             {
                 Item* spare = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
                 if (!spare || !spare->GetProto() || spare->GetProto()->Class != ITEM_CLASS_QUIVER)
-                    continue;
-                if (++sparesSeen <= 1)
                     continue;
                 Bag* spareBag = spare->IsBag() ? (Bag*)spare : nullptr;
                 if (!spareBag)
