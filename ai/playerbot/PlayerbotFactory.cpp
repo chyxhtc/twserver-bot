@@ -2568,6 +2568,42 @@ void PlayerbotFactory::InitBags()
                 ++plainBags;
         }
     }
+
+    // The reservation above only works while a slot is still empty. InitLevelBags runs first and
+    // fills all four by tier, so from level 10 up a hunter never had a free slot: EquipNewItem
+    // never ran, the quiver was never equipped (the InitAmmo comment says so, "nothing ever
+    // equipped a quiver"), and every refresh added another copy to the backpack instead - 13
+    // hunters ended up with 20-64 of them. Free one slot by dropping the smallest *empty* plain
+    // bag; a non-empty bag cannot be relocated, so InitAmmo simply retries next time.
+    if (bot->GetClass() == CLASS_HUNTER)
+    {
+        bool hasQuiver = false;
+        Item* smallestEmpty = nullptr;
+        uint8 smallestSlot = 0;
+        for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        {
+            Item* bagItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!bagItem || !bagItem->GetProto())
+                continue;
+            if (bagItem->GetProto()->Class == ITEM_CLASS_QUIVER)
+            {
+                hasQuiver = true;
+                continue;
+            }
+            if (bagItem->GetProto()->Class != ITEM_CLASS_CONTAINER)
+                continue;
+            Bag* bag = bagItem->IsBag() ? (Bag*)bagItem : nullptr;
+            if (!bag || !bag->IsEmpty())
+                continue;
+            if (!smallestEmpty || bagItem->GetProto()->ContainerSlots < smallestEmpty->GetProto()->ContainerSlots)
+            {
+                smallestEmpty = bagItem;
+                smallestSlot = slot;
+            }
+        }
+        if (!hasQuiver && smallestEmpty)
+            bot->DestroyItem(INVENTORY_SLOT_BAG_0, smallestSlot, true);
+    }
 }
 
 // Level-tier vendor bags for the plain container slots. Quiver/ammo-pouch
