@@ -359,6 +359,20 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
         }
 
         uint32 const openSpell = GetOpeningSpell(lootObject);
+        // Stand still before casting. The eat and drink actions already stop first for the same
+        // reason: a cast that starts while the bot is still running in is either refused
+        // (casted=0) or interrupted before the core's EffectOpenLock fills the container and
+        // sends the loot window. Measured 2026-10-05 on entry 176785: twelve opening casts went
+        // out and only seven produced a SMSG_LOOT_RESPONSE, and the failures were not distance
+        // related - the same 0-yard reading appears on both sides - so the cast itself is the
+        // suspect, not the approach.
+        if (sServerFacade.isMoving(bot))
+        {
+            ai->StopMoving();
+            SetDuration(sPlayerbotAIConfig.globalCoolDown);
+            return false;
+        }
+
         bool const casted = openSpell ? ai->CastSpell(openSpell, go) : false;
         LootTrace(bot, ai, lootObject.guid,
             "go-open-spell-target-spell" + std::to_string(openSpell) +
