@@ -1821,6 +1821,9 @@ TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition en
     uint32 endNr = std::min(5, (int)endNodes.size());
 
     //Partial sort to get the closest 5 nodes at the begin of the array.
+    // (2026-10-04: widening this to 12 and preferring linked nodes was measured and reverted:
+    // with NODEDIAG at 25 lines/min before, the after window held 28/min and MoveFail >20 yd
+    // went from 8.8/min to 11/min. The nearest five are not the problem; keep them.)
     std::partial_sort(startNodes.begin(), startNodes.begin() + startNr, startNodes.end(), [startPos](TravelNode* i, TravelNode* j) {return i->getPosition()->sqDistance(startPos) < j->getPosition()->sqDistance(startPos); });
     startNodes.resize(startNr);
     std::partial_sort(endNodes.begin(), endNodes.begin() + endNr, endNodes.end(), [endPos](TravelNode* i, TravelNode* j) {return i->getPosition()->sqDistance(endPos) < j->getPosition()->sqDistance(endPos); });
