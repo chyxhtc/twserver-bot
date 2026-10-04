@@ -1881,7 +1881,10 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
             {
                 ItemPrototype const* proto1 = sObjectMgr.GetItemPrototype(a);
                 ItemPrototype const* proto2 = sObjectMgr.GetItemPrototype(b);
-                return proto1->Quality * proto1->ItemLevel <= proto2->Quality * proto2->ItemLevel;
+                // Strict weak ordering (was <=): see the note in RandomItemMgr::GetBestItem -
+                // a comparator that answers true for equal elements is UB for std::sort and
+                // can corrupt the heap. Equal scores now compare false both ways.
+                return proto1->Quality * proto1->ItemLevel < proto2->Quality * proto2->ItemLevel;
             });
 
         uint32 counter = 0;

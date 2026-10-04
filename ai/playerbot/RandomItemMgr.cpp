@@ -3126,8 +3126,13 @@ std::vector<uint32> RandomItemMgr::GetUpgradeList(Player* player, uint32 specId,
     if (listItems.size())
         sLog.outString("New Items: %zu, Old item:%d, New items max: %d", listItems.size(), oldStatWeight, closestUpgradeWeight);
 
-    // sort by stat weight
-    std::sort(listItems.begin(), listItems.end(), [specId](int a, int b) { return sRandomItemMgr.GetStatWeight(a, specId) <= sRandomItemMgr.GetStatWeight(b, specId); });
+    // Sort by stat weight. Strict weak ordering: this used <=, which is UB for std::sort -
+    // libstdc++'s introsort can read or write past the range when a comparator answers true
+    // for equal elements, and the heap corruption that follows surfaces later as an unrelated
+    // looking crash (measured 2026-10-05: three world-server crashes out of uncaught
+    // std::length_error from basic_string::_M_create, i.e. a std::string whose size field was
+    // overwritten). Equal weights now compare false both ways, which is what sort requires.
+    std::sort(listItems.begin(), listItems.end(), [specId](int a, int b) { return sRandomItemMgr.GetStatWeight(a, specId) < sRandomItemMgr.GetStatWeight(b, specId); });
 
     return listItems;
 }
