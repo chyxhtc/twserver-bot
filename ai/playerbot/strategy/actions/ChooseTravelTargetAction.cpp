@@ -739,6 +739,12 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
 
     bool hasTarget = false;
 
+    // M4: this log's purpose field is read by the platform as the reason a travel candidate
+    // was lost, and the raw manual value is a purpose enum written as a number - Grind prints
+    // as 4096 (1 << 12), so the B track's travel_reject_top reported a meaningless "4096"
+    // bucket (598 lines on 2026-10-05). GetTravelPurposeName maps the number back to its name.
+    std::string const travelPurposeName = GetTravelPurposeName(AI_VALUE2(std::string, "manual string", "future travel purpose"));
+
     // Rejection accounting (arm knob "reasons"): the open question from the overnight
     // runs is why the candidate layer keeps offering quest givers that are never picked.
     // Counting each refusal per reason and logging one line per selection turns that
@@ -894,7 +900,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         for (auto& [why, n] : rejections)
                             out << why << "=" << n << ",";
                         sPlayerbotAIConfig.logEvent(ai, "TravelRejectSummary",
-                            AI_VALUE2(std::string, "manual string", "future travel purpose"),
+                            travelPurposeName,
                             std::to_string(considered) + "|" + out.str() + "|rej=" + rejectionDetail());
                     }
                     return false;
@@ -1032,7 +1038,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
         for (auto& [why, n] : rejections)
             out << why << "=" << n << ",";
         sPlayerbotAIConfig.logEvent(ai, "TravelRejectSummary",
-            AI_VALUE2(std::string, "manual string", "future travel purpose"),
+            travelPurposeName,
             std::to_string(considered) + "|" + (hasTarget ? "picked" : "none") + "|" + out.str() +
             "|rej=" + rejectionDetail());
     }
@@ -2134,6 +2140,14 @@ bool RequestQuestTravelTargetAction::Execute(Event& event)
                 flag = (uint32)TravelDestinationPurpose::QuestTaker;
             else
             {
+                // M5: an item objective is only ever requested while its quest is in
+                // progress, so the no-source verdict has to be reached that way too. Tested
+                // for every status, it also fired for quests the bot has merely seen (status
+                // NONE) or already finished, and A17's data therefore looked far worse than
+                // the problem is. Measured 2026-10-05: 137 bot-quest pairs in the log against
+                // 6 that are really stuck - a factor of twenty.
+                bool const questInProgress = player->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE;
+
                 for (uint32 objective = 0; objective < 4; objective++)
                 {
                     TravelDestinationPurpose purposeFlag = (TravelDestinationPurpose)(1 << (objective + 1));
@@ -2148,9 +2162,16 @@ bool RequestQuestTravelTargetAction::Execute(Event& event)
                     // in Stonard, standing among level 45-60 Horde guards, so that objective
                     // was never once offered while Rolor ran 15 objective journeys for the
                     // quest. Name it once per bot per objective per six hours instead.
-                    if (questTemplate->ReqItemId[objective] && questTemplate->ReqItemCount[objective] &&
-                        !questTemplate->ReqCreatureOrGOId[objective] &&
-                        !questgrey::ItemHasReachableSource(bot, questTemplate->ReqItemId[objective]))
+                    //
+                    // The quest's own provided item counts as a source and is not an
+                    // objective at all: 868 Egg Hunt hands over a Digging Claw (SrcItemId)
+                    // on accept, and reporting that as sourceless was a pure false positive.
+                    uint32 const reqItem = questTemplate->ReqItemId[objective];
+                    bool const providedByQuest = reqItem != 0 &&
+                        (questTemplate->GetSrcItemId() == reqItem || questTemplate->ReqSourceId[objective] == reqItem);
+                    if (questInProgress && reqItem && questTemplate->ReqItemCount[objective] &&
+                        !questTemplate->ReqCreatureOrGOId[objective] && !providedByQuest &&
+                        !questgrey::ItemHasReachableSource(bot, reqItem))
                     {
                         std::string const key = "objnosource::" + std::to_string(questId) + "::" + std::to_string(objective);
                         time_t const now = time(nullptr);
