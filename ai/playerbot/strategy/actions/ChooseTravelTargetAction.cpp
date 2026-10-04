@@ -841,8 +841,28 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 int32 const outgrownBelow = (int32)orderingBot->GetLevel() - 5;
                 bool const outgrownA = (int32)orderingBot->GetQuestLevelForPlayer(questA) < outgrownBelow;
                 bool const outgrownB = (int32)orderingBot->GetQuestLevelForPlayer(questB) < outgrownBelow;
-                if (outgrownA != outgrownB)
-                    return !outgrownA; // a quest this bot has not outgrown first
+                // A28: the objective's own target matters as much as the quest's level. A28's
+                // baseline, measured right after A26 on 2026-10-05: 11 of 20 objective travels
+                // still pointed at quests whose creature objectives are five or more levels
+                // below the bot - Jaezo (14) walked to level-8 Frostmane mobs for quest 287,
+                // Graethugoth (22) to level-16 mobs for 4921 - and those kills pay almost
+                // nothing (that is the 49-63% of attack orders on mobs five or more levels
+                // down). An objective with an outgrown target is treated like an outgrown
+                // quest: it goes behind anything this bot has not outgrown.
+                auto const objectiveOutgrown = [outgrownBelow](TravelDestination* destination) -> bool
+                {
+                    auto* objective = dynamic_cast<QuestObjectiveTravelDestination*>(destination);
+                    if (!objective)
+                        return false;
+                    CreatureInfo const* info = objective->GetCreatureInfo();
+                    if (!info || !info->level_min)
+                        return false;
+                    return (int32)info->level_min < outgrownBelow;
+                };
+                bool const outgrownA2 = outgrownA || objectiveOutgrown(a.destination);
+                bool const outgrownB2 = outgrownB || objectiveOutgrown(b.destination);
+                if (outgrownA2 != outgrownB2)
+                    return !outgrownA2; // a quest or objective this bot has not outgrown first
                 return a.distance < b.distance; // then the nearest; "on the way" stand-in
             });
     }
