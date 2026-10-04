@@ -237,7 +237,13 @@ bool GroupHasRealPlayer(::Player* bot)
     return false;
 }
 
-bool MisplacedBotEligible(::Player* bot, int32& areaLevelOut, std::string* why = nullptr)
+// lowAreaSlack: how many levels below the bot an area may sit and still count as misplaced.
+// Zero keeps the historical rule (only areas above botLevel+5 are relocated). The
+// death-driven caller passes a positive value because a bot that keeps dying in a zone it
+// has long outgrown is not passing through - measured 2026-10-04, Garzaryr level 20 died 77
+// times in area 154 (level 3, Deathknell) and every check answered "area 154 level 3 fits
+// level 20+5".
+bool MisplacedBotEligible(::Player* bot, int32& areaLevelOut, std::string* why = nullptr, int32 lowAreaSlack = 0)
 {
     areaLevelOut = 0;
     auto no = [&](std::string const& reason) { if (why) *why = reason; return false; };
@@ -276,7 +282,8 @@ bool MisplacedBotEligible(::Player* bot, int32& areaLevelOut, std::string* why =
     int32 areaLevel = 0;
     if (!travelMgr.TryGetValidatedAreaLevel(bot->GetAreaId(), areaLevel) || areaLevel <= 0)
         return no("area " + std::to_string(bot->GetAreaId()) + " has no validated level");
-    if (areaLevel <= (int32)bot->GetLevel() + 5)
+    if (areaLevel <= (int32)bot->GetLevel() + 5 &&
+        !(lowAreaSlack > 0 && areaLevel + lowAreaSlack < (int32)bot->GetLevel()))
         return no("area " + std::to_string(bot->GetAreaId()) + " level " + std::to_string(areaLevel) + " fits level " + std::to_string(bot->GetLevel()) + "+5");
     areaLevelOut = areaLevel;
     return true;
@@ -470,7 +477,9 @@ bool BotManager::RelocateHopelessBot(::Player* bot)
     uint32 deathCount = deathCountValue ? deathCountValue->Get() : 0;
     int32 areaLevel = 0;
     std::string why;
-    if (!MisplacedBotEligible(bot, areaLevel, &why))
+    // A10: ten levels below the bot is outgrown no matter how the death count reads; the
+    // death threshold below still decides whether the bot is actually in trouble.
+    if (!MisplacedBotEligible(bot, areaLevel, &why, 10))
     {
         if (bot && deathCount)
             TB_LOG_BASIC("TortoiseBots: hopeless check %s level %u zone %u area %u deaths %u: not eligible - %s",
