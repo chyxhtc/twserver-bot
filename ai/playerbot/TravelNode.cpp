@@ -1144,25 +1144,6 @@ void TravelPath::ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets,
 
     cutTo(*startP, false);
 
-    if (fullPath.size() < 2 && ai && trace::On("move"))
-    {
-        static std::map<uint32, time_t> lastProbe;
-        uint32 const botLow = ai->GetBot()->GetGUIDLow();
-        time_t const now = time(nullptr);
-        auto const it = lastProbe.find(botLow);
-        if (it == lastProbe.end() || now - it->second >= 30)
-        {
-            lastProbe[botLow] = now;
-            sPlayerbotAIConfig.logEvent(ai, "ClipProbe",
-                std::to_string(pointsBefore) + "->" + std::to_string((uint32)fullPath.size()),
-                "startIdx=" + std::to_string(startIndex) +
-                " bot=" + std::to_string((int)botPos.getX()) + "," + std::to_string((int)botPos.getY()) +
-                " start=" + std::to_string((int)startPoint.getX()) + "," + std::to_string((int)startPoint.getY()) +
-                " first=" + std::to_string((int)firstPoint.getX()) + "," + std::to_string((int)firstPoint.getY()) +
-                " last=" + std::to_string((int)lastPoint.getX()) + "," + std::to_string((int)lastPoint.getY()));
-        }
-    }
-
     if (startP == fullPath.end())
         return;
 
@@ -2003,26 +1984,6 @@ TravelPath TravelNodeMap::getFullPath(WorldPosition startPos, WorldPosition endP
 
     if (route.isEmpty())
     {
-        // A4 diagnostic: why is the node route empty? The caller falls back to the direct
-        // navmesh path, which for a long request is often a single point, and the bot then
-        // counts a move failure. One line per case, so the distribution can be read off:
-        // no node near the start, no node near the goal, or both present with no link.
-        // Measured on 2026-10-04 14:00-15:00: 494 such failures in an hour, all same-map
-        // (no cross-continent case), concentrated in Mulgore, Teldrassil and Dun Morogh.
-        {
-            std::vector<TravelNode*> const startNear = sTravelNodeMap.getNodes(startPos, 300.0f);
-            std::vector<TravelNode*> const endNear = sTravelNodeMap.getNodes(endPos, 300.0f);
-            std::vector<TravelNode*> const startFar = sTravelNodeMap.getNodes(startPos, 3000.0f);
-            std::vector<TravelNode*> const endFar = sTravelNodeMap.getNodes(endPos, 3000.0f);
-            sLog.outBasic("NODEDIAG: %s %u,%.0f,%.0f -> %u,%.0f,%.0f dist=%.0f direct=%u "
-                "nodes start300=%u end300=%u start3000=%u end3000=%u",
-                (unit && unit->IsPlayer()) ? unit->GetName() : "-",
-                startPos.GetMapId(), startPos.getX(), startPos.getY(),
-                endPos.GetMapId(), endPos.getX(), endPos.getY(),
-                startPos.distance(endPos), (uint32)directPath.size(),
-                (uint32)startNear.size(), (uint32)endNear.size(), (uint32)startFar.size(), (uint32)endFar.size());
-        }
-
         route.cleanTempNodes();
         return TravelPath(directPath);
     }

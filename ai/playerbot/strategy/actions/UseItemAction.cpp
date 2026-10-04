@@ -207,25 +207,6 @@ bool IsTargetValidForItemUse(uint32 itemID, Unit* target)
         }
     }
 
-    if (ai::trace::VerdictOf("accept") == ai::trace::Verdict::On)
-    {
-        // The item is the first requirement's item; its targets are what the bot must reach.
-        static std::map<std::pair<uint32, uint32>, time_t> lastProbe;
-        uint32 const targetEntry = target ? target->GetEntry() : 0;
-        auto const key = std::make_pair(itemID, targetEntry);
-        time_t const now = time(nullptr);
-        auto const it = lastProbe.find(key);
-        if (it == lastProbe.end() || now - it->second >= 20)
-        {
-            lastProbe[key] = now;
-            std::string wanted;
-            for (ItemRequiredTargetMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
-                wanted += (wanted.empty() ? "" : ",") + std::to_string(itr->second.m_uiTargetEntry);
-            // logEvent needs an AI; use the global logger with a synthetic bot-less row.
-            sLog.outBasic("QuestItemUse: item=%u target=%u valid=%d wanted=%s", itemID, targetEntry, valid ? 1 : 0, wanted.c_str());
-        }
-    }
-
     return valid;
 }
 
@@ -1553,24 +1534,10 @@ bool UseQuestItemOnObjectiveAction::Execute(Event& event)
 
     bool const used = unitTarget ? UseItem(requester, itemId, unitTarget) : UseItem(requester, itemId, goTarget);
     if (!used)
-    {
-        static std::map<uint32, time_t> lastFail;
-        uint32 const lowTarget = unitTarget ? unitTarget->GetEntry() : goTarget->GetEntry();
-        time_t const nowFail = time(nullptr);
-        auto itFail = lastFail.find(lowTarget);
-        if (itFail == lastFail.end() || nowFail - itFail->second >= 20)
-        {
-            lastFail[lowTarget] = nowFail;
-            sPlayerbotAIConfig.logEvent(ai, "QuestItemUseFailed", std::to_string(lowTarget),
-                "item=" + std::to_string(itemId) + " dist=" + std::to_string((int)bot->GetDistance(unitTarget ? (WorldObject*)unitTarget : (WorldObject*)goTarget)));
-        }
         return false;
-    }
 
     if (!GetDuration())
         SetDuration(sPlayerbotAIConfig.globalCoolDown);
 
-    sPlayerbotAIConfig.logEvent(ai, "QuestItemUsed", std::to_string(unitTarget ? unitTarget->GetEntry() : goTarget->GetEntry()),
-        "item=" + std::to_string(itemId));
     return true;
 }

@@ -1455,44 +1455,16 @@ private:
                     // use-item path never armed for it. Same shape as the creature branch.
                     if (reqEntry < 0)
                     {
-                        if (GameObject* useTarget = bot->FindNearestGameObject((uint32)(-reqEntry), 25.0f))
-                        {
-                            static std::map<uint32, time_t> lastTryGo;
-                            uint32 const lowGo = bot->GetGUIDLow();
-                            time_t const nowGo = time(nullptr);
-                            auto itGo = lastTryGo.find(lowGo);
-                            if (itGo == lastTryGo.end() || nowGo - itGo->second >= 20)
-                            {
-                                lastTryGo[lowGo] = nowGo;
-                                sPlayerbotAIConfig.logEvent(ai, "QuestItemUseTry", std::to_string(reqEntry),
-                                    "dist=" + std::to_string((int)bot->GetDistance(useTarget)) +
-                                    " item=" + std::to_string(srcItem) + " quest=" + std::to_string(quest->GetQuestId()));
-                            }
-
+                        if (bot->FindNearestGameObject((uint32)(-reqEntry), 25.0f))
                             return true;
-                        }
                         continue;
                     }
 
                     // Wider than interaction range on purpose: the travel layer parks the bot
                     // about a dozen yards from the objective creature, and the action walks
                     // the last stretch before using the item.
-                    if (Creature* useTarget = bot->FindNearestCreature((uint32)reqEntry, 25.0f))
+                    if (bot->FindNearestCreature((uint32)reqEntry, 25.0f))
                     {
-                        // Diagnostic (throttled 20 s per bot): proves the trigger is wired and
-                        // tells "found it but the use failed" apart from "never ran".
-                        static std::map<uint32, time_t> lastTry;
-                        uint32 const low = bot->GetGUIDLow();
-                        time_t const now = time(nullptr);
-                        auto it = lastTry.find(low);
-                        if (it == lastTry.end() || now - it->second >= 20)
-                        {
-                            lastTry[low] = now;
-                            sPlayerbotAIConfig.logEvent(ai, "QuestItemUseTry", std::to_string(reqEntry),
-                                "dist=" + std::to_string((int)bot->GetDistance(useTarget)) +
-                                " item=" + std::to_string(srcItem) + " quest=" + std::to_string(quest->GetQuestId()));
-                        }
-
                         return true;
                     }
                 }

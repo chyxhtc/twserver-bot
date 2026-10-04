@@ -698,36 +698,6 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
             SET_AI_VALUE2(time_t, "manual time", "outgrown since", (time_t)0);
     }
 
-    // TEMP-DIAG(leave-rule): one line per bot per minute with every input of the decision,
-    // so a bot that never leaves can be read straight off the trace instead of being guessed
-    // at. Added 2026-10-04 18:20 for the level 8 Tirisfal trio (Krorpalgres, Turkhal,
-    // Warkryrzith), which held an active parked quest-objective travel target all evening.
-    // Remove once the trio is unstuck.
-    {
-        time_t const now = time(0);
-        time_t const lastDiag = AI_VALUE2(time_t, "manual time", "leavediag logged");
-        if (!lastDiag || now - lastDiag >= 60)
-        {
-            SET_AI_VALUE2(time_t, "manual time", "leavediag logged", now);
-            std::ostringstream out;
-            out << "lvl=" << (uint32)bot->GetLevel()
-                << " area=" << areaLevel
-                << " known=" << (areaKnown ? 1 : 0)
-                << " outgrown=" << (areaOutgrown ? 1 : 0)
-                << " actionable=" << actionableQuests
-                << " supplyEmpty=" << (questSupplyEmpty ? 1 : 0)
-                << " nothingToDo=" << (nothingToDo ? 1 : 0)
-                << " greyAge=" << (greySince ? (long)(now - greySince) : -1)
-                << " greyLowbie=" << (greyOnlyLowbie ? 1 : 0)
-                << " leaveAnyway=" << (leaveAnyway ? 1 : 0)
-                << " handIn=" << (outgrown_yield::HasHandInAbleQuest(ai, bot) ? 1 : 0)
-                << " capital=" << (WorldPosition(bot).HasAreaFlag(AREA_FLAG_CAPITAL) ? 1 : 0)
-                << " travelActive=" << (AI_VALUE(bool, "travel target active") ? 1 : 0)
-                << " moving=" << (bot->IsMoving() ? 1 : 0);
-            sPlayerbotAIConfig.logEvent(ai, "LeaveDiag", out.str(), WorldPosition(bot).GetAreaName(true, true));
-        }
-    }
-
     if (!leaveAnyway)
     {
         // Outside capitals only hand-in-able quests hold the bot; selling and
