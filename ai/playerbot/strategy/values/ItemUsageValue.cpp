@@ -1127,6 +1127,23 @@ bool ItemUsageValue::IsNeededForQuest(Player* player, uint32 itemId, bool ignore
 
         for (int i = 0; i < 4; i++)
         {
+            // Source items (ReqSourceId) are the ones an "use the item on the objective"
+            // step casts from; the core checks for them at turn-in and consumes them with
+            // RewardQuest. This predicate only looked at ReqItemId, so such an item looked
+            // like junk to the loot strategy and was skipped at the corpse. Measured
+            // 2026-10-04: quest 6395 (Marla's Last Wish) wants ReqSourceId 16333
+            // (Samuel's Remains), and the eight-bot Tirisfal cluster kept logging
+            // LootResponse 16333 item-skip-not-allowed, so the UseItemAction added earlier
+            // never had the item to use. Treat a source item as needed while its quest is
+            // open and the bot does not yet hold ReqSourceCount of it.
+            if (quest->ReqSourceCount[i] && quest->ReqSourceId[i] == itemId)
+            {
+                if (!ignoreInventory && player->GetItemCount(itemId, false) >= quest->ReqSourceCount[i])
+                    continue;
+
+                return true;
+            }
+
             if (!quest->ReqItemCount[i])
                 continue;
 
