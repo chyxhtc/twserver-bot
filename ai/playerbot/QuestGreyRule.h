@@ -141,4 +141,15 @@ namespace ai { namespace questgrey
     // Dwarven Digging 6, Crown of the Earth 4, ...). They pin a log slot and make the
     // outgrown-zone rule believe a zone the bot has outlevelled still has work in it.
     bool QuestHasNoKnownSource(Quest const* quest);
+
+    // True when a GREY quest is still worth keeping for this bot. The accept gate
+    // (AcceptAllQuestsAction::ProcessQuest) keeps one when the bot still wants the reward,
+    // when a fixed reward would replace gear, or when the quest opens a non-grey follow-up.
+    // The quest-log upkeep has to read the same answer, or it drops in the next pass what the
+    // accept side just took - the accept/drop loop measured 2026-10-05 on Stunograr (level 17:
+    // Winterhoof Cleansing 754 taken 02:49:41, dropped 02:50:01, taken again 02:50:12, dropped
+    // 02:54:55; Bristleback Aggression 60150 and Rite of Vision 771 looped the same way).
+    // Defined in strategy/actions/AcceptQuestAction.cpp, next to that gate, so the two cannot
+    // drift apart again.
+    bool GreyQuestWorthKeeping(Player* bot, AiObjectContext* context, Quest const* quest);
 }}

@@ -22,6 +22,23 @@ static bool IsFixedRewardUpgrade(AiObjectContext* context, Quest const* quest)
     return false;
 }
 
+namespace ai { namespace questgrey
+{
+bool GreyQuestWorthKeeping(Player* bot, AiObjectContext* context, Quest const* quest)
+{
+    if (!bot || !quest)
+        return true; // no opinion: a missing answer must never become a drop
+
+    if (AI_VALUE2(bool, "need quest reward", (int32)quest->GetQuestId()))
+        return true; // the bot still wants what this quest pays
+
+    if (IsFixedRewardUpgrade(context, quest))
+        return true; // a fixed reward would replace gear
+
+    return LeadsToNonGreyQuest(bot, quest->GetQuestId());
+}
+}} // namespace ai::questgrey
+
 bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, WorldObject* questGiver)
 {
     // acctrace: this method refuses before AcceptQuest() is ever called, and the refusal is
@@ -130,20 +147,15 @@ bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, 
         quest->GetQuestLevel() > 0 &&
         bot->GetLevel() > greyBelowLevel)
     {
-        if (!AI_VALUE2(bool, "need quest reward", (int32)quest->GetQuestId()) && !IsFixedRewardUpgrade(context, quest))
+        if (!questgrey::GreyQuestWorthKeeping(bot, context, quest))
         {
-            // Chain exception: a grey quest that is the prerequisite of a quest this bot
-            // would still take is a link, not filler. Refusing it strands the whole chain.
-            if (questgrey::LeadsToNonGreyQuest(bot, quest->GetQuestId()))
-            {
-                traceGate("chain-link-kept", "|greyBelow=" + std::to_string(greyBelowLevel));
-            }
-            else
-            {
-                traceGate("grey-no-reward", "|greyBelow=" + std::to_string(greyBelowLevel));
-                return false;
-            }
+            traceGate("grey-no-reward", "|greyBelow=" + std::to_string(greyBelowLevel));
+            return false;
         }
+
+        // Kept for one of the three reasons the shared predicate knows: a wanted reward, a
+        // fixed reward that is an upgrade, or a chain link to content this bot can still do.
+        traceGate("chain-link-kept", "|greyBelow=" + std::to_string(greyBelowLevel));
     }
 
     if (AcceptQuest(requester, quest, questGiver->getObjectGuid()))

@@ -147,7 +147,17 @@ bool CleanQuestLogAction::IsGreyIncomplete(Quest const* quest)
         return false;
     // Same threshold the accept gate uses (bot_diag.conf grey_level_diff, hot reloaded):
     // a quest must never be accepted as non-grey and then dropped as grey in the same breath.
-    return bot->GetLevel() > questgrey::GreyBelowLevel(bot, quest);
+    if (bot->GetLevel() <= questgrey::GreyBelowLevel(bot, quest))
+        return false;
+
+    // ...and the same three exceptions. The accept side (AcceptAllQuestsAction) keeps a grey
+    // quest when the bot still wants the reward, when a fixed reward is an upgrade, or when the
+    // quest opens non-grey content; the drop side used to compare only the threshold, so those
+    // quests were accepted and then dropped again on the next upkeep pass. Measured 2026-10-05,
+    // Stunograr (level 17): Winterhoof Cleansing (754) taken 02:49:41, dropped 02:50:01, taken
+    // 02:50:12, dropped 02:54:55; Bristleback Aggression (60150) and Rite of Vision (771) the
+    // same. One shared predicate, read by both sides.
+    return !questgrey::GreyQuestWorthKeeping(bot, context, quest);
 }
 
 bool CleanQuestLogAction::HasRequiredDeliverItems(Quest const* quest)
