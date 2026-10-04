@@ -49,6 +49,9 @@ public:
     bool IsUsable() const;
 
 private:
+    // M8: see the definition - formats what() plus a backtrace into one log line.
+    void LogTickException(char const* what);
+
     Player* bot_;
     Player* master_;
     PlayerbotAI* ai_ = nullptr; // raw ptr, owned via PlayerbotAIStorage lifecycle; avoids unique_ptr incomplete type at header

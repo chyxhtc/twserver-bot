@@ -10,6 +10,13 @@
 #include "Player.h"
 #include "Log.h"
 #include "../host/ModuleLog.h"
+#include <exception>
+#include <execinfo.h>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <cstdlib>
+#include <ctime>
 
 namespace TortoiseBots {
 
@@ -66,6 +73,61 @@ void PlayerbotAIAdapter::Update(uint32_t diff)
         sLog.outError("TortoiseBots: dropped malformed packet while updating bot %s",
             bot_->GetName()); // pi-lens-ignore: clang:all
     }
+    catch (std::exception const& e)
+    {
+        // M8: same intent as the packet guard above, for everything else. Uncaught
+        // exceptions out of this call reach the core's world update and terminate mangosd:
+        // the container log had three such crashes in five hours (std::length_error out of
+        // basic_string::_M_construct/_M_create twice and std::bad_alloc once), and the
+        // WSL core dump's stack shows the throw under the AI's Engine logging path
+        // (DoNextAction -> Engine::LogAction/CanLogAction -> ChooseTravelTargetAction).
+        // A bot tick is not worth the whole pool: skip this bot's tick, log what() plus a
+        // backtrace so the culprit is still identifiable, and keep the other bots and the
+        // world alive. Throttled per bot so a bot that throws every tick cannot flood.
+        LogTickException(e.what());
+    }
+    catch (...)
+    {
+        LogTickException("non-std exception");
+    }
+}
+
+void PlayerbotAIAdapter::LogTickException(char const* what)
+{
+    static std::map<uint32, std::pair<time_t, uint32>> lastLogged;
+    static std::mutex lastLoggedMutex;
+
+    uint32 suppressed = 0;
+    time_t const now = time(nullptr);
+    {
+        std::lock_guard<std::mutex> lock(lastLoggedMutex);
+        auto& entry = lastLogged[bot_->GetGUIDLow()];
+        if (entry.first && now - entry.first < 60)
+        {
+            ++entry.second;
+            return;
+        }
+        suppressed = entry.second;
+        entry.first = now;
+        entry.second = 0;
+    }
+
+    std::ostringstream backtraceLine;
+    void* frames[32];
+    int const n = backtrace(frames, 32);
+    if (char** symbols = backtrace_symbols(frames, n))
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (i)
+                backtraceLine << " <- ";
+            backtraceLine << (symbols[i] ? symbols[i] : "?");
+        }
+        free(symbols);
+    }
+
+    sLog.outError("TortoiseBots: bot %s (%u) tick threw: %s (suppressed %u in the last minute) | %s",
+        bot_->GetName(), bot_->GetGUIDLow(), what ? what : "?", suppressed, backtraceLine.str().c_str());
 }
 
 bool PlayerbotAIAdapter::IsUsable() const
