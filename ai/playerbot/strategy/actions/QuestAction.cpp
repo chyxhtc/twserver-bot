@@ -1,10 +1,27 @@
 
 #include "playerbot/playerbot.h"
 #include "QuestAction.h"
+#include "QuestTrace.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/TraceSwitch.h"
+#include "playerbot/TravelMgr.h"
 
 using namespace ai;
+
+namespace
+{
+// Quest game objects (barrels, chests, plaques, banners) hand quests in exactly like an NPC
+// does - the relation lives in gameobject_involvedrelation - but the travel leg stops a few
+// yards short of the object, because the destination point is the object's own spawn
+// position and the arrival test accepts 4-6 yards. The plain INTERACTION_DISTANCE cap then
+// skipped them entirely: measured 2026-10-04, Horbrosh (level 10 gnome) stood 6 yards from
+// the Unguarded Thunder Ale Barrel, the taker of its already-completed deliver quest 310,
+// for over half an hour; every tick the action instead talked to the NPC two yards away, so
+// the quest was never handed in and the travel layer re-picked the same taker forever.
+// Knob: go_interaction_range (bot_diag.conf, hot reload), default 12 yards.
+inline float QuestGoRange() { return (float)trace::IntValue("go_interaction_range", 12); }
+}
 
 bool QuestAction::Execute(Event& event)
 {
@@ -12,38 +29,148 @@ bool QuestAction::Execute(Event& event)
 
     Player* master = GetMaster();
 
+    // A pending turn-in at a game object must not lose to whatever NPC the event names.
+    //
+    // Deliver quests hand in at a world object rather than a creature: quest 310 ("Bitter
+    // Rivals") has the Unguarded Thunder Ale Barrel in gameobject_involvedrelation, and quest
+    // 264 likewise. Measured 2026-10-04: Horbrosh stood between Jarven Thunderbrew (giver of a
+    // follow-up) and that barrel, both within a few yards, for over half an hour - every tick
+    // the event named the NPC, the action talked to the NPC, and the quest was never handed
+    // in; six bots in the 50-bot pool were blocked on quest 310 alone, each carrying it since
+    // they were low level. When the active travel target is a game object, process that
+    // object first: its quest menu is what carries the turn-in.
+    if (TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target"))
+    {
+        int32 const targetEntry = travelTarget->GetEntry();
+        // No IsActive() requirement: the talk fires when the travel leg finishes, and by then
+        // the target is already in cooldown, so requiring IsActive() skipped exactly the case
+        // this block exists for (measured 2026-10-04: the condition never fired).
+        if (targetEntry < 0)
+        {
+            uint32 const wantedEntry = (uint32)(-targetEntry);
+            uint32 seen = 0, processed = 0;
+            for (ObjectGuid const& goGuid : AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los"))
+            {
+                GameObject* go = ai->GetGameObject(goGuid);
+                if (!go || go->GetEntry() != wantedEntry)
+                    continue;
+                ++seen;
+                if (bot->GetDistance(go) > QuestGoRange())
+                    continue;
+                ++processed;
+                if (ProcessQuests(go))
+                    return true;
+            }
+            // Visibility for the "travel target names a game object" path: without this the
+            // block is indistinguishable from never running.
+            if (QuestTraceDue(ai, "gotaker-" + std::to_string(wantedEntry)))
+                sPlayerbotAIConfig.logEvent(ai, "GoTakerProbe",
+                    "entry=" + std::to_string(wantedEntry) + " seen=" + std::to_string(seen) +
+                    " processed=" + std::to_string(processed),
+                    "dist=" + std::to_string((int)(seen ? 0 : -1)));
+
+            // seen == 0 while the travel leg says we are already at the object means the object
+            // is not in the world at all. Quest 310's taker is exactly that: gameobject 270
+            // ("Unguarded Thunder Ale Barrel") has spawntimesecs = -60, i.e. the server never
+            // spawns it, while the identical-looking barrel 269 at the same coordinates does
+            // spawn. Six of the 50 bots were pinned on it, each re-picking the same taker every
+            // ~40 s for over half an hour. Blacklist the destination entry for a while through
+            // the same per-bot map the unreachable mobs use, so the travel layer stops offering
+            // it and the bot spends its time on quests that can actually finish. The key is the
+            // destination entry (negative for a game object); the reader accepts negatives too.
+            if (seen == 0 && travelTarget->getPosition() &&
+                sServerFacade.getDistance2d(bot, travelTarget->getPosition()->getX(), travelTarget->getPosition()->getY()) <= 40.0f)
+            {
+                AiObjectContext* context = ai->GetAiObjectContext();
+                if (context)
+                {
+                    auto& unreachable = context->GetValue<std::map<uint32, uint32>&>("unreachable entries")->Get();
+                    unreachable[(uint32)targetEntry] = WorldTimer::getMSTime() + 30 * MINUTE * IN_MILLISECONDS;
+
+                    // Blacklisting alone is not enough: the travel target that brought the bot
+                    // here is still ACTIVE in WORK status (measured 02:56: "status=4 active=1
+                    // dstEntry=-270"), and while a target is active the search is never asked
+                    // again - the bot just stands there. Retire it the same way the corpse-run
+                    // and relocation paths do, so the next tick picks something else.
+                    sTravelMgr.SetNullTravelTarget(travelTarget);
+                    travelTarget->SetStatus(TravelStatus::TRAVEL_STATUS_EXPIRED);
+                    travelTarget->SetExpireIn(1000);
+
+                    if (QuestTraceDue(ai, "goblacklist-" + std::to_string(wantedEntry)))
+                        sPlayerbotAIConfig.logEvent(ai, "GoTakerMissing",
+                            "entry=" + std::to_string(wantedEntry), "blacklisted=30min");
+                }
+            }
+        }
+    }
+
+    // acctrace: where the giver guid came from. A bot walking around with a stale selection
+    // (an old corpse target, its own guid) reaches the NPC and then talks to nothing; that
+    // case and "the action never fired" looked identical in the trace.
+    char const* source = "event";
     if (!guid)
     {
         if (!master)
         {
             guid = bot->GetSelectionGuid();
+            source = "bot-selection";
         }
         else
         {
             guid = master->GetSelectionGuid();
+            source = "master-selection";
         }
     }
 
     if (guid)
     {
+        if (QuestTraceDue(ai, "pick"))
+        {
+            WorldObject* giver = ai->GetUnit(guid);
+            if (!giver)
+                giver = ai->GetGameObject(guid);
+
+            float const dist = giver ? bot->GetDistance(giver) : -1.0f;
+            sPlayerbotAIConfig.logEvent(ai, "QuestGiverPick", QuestTraceGiver(guid),
+                std::string("source=") + source + " action=" + GetName() +
+                " dist=" + std::to_string((int)dist));
+        }
+
         return ProcessQuests(guid);
     }
 
     bool result = false;
     std::list<ObjectGuid> npcs = AI_VALUE(std::list<ObjectGuid>, "nearest npcs");
+    uint32 consideredNpcs = 0;
     for (std::list<ObjectGuid>::iterator i = npcs.begin(); i != npcs.end(); i++)
     {
         Unit* unit = ai->GetUnit(*i);
         if (unit && bot->GetDistance(unit) <= INTERACTION_DISTANCE)
+        {
+            ++consideredNpcs;
             result |= ProcessQuests(unit);
+        }
     }
     std::list<ObjectGuid> gos = AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los");
+    uint32 consideredGos = 0;
     for (std::list<ObjectGuid>::iterator i = gos.begin(); i != gos.end(); i++)
     {
         GameObject* go = ai->GetGameObject(*i);
-        if (go && bot->GetDistance(go) <= INTERACTION_DISTANCE)
+        if (go && bot->GetDistance(go) <= QuestGoRange())
+        {
+            ++consideredGos;
             result |= ProcessQuests(go);
+        }
     }
+
+    // Neither branch above wrote anything when the scan found no giver in reach, which is the
+    // "bot stands in an empty spot and the accept never happens" case.
+    if (QuestTraceDue(ai, "pick"))
+        sPlayerbotAIConfig.logEvent(ai, "QuestGiverPick", "nearest-scan",
+            "source=nearest action=" + GetName() +
+            " npcs-in-range=" + std::to_string(consideredNpcs) +
+            " gos-in-range=" + std::to_string(consideredGos) +
+            " accepted=" + std::to_string(result ? 1 : 0));
 
     return result;
 }
@@ -160,12 +287,21 @@ bool QuestAction::ProcessQuests(WorldObject* questGiver)
             return false;
 
     ObjectGuid guid = questGiver->getObjectGuid();
+    float const giverDist = sServerFacade.getDistance2d(bot, questGiver);
 
-    if (sServerFacade.getDistance2d(bot, questGiver) > INTERACTION_DISTANCE && !sPlayerbotAIConfig.syncQuestWithPlayer)
+    if (giverDist > INTERACTION_DISTANCE && !sPlayerbotAIConfig.syncQuestWithPlayer)
     {
         Player* master = ai->GetMaster();
         if (!ai->GetMaster() || sServerFacade.getDistance2d(bot, ai->GetMaster()) < sPlayerbotAIConfig.reactDistance || ai->HasStrategy("debug", BotState::BOT_STATE_NON_COMBAT))
             ai->TellPlayerNoFacing(master, BOT_TEXT("quest_error_talk"));
+
+        // acctrace: the bot reached the giver but stopped outside INTERACTION_DISTANCE, which
+        // is silent today and looks exactly like "the action never ran for this NPC".
+        if (QuestTraceDue(ai, "far-" + std::to_string(guid.GetRawValue())))
+            sPlayerbotAIConfig.logEvent(ai, "QuestGiverSeen", QuestTraceGiver(guid),
+                "too-far dist=" + std::to_string((int)giverDist) +
+                " limit=" + std::to_string((int)INTERACTION_DISTANCE) +
+                " action=" + GetName());
 
         return false;
     }
@@ -179,6 +315,18 @@ bool QuestAction::ProcessQuests(WorldObject* questGiver)
     bot->PrepareQuestMenu(guid);
     QuestMenu& questMenu = bot->PlayerTalkClass->GetQuestMenu();
 
+    // Same knob as AcceptQuest: records that the accept path actually reached this NPC
+    // and what the menu offered, which separates "the action never ran" from "it ran and
+    // every entry was refused". Extended 2026-10-03 with the distance, whether the bot's own
+    // selection really is this NPC, and the action that got here.
+    if (QuestTraceDue(ai, "seen-" + std::to_string(guid.GetRawValue())))
+        sPlayerbotAIConfig.logEvent(ai, "QuestMenuSeen", GetName(),
+            QuestTraceGiver(guid) +
+            "|menu=" + std::to_string(questMenu.MenuItemCount()) +
+            "|dist=" + std::to_string((int)giverDist) +
+            "|selection=" + QuestTraceGiver(bot->GetSelectionGuid()) +
+            "|selectionIsGiver=" + std::to_string(bot->GetSelectionGuid() == guid ? 1 : 0));
+
     bool hasAccept = false;
     for (uint32 i = 0; i < questMenu.MenuItemCount(); ++i)
     {
@@ -189,6 +337,17 @@ bool QuestAction::ProcessQuests(WorldObject* questGiver)
         {
             continue;
         }
+
+        // acctrace: the dialog status the core would show THIS bot, per entry. A menu of size
+        // N said nothing about whether the entries were real content, repeatable leftovers or
+        // quests this bot may not take (R12/R13).
+        if (QuestTraceDue(ai, "entry-" + std::to_string(guid.GetRawValue()) + "-" + std::to_string(questID)))
+            sPlayerbotAIConfig.logEvent(ai, "QuestMenuEntry", std::to_string(questID),
+                "giver=" + QuestTraceGiver(guid) +
+                " status=" + std::to_string((int)bot->GetQuestStatus(questID)) +
+                " icon=" + std::to_string((uint32)menuItem.m_qIcon) +
+                " auto=" + std::to_string(quest->IsAutoComplete() ? 1 : 0) +
+                " lvl=" + std::to_string(quest->GetQuestLevel()));
 
         hasAccept |= ProcessQuest(GetMaster(), quest, questGiver);
     }
@@ -212,6 +371,27 @@ bool QuestAction::AcceptQuest(Player* requester, Quest const* quest, uint64 ques
     bool success = false;
     const uint32 questId = quest->GetQuestId();
 
+    // Accept-path trace (arm knob "acctrace"). Every overnight run so far ended with
+    // "0 quest accepts" and no way to tell which step refused: the action not running,
+    // an eligibility gate, or the core silently declining the accept opcode. One line
+    // per attempt with the outcome covers all of them.
+    auto traceAccept = [&](std::string const& outcome)
+    {
+        if (sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "acctrace", 0))
+        {
+            ObjectGuid const giver(questGiver);
+            WorldObject* giverObject = ai->GetUnit(giver);
+            if (!giverObject)
+                giverObject = ai->GetGameObject(giver);
+            float const dist = giverObject ? bot->GetDistance(giverObject) : -1.0f;
+
+            sPlayerbotAIConfig.logEvent(ai, "QuestAcceptAttempt",
+                outcome,
+                std::to_string(questId) + "|" + std::to_string(giver.IsCreature() ? (int32)giver.GetEntry() : -(int32)giver.GetEntry()) +
+                "|dist=" + std::to_string((int)dist));
+        }
+    };
+
     // Challenge quests (Hardcore mode, etc.) - must never be accepted by bots.
     if (questId == 80388)
         return false;
@@ -226,10 +406,12 @@ bool QuestAction::AcceptQuest(Player* requester, Quest const* quest, uint64 ques
 
     if (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE)
     {
+        traceAccept("already-complete");
         outputMessage = BOT_TEXT2("quest_error_completed", args);
     }
     else if (! bot->CanTakeQuest(quest, false))
     {
+        traceAccept("cannot-take");
         if (! bot->SatisfyQuestStatus(quest, false))
         {
             outputMessage = BOT_TEXT2("quest_error_have_quest", args);
@@ -241,10 +423,12 @@ bool QuestAction::AcceptQuest(Player* requester, Quest const* quest, uint64 ques
     }
     else if (! bot->SatisfyQuestLog(false))
     {
+        traceAccept("log-full");
         outputMessage = BOT_TEXT2("quest_error_log_full", args);
     }
     else if (! bot->CanAddQuest(quest, false))
     {
+        traceAccept("bag-full");
         outputMessage = BOT_TEXT2("quest_error_bag_full", args);
     }
     else
@@ -279,6 +463,13 @@ bool QuestAction::AcceptQuest(Player* requester, Quest const* quest, uint64 ques
             sPlayerbotAIConfig.logEvent(ai, "AcceptQuestAction", quest->GetTitle(), std::to_string(quest->GetQuestId()));
             outputMessage = BOT_TEXT2("quest_accepted", args);
             success = true;
+            traceAccept("accepted");
+        }
+        else
+        {
+            // The opcode went out and nothing changed: this is the silent case that no
+            // existing log could see (distance, phase, condition, or core-side refusal).
+            traceAccept("core-refused");
         }
     }
 

@@ -108,6 +108,14 @@ void RpgQuestStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "rpg quest use",
         NextAction::array(0, new NextAction("rpg use", 1.003f), NULL)));
+
+    // Random bots run "rpg quest", not "default quest", so the quest-item-on-objective action
+    // has to be hung here as well: the existing "rpg use" path only ever targets a game
+    // object and is hardcoded to one quest (RpgQuestUseTrigger), while quest 5441's Blackjack
+    // must be used on a creature.
+    triggers.push_back(new TriggerNode(
+        "use quest item on objective",
+        NextAction::array(0, new NextAction("use quest item on objective", 6.5f), NULL)));
 }
 
 void RpgVendorStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)

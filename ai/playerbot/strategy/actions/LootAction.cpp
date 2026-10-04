@@ -6,6 +6,7 @@
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/TraceSwitch.h"
 #include "playerbot/strategy/values/LootStrategyValue.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/ServerFacade.h"
@@ -13,6 +14,56 @@
 
 
 using namespace ai;
+
+namespace
+{
+// Single answer to "should this bot write loot-chain trace lines". Every call site must use
+// this helper: the expression it replaced (AiPlayerbot.LootTrace ? 1 : GetBotArmInt(...))
+// looks harmless but binds wrongly as soon as it is combined with another operator. At
+// 2026-10-03 14:02:38 Shorpulog logged "open-loot-impossible ... all-zero flags" in the same
+// second it sent CMSG_LOOT for corpse 2961 and took item 4742, and the engine's try log for
+// the whole evening contains no "open loot impossible" line after 09:14 - so the open() action
+// was possible and only the log gate was wrong.
+inline bool LootTraceOn(Player* bot)
+{
+    // Three layers, in order of how fast they can be changed:
+    //   bot_diag.conf "loot="   - hot reloaded, no restart, global, can also force OFF
+    //   AiPlayerbot.LootTrace   - config, restart, global
+    //   arm knob "loottrace"    - config, restart, per bot (A/B experiments)
+    trace::Verdict const verdict = trace::VerdictOf("loot");
+    if (verdict == trace::Verdict::On)
+        return true;
+    if (verdict == trace::Verdict::Off)
+        return false;
+
+    if (sPlayerbotAIConfig.lootTrace || trace::On("loot"))
+        return true;
+    return sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "loottrace", 0) != 0;
+}
+
+// Loot-chain diagnostics (arm knob "loottrace"), throttled to one line per bot, object and
+// reason per 20 s: enough to follow a stuck container, too little to flood the trace.
+void LootTrace(Player* bot, PlayerbotAI* ai, ObjectGuid guid, std::string const& reason)
+{
+    // Note the parentheses: "!" used to bind to the config flag alone, so this helper
+    // logged only when tracking was OFF and stayed silent whenever it was ON. Every call
+    // site in this file was therefore invisible while AiPlayerbot.LootTrace = 1, which is
+    // how a working container open (13:51:43, item 4755) produced no go-open-spell line.
+    if (!LootTraceOn(bot))
+        return;
+
+    static std::map<std::pair<uint32, uint64>, time_t> last;
+    uint64 const key = guid.GetRawValue() ^ (uint64)(std::hash<std::string>()(reason) << 1);
+    auto const k = std::make_pair(bot->GetGUIDLow(), key);
+    time_t const now = time(nullptr);
+    auto const it = last.find(k);
+    if (it != last.end() && now - it->second < 20)
+        return;
+    last[k] = now;
+
+    sPlayerbotAIConfig.logEvent(ai, "LootAttempt", std::to_string(guid.GetEntry()), reason);
+}
+} // namespace
 
 bool LootAction::Execute(Event& event)
 {
@@ -65,6 +116,100 @@ bool OpenLootAction::Execute(Event& event)
     return result;
 }
 
+bool OpenLootAction::isPossible()
+{
+    // MovementAction::isPossible() is ai->CanMove(), which also refuses while the bot is
+    // flagged jumping or falling. That is right for walking actions and wrong here:
+    // measured at the Water Pitcher, a bot walking over the well geometry flickers
+    // jump=1/fall=1/moving=1, so "open loot" was impossible on every tick and the quest
+    // container could never be opened (engine log: "try: open loot impossible [can loot]",
+    // LootAttempt: open-loot-impossible ... jump=1 fall=1 motion=0 moving=1). Looting only
+    // needs a live, in-control, non-taxi player; the server refuses a genuinely bad state.
+    // Name the gate that actually fired instead of re-deriving it from eight flags at read
+    // time: the 13:58-14:06 rows were all "every flag 0", which pointed at the one predicate
+    // that was not printed and hid a logging bug for a full round. The death fields are
+    // logged anyway (dead/ghost/destate/health) so a genuine false positive of
+    // sServerFacade.UnitIsDead would be visible even without the label.
+    bool ok = true;
+    char const* blockedBy = "none";
+    if (sServerFacade.UnitIsDead(bot) && !bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST))
+    {
+        ok = false;
+        blockedBy = "unit-dead";
+    }
+    else if (sServerFacade.IsFrozen(bot))
+    {
+        ok = false;
+        blockedBy = "frozen";
+    }
+    else if (sServerFacade.IsInRoots(bot))
+    {
+        ok = false;
+        blockedBy = "rooted";
+    }
+    else if (sServerFacade.IsFeared(bot))
+    {
+        ok = false;
+        blockedBy = "feared";
+    }
+    else if (sServerFacade.IsCharmed(bot))
+    {
+        ok = false;
+        blockedBy = "charmed";
+    }
+    else if (bot->HasUnitState(UNIT_STAT_STUNNED))
+    {
+        ok = false;
+        blockedBy = "stunned";
+    }
+    else if (bot->HasUnitState(UNIT_STAT_CAN_NOT_REACT_OR_LOST_CONTROL))
+    {
+        ok = false;
+        blockedBy = "lost-control";
+    }
+    else if (bot->IsPolymorphed())
+    {
+        ok = false;
+        blockedBy = "polymorphed";
+    }
+    else if (bot->IsTaxiFlying())
+    {
+        ok = false;
+        blockedBy = "taxi";
+    }
+    else if (bot->IsBeingTeleported())
+    {
+        ok = false;
+        blockedBy = "teleporting";
+    }
+
+    if (!ok && LootTraceOn(bot))
+    {
+        std::ostringstream why;
+        why << "open-loot-impossible"
+            << " blocked-by=" << blockedBy
+            << " dead=" << (sServerFacade.UnitIsDead(bot) ? 1 : 0)
+            << " ghost=" << (bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST) ? 1 : 0)
+            << " destate=" << (uint32)sServerFacade.GetDeathState(bot)
+            << " health=" << bot->GetHealth()
+            << " frozen=" << (sServerFacade.IsFrozen(bot) ? 1 : 0)
+            << " root=" << (sServerFacade.IsInRoots(bot) ? 1 : 0)
+            << " fear=" << (sServerFacade.IsFeared(bot) ? 1 : 0)
+            << " charm=" << (sServerFacade.IsCharmed(bot) ? 1 : 0)
+            << " stun=" << (bot->HasUnitState(UNIT_STAT_STUNNED) ? 1 : 0)
+            << " notreact=" << (bot->HasUnitState(UNIT_STAT_CAN_NOT_REACT_OR_LOST_CONTROL) ? 1 : 0)
+            << " poly=" << (bot->IsPolymorphed() ? 1 : 0)
+            << " taxi=" << (bot->IsTaxiFlying() ? 1 : 0)
+            << " teleport=" << (bot->IsBeingTeleported() ? 1 : 0)
+            << " jump=" << (ai->IsJumping() ? 1 : 0)
+            << " fall=" << (bot->IsFalling() ? 1 : 0)
+            << " motion=" << (uint32)bot->GetMotionMaster()->GetCurrentMovementGeneratorType()
+            << " moving=" << (bot->IsMoving() ? 1 : 0);
+        sPlayerbotAIConfig.logEvent(ai, "LootAttempt", "0", why.str());
+    }
+    return ok;
+}
+
 bool OpenLootAction::DoLoot(LootObject& lootObject)
 {
     if (lootObject.IsEmpty())
@@ -96,6 +241,7 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
     // never got to walk the last yards.
     if (!lootObject.IsInLootRange(bot))
     {
+        LootTrace(bot, ai, lootObject.guid, "out-of-range");
         if (creature)
             sLog.outDebug("[BOT LOOT] %s: not in loot range (dist2d=%.1f maxLoot=%.1f), keep approaching guid=%lu",
                 bot->GetName(), sServerFacade.getDistance2d(bot, creature), bot->GetMaxLootDistance(creature), lootObject.guid.GetRawValue());
@@ -113,11 +259,13 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
     {
         if (!lootObject.IsLootPossible(bot)) //Clear loot if bot can't loot it.
         {
+            LootTrace(bot, ai, lootObject.guid, "corpse-not-possible");
             sLog.outDebug("[BOT LOOT] %s: IsLootPossible=false on lootable corpse, clearing (corpse stays lootable -> may re-add)",
                 bot->GetName());
             return true;
         }
 
+        LootTrace(bot, ai, lootObject.guid, "corpse-cmsg-loot");
         sLog.outDebug("[BOT LOOT] %s: loot ctx guid=%lu alive=%d tapped=%d dist2d=%.1f maxLoot=%.1f",
             bot->GetName(), lootObject.guid.GetRawValue(),
             creature->IsAlive() ? 1 : 0, creature->IsTappedBy(bot) ? 1 : 0,
@@ -126,9 +274,16 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
         sLog.outDebug("[BOT LOOT] %s: sending CMSG_LOOT (crouch emote) guid=%lu lootDelay=%u",
             bot->GetName(), lootObject.guid.GetRawValue(), sPlayerbotAIConfig.lootDelay);
 
-        WorldPacket packet(CMSG_LOOT, 8);
-        packet << lootObject.guid;
-        bot->GetSession()->HandleLootOpcode(packet);
+        // Send the same request a client sends: guid + the loot-type byte, queued through
+        // the session instead of calling the handler directly. The module used to send an
+        // 8-byte packet (guid only), so the core's handler read a missing loot_type byte
+        // and never took the client's code path - which is exactly the kind of difference
+        // that can make a hand-played character loot quest items while a bot cannot.
+        std::unique_ptr<WorldPacket> lootRequest(new WorldPacket(CMSG_LOOT, 9));
+        *lootRequest << lootObject.guid;
+        *lootRequest << uint8(0); // LOOT_CORPSE
+        lootRequest->rpos(0);
+        bot->GetSession()->QueuePacket(lootRequest.release());
         SetDuration(sPlayerbotAIConfig.lootDelay);
 
         if (isRealPlayer_Helper(bot))
@@ -169,6 +324,66 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
     if (go && (go->getLootState() == GO_ACTIVATED || go->GetGoState() == GO_STATE_ACTIVE))
         return false;
 
+    // A chest whose lock needs no profession skill is opened the way a client opens it:
+    // by casting the lock's OPEN_LOCK spell *on the game object*. In this core that spell
+    // effect (Spell::EffectOpenLock -> Spell::SendLoot -> Player::SendLoot) is the only
+    // path that ever fills a container's loot and sends SMSG_LOOT_RESPONSE; GameObject::
+    // Use's CHEST branch only runs scripts and the linked trap. So the earlier switch to
+    // CMSG_GAMEOBJ_USE could never work, no matter how close the bot stood: measured
+    // 2026-10-03, 32 use opcodes at 0-4 yards on entry 2907 and zero SMSG_LOOT_RESPONSE,
+    // while a hand-played character looted 1x4755 from the same object. The old spell
+    // attempt failed for a second reason: it cast OpenGoSpell 6477 on the bot itself
+    // (CheckCast wants a gameobject target) and 6477 carries EffectMiscValue 12 while
+    // lock 43 asks for 13. Minable/herbable nodes keep their skill paths below.
+    if (go && go->GetGoType() == GAMEOBJECT_TYPE_CHEST && lootObject.skillId == SKILL_NONE)
+    {
+        float const dist3d = bot->GetDistance(go);
+        uint32 const lockId = go->GetGOInfo()->GetLockId();
+
+        if (dist3d > INTERACTION_DISTANCE)
+        {
+            LootTrace(bot, ai, lootObject.guid,
+                "go-out-of-range-dist" + std::to_string((int)dist3d) + "-lock" + std::to_string(lockId));
+            return MoveNear(go, 3.0f);
+        }
+
+        // Drop any loot window left over from an earlier corpse: a player with an active
+        // loot guid is not allowed to start another loot interaction, and the bot opens
+        // corpses constantly.
+        if (bot->GetLootGuid())
+        {
+            WorldPacket release(CMSG_LOOT_RELEASE, 8);
+            release << bot->GetLootGuid();
+            bot->GetSession()->QueuePacket(new WorldPacket(release));
+            bot->SetLootGuid(ObjectGuid());
+        }
+
+        uint32 const openSpell = GetOpeningSpell(lootObject);
+        bool const casted = openSpell ? ai->CastSpell(openSpell, go) : false;
+        LootTrace(bot, ai, lootObject.guid,
+            "go-open-spell-target-spell" + std::to_string(openSpell) +
+            "-lock" + std::to_string(lockId) +
+            "-dist" + std::to_string((int)dist3d) +
+            "-casted" + (casted ? "1" : "0"));
+        sLog.outDebug("[BOT LOOT] %s: chest guid=%lu lock=%u openSpell=%u casted=%d",
+            bot->GetName(), lootObject.guid.GetRawValue(), lockId, openSpell, casted ? 1 : 0);
+
+        if (casted)
+        {
+            SetDuration(sPlayerbotAIConfig.lootDelay);
+            return true;
+        }
+
+        // Last resort, kept for script driven containers: the plain use opcode.
+        WorldPacket packet(CMSG_GAMEOBJ_USE);
+        packet << lootObject.guid;
+        WorldPacket* queued = new WorldPacket(packet);
+        queued->rpos(0);
+        bot->GetSession()->QueuePacket(queued);
+        SetDuration(sPlayerbotAIConfig.lootDelay);
+        return true;
+    }
+
     if (lootObject.skillId == SKILL_MINING)
         return ai->HasSkill(SKILL_MINING) ? ai->CastSpell(MINING, bot) : false;
 
@@ -194,16 +409,19 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
     uint32 spellId = GetOpeningSpell(lootObject);
     if (!spellId)
     {
+        LootTrace(bot, ai, lootObject.guid, "go-no-opening-spell");
         sLog.outDebug("[BOT LOOT] %s: GO no opening spell, abort", bot->GetName());
         return false;
     }
 
     if (!lootObject.IsLootPossible(bot)) //Clear loot if bot can't loot it.
     {
+        LootTrace(bot, ai, lootObject.guid, "go-not-possible");
         sLog.outDebug("[BOT LOOT] %s: GO IsLootPossible=false, clearing", bot->GetName());
         return true;
     }
 
+    LootTrace(bot, ai, lootObject.guid, "go-open-spell");
     sLog.outDebug("[BOT LOOT] %s: GO opening with spell=%u guid=%lu", bot->GetName(), spellId, lootObject.guid.GetRawValue());
 
     //Keys need to use the key
@@ -262,32 +480,34 @@ uint32 OpenLootAction::GetOpeningSpell(LootObject& lootObject, GameObject* go)
 
 bool OpenLootAction::CanOpenLock(LootObject& lootObject, const SpellEntry* pSpellInfo, GameObject* go)
 {
+    uint32 lockId = go->GetGOInfo()->GetLockId();
+    if (!lockId)
+        return false;
+
+    LockEntry const *lockInfo = sLockStore.LookupEntry(lockId);
+    if (!lockInfo)
+        return false;
+
+    // Each effect slot is judged on its own, the way Spell::CanOpenLock does it. The old
+    // loop did "return false" as soon as an effect slot was not OPEN_LOCK/SKINNING, so a
+    // perfectly normal single-effect opening spell never matched: its effect2/effect3 are
+    // empty. That is why GetOpeningSpell always ended on the OpenGoSpell fallback instead
+    // of finding the spell the lock actually asks for. Measured 2026-10-03: lock 43
+    // (Lock.dbc: LOCK_KEY_SKILL index 13 = LOCKTYPE_OPEN_KNEELING) is opened by spell 6478
+    // (EffectMiscValue 13), while the fallback OpenGoSpell 6477 carries EffectMiscValue 12
+    // and the core answers it with SPELL_FAILED_BAD_TARGETS.
     for (int effIndex = 0; effIndex <= EFFECT_INDEX_2; effIndex++)
     {
         if (pSpellInfo->Effect[effIndex] != SPELL_EFFECT_OPEN_LOCK && pSpellInfo->Effect[effIndex] != SPELL_EFFECT_SKINNING)
-            return false;
+            continue;
 
-        uint32 lockId = go->GetGOInfo()->GetLockId();
-        if (!lockId)
-            return false;
-
-        LockEntry const *lockInfo = sLockStore.LookupEntry(lockId);
-        if (!lockInfo)
-            return false;
-
-        bool reqKey = false;                                    // some locks not have reqs
-
-        for(int j = 0; j < 8; ++j)
+        for (int j = 0; j < 8; ++j)
         {
-            switch(lockInfo->Type[j])
+            switch (lockInfo->Type[j])
             {
-            /*
-            case LOCK_KEY_ITEM:
-                return true;
-            */
             case LOCK_KEY_SKILL:
                 {
-                    if(uint32(pSpellInfo->EffectMiscValue[effIndex]) != lockInfo->Index[j])
+                    if (uint32(pSpellInfo->EffectMiscValue[effIndex]) != lockInfo->Index[j])
                         continue;
 
                     uint32 skillId = SkillByLockType(LockType(lockInfo->Index[j]));
@@ -344,6 +564,10 @@ bool StoreLootAction::Execute(Event& event)
         sLog.outDebug("[BOT LOOT] %s: loot REJECTED guid=%lu error=%u (%s)",
             bot->GetName(), guid.GetRawValue(), lootError, errName);
 
+        if (LootTraceOn(bot))
+            sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(guid.GetEntry()),
+                std::string("rejected-") + errName + "-err" + std::to_string((uint32)lootError));
+
         // Drop the corpse so the bot stops retrying a loot the server won't grant.
         AI_VALUE(LootObjectStack*, "available loot")->Remove(guid);
         RESET_AI_VALUE(LootObject, "loot target");
@@ -352,6 +576,56 @@ bool StoreLootAction::Execute(Event& event)
 
     sLog.outDebug("[BOT LOOT] %s: StoreLoot guid=%lu type=%u gold=%u items=%u",
         bot->GetName(), guid.GetRawValue(), loot_type, gold, items);
+
+    if (LootTraceOn(bot))
+        sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(guid.GetEntry()),
+            "gold=" + std::to_string(gold) + " items=" + std::to_string((uint32)items));
+
+    // Quest-loot eligibility probe (2026-10-03). The core keeps quest-only drops in a
+    // separate list and shows them per player through LootItem::AllowedForPlayer, which
+    // asks Player::HasQuestForItem. Bots never see quest items while a hand-played
+    // character does, so record the core's own answers the moment a corpse is opened.
+    if (LootTraceOn(bot))
+    {
+        std::ostringstream probe;
+        probe << "guid=" << guid.GetEntry() << " inWorld=" << (bot->IsInWorld() ? 1 : 0)
+              << " lootGuidSet=" << (bot->GetLootGuid() ? 1 : 0);
+        // Split "the core does not think I need it" from "the corpse never had the quest
+        // row generated": m_questItems is where quest-only rows land at loot creation,
+        // m_playerQuestItems is the per-viewer list the loot window is built from.
+        if (Creature* probeCreature = ai->GetCreature(guid))
+        {
+            probe << " corpseItems=" << (uint32)probeCreature->loot.items.size()
+                  << " corpseQuest=" << (uint32)probeCreature->loot.m_questItems.size()
+                  << " viewerQuestList="
+                  << (probeCreature->loot.m_playerQuestItems.count(bot->GetGUIDLow()) ? 1 : 0);
+        }
+        else if (GameObject* probeGo = ai->GetGameObject(guid))
+        {
+            probe << " goItems=" << (uint32)probeGo->loot.items.size()
+                  << " goQuest=" << (uint32)probeGo->loot.m_questItems.size();
+        }
+        for (auto& [questId, qData] : bot->getQuestStatusMap())
+        {
+            if (qData.m_rewarded || qData.m_status != QUEST_STATUS_INCOMPLETE)
+                continue;
+            Quest const* q = sObjectMgr.GetQuestTemplate(questId);
+            if (!q)
+                continue;
+            for (int i = 0; i < 4; ++i)
+            {
+                if (!q->ReqItemCount[i])
+                    continue;
+                uint32 const need = q->ReqItemId[i];
+                probe << " q" << questId << ":" << need
+                      << "=" << (bot->HasQuestForItem(need) ? 1 : 0)
+                      << "/have" << bot->GetItemCount(need, false)
+                      << "/req" << q->ReqItemCount[i]
+                      << "/space" << AI_VALUE2(uint32, "stack space for item", need);
+            }
+        }
+        sPlayerbotAIConfig.logEvent(ai, "QuestLootProbe", bot->GetName(), probe.str());
+    }
 
     bot->SetLootGuid(guid);
 
@@ -402,40 +676,91 @@ bool StoreLootAction::Execute(Event& event)
         p >> randomPropertyId;  // randomPropertyId
         p >> lootslot_type;     // 0 = can get, 1 = look only, 2 = master get
 
+        // Raw parse trace: what the loot response actually carried, entry by entry.
+        if (LootTraceOn(bot))
+            sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(guid.GetEntry()),
+                "parsed-slot" + std::to_string((uint32)itemindex) + "-item" + std::to_string(itemid) +
+                "-x" + std::to_string(itemcount) + "-type" + std::to_string((uint32)lootslot_type));
+
         ItemQualifier itemQualifier(itemid, ((int32)randomPropertyId));
 
 		if (lootslot_type != LOOT_SLOT_NORMAL
             )
 		{
+            if (LootTraceOn(bot))
+                sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
+                    "item-skip-slottype" + std::to_string((uint32)lootslot_type));
 			sLog.outDebug("[BOT LOOT] %s: skip item=%u slot_type=%u (not normal/owner)", bot->GetName(), itemid, lootslot_type);
 			continue;
 		}
 
         if (loot_type != LOOT_SKINNING && !IsLootAllowed(itemQualifier, ai))
         {
+            if (LootTraceOn(bot))
+                sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
+                    "item-skip-not-allowed");
             sLog.outDebug("[BOT LOOT] %s: skip item=%u (IsLootAllowed=false)", bot->GetName(), itemid);
             continue;
         }
 
         if (AI_VALUE2(uint32, "stack space for item", itemid) < itemcount)
         {
+            if (LootTraceOn(bot))
+                sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
+                    "item-skip-no-space-have" + std::to_string(AI_VALUE2(uint32, "stack space for item", itemid)) +
+                    "-need" + std::to_string(itemcount));
             sLog.outDebug("[BOT LOOT] %s: skip item=%u (no stack space, need=%u)", bot->GetName(), itemid, itemcount);
             continue;
         }
 
         ItemPrototype const *proto = sItemStorage.LookupEntry<ItemPrototype>(itemid);
         if (!proto)
+        {
+            if (LootTraceOn(bot))
+                sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid), "item-skip-no-prototype");
             continue;
+        }
 
-        LootItem* lootItem = loot->LootItemInSlot(itemindex, bot->GetGUIDLow());
+        // Ask for the quest slot along with the item, exactly as the core does. The core
+        // distinguishes the two cases itself - WorldSession::HandleAutostoreLootItemOpcode
+        // reads "questitems use the blocked field for other purposes" and only treats
+        // is_blocked as a denial for a non-quest slot (!qitem && item->is_blocked) - but
+        // Loot::FillQuestLoot sets is_blocked on every quest-only drop the moment it enters
+        // a viewer's quest list. The old check here swallowed that flag whole and silently
+        // dropped 100% of quest drops: measured 2026-10-03, corpses 2955/3229 repeated
+        // parsed-slot lines for 4739/4740/51826 with neither item-take nor item-skip, while
+        // a hand-played character looted the same entries. The request path is identical to
+        // a client's; the module simply never sent it.
+        QuestItem* qitem = nullptr;
+        LootItem* lootItem = loot->LootItemInSlot(itemindex, bot->GetGUIDLow(), &qitem);
 
         if (!lootItem)
-            continue;
-
-        //have no right to loot
-        if (lootItem->is_blocked || lootItem->GetSlotTypeForSharedLoot(ALL_PERMISSION, bot, loot ? loot->GetLootTarget() : nullptr) == MAX_LOOT_SLOT_TYPE)
         {
-            sLog.outDebug("[BOT LOOT] %s: skip item=%u (no right: blocked=%u)", bot->GetName(), itemid, lootItem->is_blocked ? 1 : 0);
+            if (LootTraceOn(bot))
+                sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
+                    "item-skip-no-loot-item-slot" + std::to_string((uint32)itemindex));
+            continue;
+        }
+
+        // Same eligibility rule the core applies before storing the item (this also covers
+        // the DB conditions of conditional rows, which the old local re-derivation of the
+        // slot type rejected outright because it passed condition_ok = false).
+        if (!lootItem->AllowedForPlayer(bot, loot ? loot->GetLootTarget() : nullptr))
+        {
+            if (LootTraceOn(bot))
+                sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
+                    "item-skip-not-allowed-for-player-q" + std::to_string(qitem ? 1 : 0));
+            sLog.outDebug("[BOT LOOT] %s: skip item=%u (AllowedForPlayer=false, qitem=%d)", bot->GetName(), itemid, qitem ? 1 : 0);
+            continue;
+        }
+
+        // blocked only denies a non-quest slot (see the core comment quoted above).
+        if (!qitem && lootItem->is_blocked)
+        {
+            if (LootTraceOn(bot))
+                sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
+                    "item-skip-blocked-nonquest");
+            sLog.outDebug("[BOT LOOT] %s: skip item=%u (blocked, non-quest slot)", bot->GetName(), itemid);
             continue;
         }
 
@@ -452,6 +777,9 @@ bool StoreLootAction::Execute(Event& event)
         bot->GetSession()->HandleAutostoreLootItemOpcode(packet);
         ++itemsTaken;
         sLog.outDebug("[BOT LOOT] %s: take item=%u x%u", bot->GetName(), itemid, itemcount);
+        if (LootTraceOn(bot))
+            sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
+                "item-take-" + std::to_string(itemcount));
 
         if (proto->Quality > ITEM_QUALITY_NORMAL && !urand(0, 50) && ai->HasStrategy("emote", BotState::BOT_STATE_NON_COMBAT)) ai->PlayEmote(TEXTEMOTE_CHEER);
         if (proto->Quality >= ITEM_QUALITY_RARE && !urand(0, 1) && ai->HasStrategy("emote", BotState::BOT_STATE_NON_COMBAT)) ai->PlayEmote(TEXTEMOTE_CHEER);

@@ -17,6 +17,7 @@
 #include "InventoryChangeFailureAction.h"
 #include "LootAction.h"
 #include "QuestAction.h"
+#include "UseItemAction.h"
 #include "LeaveGroupAction.h"
 #include "TellCastFailedAction.h"
 #include "AcceptDuelAction.h"
@@ -48,6 +49,7 @@ namespace ai
             creators["confirm quest"] = [](PlayerbotAI* ai) { return new ConfirmQuestAction(ai); };
             creators["quest details"] = [](PlayerbotAI* ai) { return new QuestDetailsAction(ai); };
             creators["accept all quests"] = [](PlayerbotAI* ai) { return new AcceptAllQuestsAction(ai); };
+            creators["use quest item on objective"] = [](PlayerbotAI* ai) { return new UseQuestItemOnObjectiveAction(ai); };
             creators["accept quest share"] = [](PlayerbotAI* ai) { return new AcceptQuestShareAction(ai); };
             creators["loot start roll"] = [](PlayerbotAI* ai) { return (QueryItemUsageAction*)new LootStartRollAction(ai); };
             creators["loot roll"] = [](PlayerbotAI* ai) { return (QueryItemUsageAction*)new LootRollAction(ai); };

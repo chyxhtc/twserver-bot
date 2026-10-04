@@ -9,11 +9,20 @@
 #include "PossibleAttackTargetsValue.h"
 #include "playerbot/strategy/actions/ChooseTargetActions.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
+#include "playerbot/TraceSwitch.h"
 
 using namespace ai;
 
 namespace
 {
+// GYDIAG: per-thread reason histogram for the last grind-target search. grind_target.csv
+// exists for exactly this, but it is deliberately disabled at 50 bots (one row per
+// candidate), so a bot that finds no target logs nothing at all. These counters turn that
+// into one aggregated, throttled line per bot. Cleared at the start of every search.
+thread_local std::map<std::string, uint32> g_grindSkipReasons;
+thread_local uint32 g_grindAttackTargets = 0;
+thread_local uint32 g_grindPossibleTargets = 0;
+
 // Highest level above the bot a grind target may have. A character below level 10 has
 // weapon skill 5 and no abilities, so of the orders it placed on a mob two or more levels
 // above it about 1% ended in a kill (0.3% for melee) against 16-28% at the bot's own
@@ -22,10 +31,26 @@ namespace
 // the battleground exemption stays where it always was, on the check itself.
 int MaxGrindLevelOverBot(Player* bot, PlayerbotAI* ai)
 {
-    if (bot->GetLevel() < 10 && !ai->HasRealPlayerMaster())
-        return 1;
+    // Arm knob "grindcap": an explicit cap overrides both the level-10 rule and the
+    // stock +4. Reason it exists: the allowance doubles from +1 to +4 exactly at level
+    // 10, and the overnight trace showed one bot's death cluster starting the moment it
+    // crossed that line (5 deaths in an hour to mobs at or above its own level). A round
+    // can now compare the stock cap against a tighter one inside the same pool.
+    int const armCap = sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "grindcap", 0);
+    if (armCap > 0)
+        return armCap;
 
-    return 4;
+    // Levels 1-4 get a cap of 0: a level 2 bot with starter gear loses to a level 3 mob,
+    // and the death loop was eating whole evenings (measured 2026-10-03: eight bots spent
+    // three hours at level 1-2 with only 2-8 xp events each while dying 5-19 times to mobs
+    // exactly one level above them). Levels 5-9 keep the +1 allowance.
+    if (bot->GetLevel() < 5 && !ai->HasRealPlayerMaster())
+        return trace::IntValue("grindcap_lt5", 0);
+
+    if (bot->GetLevel() < 10 && !ai->HasRealPlayerMaster())
+        return trace::IntValue("grindcap_lt10", 1);
+
+    return trace::IntValue("grindcap", 4);
 }
 }
 
@@ -36,11 +61,43 @@ Unit* GrindTargetValue::Calculate()
     if (group)
         memberCount = group->GetMembersCount();
 
+    // GYDIAG: fresh histogram for this search.
+    g_grindSkipReasons.clear();
+    g_grindAttackTargets = 0;
+    g_grindPossibleTargets = 0;
+
     Unit* target = NULL;
     uint32 assistCount = 0;
     while (!target && assistCount < memberCount)
     {
         target = FindTargetForGrinding(assistCount++);
+    }
+
+    // GYDIAG: when a bot that is standing next to a valid mob still gets no target, say
+    // why - one line per bot per 30 s, only on the null result. The histogram is the
+    // aggregated grind_target.csv that cannot be switched on at this pool size.
+    if (!target && !bot->IsInCombat() && !ai->HasRealPlayerMaster())
+    {
+        time_t const now = time(nullptr);
+        time_t const last = AI_VALUE2(time_t, "manual time", "grinddiag logged");
+        if (!last || now - last >= 30)
+        {
+            SET_AI_VALUE2(time_t, "manual time", "grinddiag logged", now);
+            std::ostringstream out;
+            uint32 total = 0;
+            for (auto const& [why, n] : g_grindSkipReasons)
+            {
+                out << why << "=" << n << ";";
+                total += n;
+            }
+            if (out.str().empty())
+                out << "(no candidate examination)";
+            sPlayerbotAIConfig.logEvent(ai, "GrindNoTarget",
+                "attackers=" + std::to_string(g_grindAttackTargets) +
+                " possible=" + std::to_string(g_grindPossibleTargets) +
+                " skipped=" + std::to_string(total),
+                out.str());
+        }
     }
 
     return target;
@@ -58,6 +115,10 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
     // the "bots not picking fights" investigation concludes.
     auto logGrind = [&](Unit* u, const std::string& reason)
     {
+        // GYDIAG: aggregate the same reason grind_target.csv would carry.
+        if (u)
+            ++g_grindSkipReasons[reason];
+
         if (ai->HasStrategy("debug grind", BotState::BOT_STATE_NON_COMBAT))
             ai->TellPlayer(GetMaster(), chat->formatWorldobject(u) + " " + reason);
 
@@ -86,6 +147,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
     };
 
     std::list<ObjectGuid> attackers = context->GetValue<std::list<ObjectGuid>>("possible attack targets")->Get();
+    g_grindAttackTargets = (uint32)attackers.size();
     for (std::list<ObjectGuid>::iterator i = attackers.begin(); i != attackers.end(); i++)
     {
         Unit* unit = ai->GetUnit(*i);
@@ -130,6 +192,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
     }
 
     std::list<ObjectGuid> targets = *context->GetValue<std::list<ObjectGuid> >("possible targets");
+    g_grindPossibleTargets = (uint32)targets.size();
 
     if (targets.empty())
         return NULL;
@@ -307,9 +370,54 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
     if (result && result->IsCreature())
     {
         Creature* picked = static_cast<Creature*>(result);
-        if (picked->IsEvadeBecauseTargetNotReachable() ||
-            !WorldPosition(bot).canPathTo(WorldPosition(result), bot))
+        WorldPosition const start(bot);
+        WorldPosition const target(result);
+
+        // Same single pathfind canPathTo would do, kept so the diagnostic can report it.
+        std::vector<WorldPosition> path = start.getPathTo(target, bot);
+        // canPathTo's default tolerance is sPlayerbotAIConfig.targetPosRecalcDistance, which
+        // this deployment leaves at its 0.1 yard default - "the path must end within 10 cm of
+        // the mob's exact coordinate". A pathfinder returns a terrain point, so real targets
+        // were dropped as "no path": measured 2026-10-04, 10 drops in 4 minutes, 7 of them
+        // with a 4-49 point path already computed. Melee reach is about 5 yards, so 5 yd 2D
+        // and 5 yd in height is what "the path actually arrives" means for a mob pick. An
+        // empty path and the core's own unreachable flag still reject the candidate.
+        bool const reaches = target.isPathTo(path, 5.0f, 5.0f);
+        bool const coreUnreachable = picked->IsEvadeBecauseTargetNotReachable();
+
+        if (coreUnreachable || !reaches)
         {
+            // GYDIAG: this drop used to be invisible. One throttled line (30 s per bot)
+            // with the coordinates, the straight-line distance, how many points the
+            // pathfinder returned, whether the core already flagged the mob, and whether
+            // the bot can even take a 2 yard step toward the target - that last flag is
+            // what separates "the bot stands off the navmesh" from "the target is walled
+            // off". 1 point means only the bot's own position came back.
+            time_t const now = time(nullptr);
+            time_t const last = AI_VALUE2(time_t, "manual time", "grindnopath logged");
+            if (!last || now - last >= 30)
+            {
+                SET_AI_VALUE2(time_t, "manual time", "grindnopath logged", now);
+
+                float const dx = target.getX() - start.getX();
+                float const dy = target.getY() - start.getY();
+                float const len = std::max(0.001f, std::sqrt(dx * dx + dy * dy));
+                WorldPosition probe = start;
+                probe.setX(start.getX() + dx / len * 2.0f);
+                probe.setY(start.getY() + dy / len * 2.0f);
+                // Same relaxed tolerance as the verdict above, otherwise this flag inherits
+                // the 0.1 yd strictness it is supposed to diagnose.
+                bool const startOnMesh = probe.isPathTo(start.getPathTo(probe, bot), 5.0f, 5.0f);
+
+                sPlayerbotAIConfig.logEvent(ai, "GrindNoPath",
+                    "pathPoints=" + std::to_string(path.size()) +
+                    " dist=" + std::to_string((int)start.fDist(target)) +
+                    " startOnMesh=" + std::to_string(startOnMesh ? 1 : 0) +
+                    " coreUnreachable=" + std::to_string(coreUnreachable ? 1 : 0),
+                    "from=" + std::to_string((int)start.getX()) + "," + std::to_string((int)start.getY()) +
+                    " to=" + std::to_string((int)target.getX()) + "," + std::to_string((int)target.getY()) +
+                    " entry=" + std::to_string(picked->GetEntry()));
+            }
             logGrind(result, "ignored (no path).");
             result = NULL;
         }

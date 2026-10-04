@@ -1,6 +1,7 @@
 #include "playerbot/playerbot.h"
 #include "UnstuckAction.h"
 #include "playerbot/TravelMgr.h"
+#include "runtime/BotManager.h"
 
 using namespace ai;
 
@@ -172,15 +173,26 @@ bool UnstuckAction::Execute(Event& event)
     // Handle long move stuck scenarios
     if (source.find("move long stuck") != std::string::npos)
     {
+        // Visibility: this branch used to be silent when the hearth was refused and the
+        // repop fallback did nothing, so a wedged bot produced no trace at all.
+        sLog.outBasic("TortoiseBots: unstuck long-move %s level %u alive=%d hearthUseful=%d hearthTried=%d",
+            bot->GetName(), bot->GetLevel(), (int)bot->IsAlive(),
+            (int)AI_VALUE2(bool, "action useful", "hearthstone"), (int)hearthAttemptLeftBotInPlace);
+
         ai->TellDebug(master, "Unstuck: Long move stuck detected, attempting hearthstone or repop.", "debug unstuck");
         if (AI_VALUE2(bool, "action useful", "hearthstone") && bot->IsAlive() && !hearthAttemptLeftBotInPlace && HearthLeadsSomewhereUseful(ai, bot))
         {
             return ai->DoSpecificAction("hearthstone", event, true);
         }
-        else
-        {
-            return ai->DoSpecificAction("repop", event, true);
-        }
+
+        // repop is a revive action: for a living bot it does nothing, which is how a bot
+        // wedged next to its own bind point (hearth refused by HearthLeadsSomewhereUseful)
+        // stayed wedged through repeated long-stuck trips. Move it to the nearest hub that
+        // still has work for its level instead, and only fall back to repop if that fails.
+        if (bot->IsAlive() && TortoiseBots::BotManager::Instance().TeleportBotToNearestHub(bot))
+            return true;
+
+        return ai->DoSpecificAction("repop", event, true);
     }
 
     // Handle combat stuck scenarios

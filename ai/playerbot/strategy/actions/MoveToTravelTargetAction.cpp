@@ -12,6 +12,21 @@
 
 using namespace ai;
 
+namespace
+{
+    // AiPlayerbot.LastMileTeleport is the default for every bot. The per-bot arm knob
+    // "lastmile" overrides it in both directions when it is set, so a controlled bot can be
+    // forced back to the old drop-and-park behaviour (lastmile=0) without changing the
+    // default for the rest of the pool.
+    bool LastMileAllowed(Player* bot)
+    {
+        int32 const arm = sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "lastmile", -1);
+        if (arm >= 0)
+            return arm != 0;
+        return sPlayerbotAIConfig.lastMileTeleport;
+    }
+}
+
 bool MoveToTravelTargetAction::Execute(Event& event)
 {
     TravelTarget* target = AI_VALUE(TravelTarget*, "travel target");
@@ -25,7 +40,87 @@ bool MoveToTravelTargetAction::Execute(Event& event)
     target->CheckStatus();
 
     if (target->GetStatus() != TravelStatus::TRAVEL_STATUS_TRAVEL)
+    {
+        // Arrived: hand off to the interaction layer.
+        //
+        // TRAVEL_STATUS_WORK means the bot reached its destination and is supposed to do
+        // something there, but nothing ever selected the destination, so the bot stood two
+        // to five yards away with sel=none and no gossip/loot/use ever fired. Measured on
+        // four different bots in one window (destEntry 1513, and two quest game objects).
+        // Pick the destination up when it is within reach and let the existing actions do
+        // the work: a creature goes to the quest-giver/gossip path, a game object (stored
+        // as a negative entry) to the use-object path.
+        if (target->GetStatus() == TravelStatus::TRAVEL_STATUS_WORK && target->GetDestination())
+        {
+            int32 const workEntry = target->GetDestination()->GetEntry();
+
+            if (workEntry > 0)
+            {
+                for (ObjectGuid const& guid : AI_VALUE(std::list<ObjectGuid>, "nearest npcs"))
+                {
+                    Unit* npc = ai->GetUnit(guid);
+                    if (!npc || npc->GetEntry() != (uint32)workEntry || !npc->IsAlive())
+                        continue;
+                    if (bot->GetDistance(npc) > INTERACTION_DISTANCE)
+                        continue;
+
+                    bot->SetSelectionGuid(npc->getObjectGuid());
+                    return ai->DoSpecificAction("talk to quest giver", event, true);
+                }
+            }
+            else if (workEntry < 0)
+            {
+                for (ObjectGuid const& guid : AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los"))
+                {
+                    GameObject* go = ai->GetGameObject(guid);
+                    if (!go || go->GetEntry() != (uint32)(-workEntry))
+                        continue;
+                    if (bot->GetDistance(go) > INTERACTION_DISTANCE)
+                        continue;
+
+                    bot->SetSelectionGuid(go->getObjectGuid());
+                    return ai->DoSpecificAction("use game object", event, true);
+                }
+            }
+        }
+
+        // Diagnostic: a bot that stands still while holding a travel target, with no
+        // TravelMoveFailed / TravelTargetDropped lines at all, is usually parked right
+        // here - the target is not in the TRAVEL state, so this action returns before any
+        // MoveTo is attempted. Measured: 2.5 minutes of complete silence from a bot that
+        // had just picked a turn-in target. Throttled to one line per bot per 30 s.
+        static std::unordered_map<uint32, time_t> lastSkipLog;
+        uint32 const key = bot->GetGUIDLow();
+        time_t const now = time(nullptr);
+        auto const it = lastSkipLog.find(key);
+        if (it == lastSkipLog.end() || now - it->second >= 30)
+        {
+            lastSkipLog[key] = now;
+
+            // For TRAVEL_STATUS_WORK the bot has arrived and the hand-off to the interaction
+            // actions (gossip / accept / loot) has to happen elsewhere. When nothing happens
+            // the bot just stands there, so record what it is looking at: destination entry,
+            // current selection and its distance, and the free quest log slots.
+            uint32 const destEntry = target->GetDestination() ? (uint32)target->GetDestination()->GetEntry() : 0;
+            Unit* const sel = bot->GetSelectionGuid() ? ai->GetUnit(bot->GetSelectionGuid()) : nullptr;
+            std::string selName = "none";
+            uint32 selEntry = 0;
+            float selDist = -1.0f;
+            if (sel)
+            {
+                selName = sel->GetName();
+                selEntry = sel->GetEntry();
+                selDist = bot->GetDistance(sel);
+            }
+
+            sLog.outBasic("travskip: %s level %u status=%u destEntry=%u dist=%.0f sel=%s(%u) selDist=%.1f freeSlots=%u",
+                bot->GetName(), bot->GetLevel(), (uint32)target->GetStatus(), destEntry,
+                target->getPosition() ? target->getPosition()->distance(bot) : -1.0f,
+                selName.c_str(), selEntry, selDist,
+                (uint32)AI_VALUE(uint8, "free quest log slots"));
+        }
         return true;
+    }
 
     WorldPosition botLocation(bot);
     WorldPosition location = *target->getPosition();
@@ -152,7 +247,9 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 
     if (!canMove)
     {
-        target->IncRetry(true);
+        // Throttled: this action runs every tick, so the raw counter measured ticks, not
+        // attempts (see TravelTarget::IncMoveRetryThrottled).
+        target->IncMoveRetryThrottled();
 
         // One line per travel target rather than per attempt: a wedged bot
         // re-enters this action every tick, and IncRetry steps by 2, so the
@@ -165,6 +262,32 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 
         if (target->IsMaxRetry(true))
         {
+            // Last-mile rescue (arm knob "lastmile"): a quest destination can be perfectly
+            // valid and still unpathable for the final stretch - measured overnight, the
+            // bot crossed to Tirisfal correctly and then failed six moves in a row trying
+            // to walk the last 930 yards from Brill into Undercity, whose entrance is an
+            // elevator the navigation mesh does not cover. Dropping the target there means
+            // the class quest stays unfinished forever. With the knob on, put the bot on
+            // the destination point instead (the module already teleports for the login
+            // scatter, the stuck-bot rescue and the continent transfer), rate-limited per
+            // bot so a genuinely bad point cannot become a teleport loop.
+            if (target->GetDestination() && target->getPosition() &&
+                dynamic_cast<QuestTravelDestination*>(target->GetDestination()) &&
+                LastMileAllowed(bot) &&
+                sRandomBotFacade.GetValue(bot, "last mile teleport") == 0)
+            {
+                WorldPosition const* const pos = target->getPosition();
+                if (bot->TeleportTo(pos->getMapId(), pos->getX(), pos->getY(), pos->getZ(), bot->GetOrientation(), 0))
+                {
+                    sRandomBotFacade.SetValue(bot, "last mile teleport", 1, {}, 300);
+                    sPlayerbotAIConfig.logEvent(ai, "TravelLastMileTeleport",
+                        std::to_string((int32)botLocation.distance(location)),
+                        std::to_string(target->GetDestination()->GetEntry()));
+                    target->SetRetry(true, 0);
+                    return true;
+                }
+            }
+
             ai->TellDebug(ai->GetMaster(), "The target is unreachable, dropping it so other travel still works.", "debug travel");
             // Six failed moves in a row means this spot is effectively
             // unreachable from here (no path, other continent, geometry).
@@ -175,7 +298,35 @@ bool MoveToTravelTargetAction::Execute(Event& event)
             // active target would instead freeze ALL travel (IsActive stays
             // true, requests gate on it) for the whole window.
             std::string const purpose = AI_VALUE2(std::string, "manual string", "future travel purpose");
-            sPlayerbotAIConfig.logEvent(ai, "TravelTargetDropped", purpose, std::to_string(target->GetRetryCount(true)));
+
+            // Same packing as the TravelTarget line: "<retries>|<entry>|<x>|<y>", so a drop
+            // can be attributed to the exact destination instead of just a purpose.
+            std::ostringstream why;
+            why << target->GetRetryCount(true) << "|"
+                << (target->GetDestination() ? target->GetDestination()->GetEntry() : 0) << "|";
+            if (target->getPosition())
+                why << (int32)target->getPosition()->getX() << "|" << (int32)target->getPosition()->getY();
+            else
+                why << "|";
+
+            sPlayerbotAIConfig.logEvent(ai, "TravelTargetDropped", purpose, why.str());
+
+            // Destination-level cooldown. The purpose blacklist further down only parks the
+            // whole purpose for five minutes, so the same unreachable destination came back
+            // again and again: measured, a level-7 bot dropped entry 808 (a quest giver in
+            // Dun Morogh) 38 times in half an hour. Remember the entry itself in the same
+            // per-bot map the creature give-up path uses; the candidate layer skips it while
+            // the stamp is in the future.
+            if (target->GetDestination())
+            {
+                int32 const destEntry = target->GetDestination()->GetEntry();
+                if (destEntry > 0)
+                {
+                    if (auto* unreachable = context->GetValue<std::map<uint32, uint32>&>("unreachable entries"))
+                        unreachable->Get()[(uint32)destEntry] = WorldTimer::getMSTime() + 10 * MINUTE * IN_MILLISECONDS;
+                }
+            }
+
             target->SetForced(false);
             sTravelMgr.SetNullTravelTarget(target);
             RESET_AI_VALUE(bool, "travel target active");

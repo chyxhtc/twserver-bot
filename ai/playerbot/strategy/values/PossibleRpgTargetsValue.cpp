@@ -50,6 +50,11 @@ bool PossibleRpgTargetsValue::AcceptUnit(Unit* unit)
     if (travelTarget->GetDestination() && travelTarget->GetDestination()->GetEntry() == unit->GetEntry())
         return true;
 
+    // ATTEMPT + REVERT (2026-10-04 05:04-05:13): a "quest objective creatures are fair rpg
+    // targets" rule was added here to get the Blackjack used on the Lazy Peons. It did not move
+    // quest 5441 (all eight bots still 0/5 after nine minutes) and it would let bots treat any
+    // hostile quest creature as an rpg target - i.e. stand next to a mob doing rpg emotes
+    // instead of fighting it. Reverted; see 11.3d for where the chain actually stops.
     if (sServerFacade.IsHostileTo(unit, bot) || dynamic_cast<Player*>(unit))
         return false;
 

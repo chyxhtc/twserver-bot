@@ -252,3 +252,31 @@ and listed here so nobody tunes a dead knob:
 `RespawnModNeutral`, `RespawnModHostile`, `RespawnModThreshold`,
 `RespawnModMax`, `RespawnModForPlayerBots`, `RespawnModForInstances`,
 `TweakValue`.
+
+---
+
+## 9. Quest hubs, cross-continent transfer, death-loop rescue
+
+Behaviour added for the private dev deployment. All three are off the default
+upstream path: the hub preference needs the `ai_playerbot_questhub` table to be
+populated (an empty table logs once and behaves exactly as before), and the two
+rescue paths are fail-closed and only ever touch random, masterless, headless bots.
+
+| Setting | Default | What It Does |
+| :--- | :---: | :--- |
+| `AiPlayerbot.QuestHubDistanceFactor` | `1.5` | A quest destination inside a quest hub that has quests for the bot's level band competes in the candidate list as if it were this many times closer, so a town wins over a lone quest giver at a similar distance. `1.0` disables the preference. |
+| `AiPlayerbot.QuestHubMinWork` | `2` | Quests in the bot's level window a hub needs before it is worth preferring. |
+| `AiPlayerbot.QuestHubRadius` | `200.0` | Radius in yards that decides which hub a point belongs to. Must be at least the cluster radius the hubs were generated with. |
+| `AiPlayerbot.QuestHubStayFactor` | `1.0` | Stronger factor for the hub the bot is already standing in, so it finishes that town's quests before moving on. Only applies while the hub still has quests for the bot's level band. `1.0` leaves the plain density preference in charge. |
+| `AiPlayerbot.TraceJsonl` | `0` | Write a structured behaviour trace: one JSON object per logged event, appended to `bot_trace-YYYY-MM-DD.jsonl` in the log folder. Unlike `bot_events.csv` it survives restarts. Fields: `ts`, `bot`, `guid`, `level`, `map`, `zone`, `area`, `hub` (the quest hub the bot stands in, 0 = none), `x`, `y`, `event`, `info1`, `info2`. |
+| `AiPlayerbot.TransferToOtherContinent` | `1` | When a chosen **quest** destination is on the other continent and the travel graph has no route, teleport the bot to a terrain-validated, level-fitting town point on the destination map instead of dropping the target. `0` restores dropping it. |
+| `AiPlayerbot.TransferCooldownSec` | `120` | Minimum seconds between two transfers for the same bot. |
+| `AiPlayerbot.HopelessDeathLoopCount` | `4` | Revives inside `HopelessDeathLoopWindowSec` without gaining a level before the bot is relocated to safe, level-fitting ground. `0` disables the rule. |
+| `AiPlayerbot.HopelessDeathLoopWindowSec` | `1800` | Window for the counter above. |
+| `AiPlayerbot.HopelessDeathLoopCooldownSec` | `1200` | Minimum seconds between two death-loop relocations for the same bot. |
+| `AiPlayerbot.HopelessDeathLoopQuestBlockSec` | `600` | After a death-loop relocation, quest travel is parked this long so the bot does not walk straight back to the same objective. |
+
+`ai_playerbot_questhub` is generated **outside** the module: cluster the quest
+givers of `creature_questrelation` (radius and minimum givers are parameters of the
+generator) and load the rows through the deployment's custom SQL. The module only
+reads the table at startup.

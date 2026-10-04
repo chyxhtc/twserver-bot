@@ -201,6 +201,7 @@ namespace ai
             creators["has poison debuff"] = [](PlayerbotAI* ai) { return new HasPoisonDebuffTrigger(ai); };
             creators["at war"] = [](PlayerbotAI* ai) { return new AtWarTrigger(ai); };
             creators["quest log nearly full"] = [](PlayerbotAI* ai) { return new QuestLogNearlyFullTrigger(ai); };
+            creators["use quest item on objective"] = [](PlayerbotAI* ai) { return new UseQuestItemOnObjectiveTrigger(ai); };
 
             creators["mounted"] = [](PlayerbotAI* ai) { return new IsMountedTrigger(ai); };
             creators["rooted"] = [](PlayerbotAI* ai) { return new RootedTrigger(ai); };

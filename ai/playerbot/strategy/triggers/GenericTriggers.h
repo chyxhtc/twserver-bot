@@ -5,6 +5,7 @@
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/RandomBotFacade.h"
+#include "playerbot/QuestGreyRule.h"
 #include "Spells/SpellAuraDefines.h"
 #include "DungeonTriggers.h"
 
@@ -1358,7 +1359,7 @@ namespace ai
                 if (!quest || quest->GetRequiredClasses())
                     continue;
                 bool grey = quest->GetQuestLevel() > 0 &&
-                    bot->GetLevel() >= bot->GetQuestLevelForPlayer(quest) + 8;
+                    bot->GetLevel() > questgrey::GreyBelowLevel(bot, quest);
                 if (status == QUEST_STATUS_INCOMPLETE)
                 {
                     if (!grey)
@@ -1409,6 +1410,71 @@ private:
     uint32 localItemID;
     uint32 localBuffID;
 };
+
+    // Quest side of "use the item the quest gave me on the creature it asks for".
+    // Registered in TriggerContext.h and hung on the action of the same name in
+    // QuestStrategies.cpp; the action re-resolves the target when it runs. The search is
+    // duplicated from UseQuestItemOnObjectiveAction::FindQuestItemUseTarget on purpose:
+    // a trigger header must not include the action header (include cycle).
+    class UseQuestItemOnObjectiveTrigger : public Trigger
+    {
+    public:
+        UseQuestItemOnObjectiveTrigger(PlayerbotAI* ai) : Trigger(ai, "use quest item on objective", 1) {}
+
+        bool IsActive() override
+        {
+            if (!bot)
+                return false;
+
+            QuestStatusMap& statuses = bot->getQuestStatusMap();
+            for (auto const& entry : statuses)
+            {
+                QuestStatusData const& status = entry.second;
+                if (status.m_rewarded || status.m_status != QUEST_STATUS_INCOMPLETE)
+                    continue;
+
+                Quest const* quest = sObjectMgr.GetQuestTemplate(entry.first);
+                if (!quest)
+                    continue;
+
+                uint32 const srcItem = quest->GetSrcItemId();
+                if (!srcItem || !bot->GetItemCount(srcItem))
+                    continue;
+
+                for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                {
+                    int32 const reqEntry = quest->ReqCreatureOrGOId[i];
+                    uint32 const reqCount = quest->ReqCreatureOrGOCount[i];
+                    if (reqEntry <= 0 || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)
+                        continue;
+
+                    // Wider than interaction range on purpose: the travel layer parks the bot
+                    // about a dozen yards from the objective creature, and the action walks
+                    // the last stretch before using the item.
+                    if (Creature* useTarget = bot->FindNearestCreature((uint32)reqEntry, 25.0f))
+                    {
+                        // Diagnostic (throttled 20 s per bot): proves the trigger is wired and
+                        // tells "found it but the use failed" apart from "never ran".
+                        static std::map<uint32, time_t> lastTry;
+                        uint32 const low = bot->GetGUIDLow();
+                        time_t const now = time(nullptr);
+                        auto it = lastTry.find(low);
+                        if (it == lastTry.end() || now - it->second >= 20)
+                        {
+                            lastTry[low] = now;
+                            sPlayerbotAIConfig.logEvent(ai, "QuestItemUseTry", std::to_string(reqEntry),
+                                "dist=" + std::to_string((int)bot->GetDistance(useTarget)) +
+                                " item=" + std::to_string(srcItem) + " quest=" + std::to_string(quest->GetQuestId()));
+                        }
+
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+    };
 
 #include "RangeTriggers.h"
 #include "HealthTriggers.h"

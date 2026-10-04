@@ -351,7 +351,7 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
                     }
                     else
                     {
-                        ai->GetBot()->Say(out.str(), (ai->GetBot()->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH));
+                        { Player* _dbgBot = ai->GetBot(); if (_dbgBot->GetSession() && _dbgBot->GetSession()->IsHeadless()) sPlayerbotAIConfig.logTraceTo("bot_engine_try-", ai, "EngineTry", out.str(), ""); else _dbgBot->Say(out.str(), (_dbgBot->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH)); }
                     }
                 }
                 LogAction("A:%s - UNKNOWN src=%s base=%.3f", actionNode->getName().c_str(), event.getSource().c_str(), relevance);
@@ -482,7 +482,7 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
                             }
                             else
                             {
-                                ai->GetBot()->Say(out.str(), (ai->GetBot()->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH));
+                                { Player* _dbgBot = ai->GetBot(); if (_dbgBot->GetSession() && _dbgBot->GetSession()->IsHeadless()) sPlayerbotAIConfig.logTraceTo("bot_engine_try-", ai, "EngineTry", out.str(), ""); else _dbgBot->Say(out.str(), (_dbgBot->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH)); }
                             }
                         }
                         LogAction("A:%s - IMPOSSIBLE src=%s base=%.3f eff=%.3f", action->getName().c_str(), event.getSource().c_str(), oldRelevance, relevance);
@@ -511,7 +511,7 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
                         }
                         else
                         {
-                            ai->GetBot()->Say(out.str(), (ai->GetBot()->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH));
+                            { Player* _dbgBot = ai->GetBot(); if (_dbgBot->GetSession() && _dbgBot->GetSession()->IsHeadless()) sPlayerbotAIConfig.logTraceTo("bot_engine_try-", ai, "EngineTry", out.str(), ""); else _dbgBot->Say(out.str(), (_dbgBot->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH)); }
                         }
                     }
                     lastRelevance = relevance;
@@ -1012,7 +1012,7 @@ bool Engine::ListenAndExecute(Action* action, Event& event)
         }
         else
         {
-            ai->GetBot()->Say(out.str(), (ai->GetBot()->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH));
+            { Player* _dbgBot = ai->GetBot(); if (_dbgBot->GetSession() && _dbgBot->GetSession()->IsHeadless()) sPlayerbotAIConfig.logTraceTo("bot_engine_try-", ai, "EngineTry", out.str(), ""); else _dbgBot->Say(out.str(), (_dbgBot->GetTeam() == ALLIANCE ? LANG_COMMON : LANG_ORCISH)); }
         }
     }
 

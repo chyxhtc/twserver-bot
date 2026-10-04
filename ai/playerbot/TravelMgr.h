@@ -6,9 +6,34 @@
 #include <utility>
 #include "strategy/values/TravelValues.h"
 #include "WorldSquare.h"
+#include "TraceSwitch.h"
 
 namespace ai
 {
+	// Level margins, hot-reloadable through bot_diag.conf (TraceSwitch.cpp, 2 s timestamp
+	// check - no rebuild, no restart). Every default is exactly the value the module shipped
+	// with, so an untouched conf behaves as before; the knobs exist so the next A/B question
+	// costs a text edit instead of a build.
+	//
+	//   quest_over       quest may be this many levels above the bot to be accepted / chased
+	//   questobj_over    same, for an objective of a quest already in the log
+	//   mob_over         an objective's target mob may be this many levels above the bot
+	//   boss_over        a boss/elite destination may be this many levels above the bot
+	//   area_margin      a destination's AREA level may be this many above the bot (services,
+	//                    gather, explore, cross-zone quests - never a same-zone quest point)
+	//   lowbie_distance  how far a level <= 5 bot may be from where it stands
+	inline int32 QuestOverCap() { return trace::IntValue("quest_over", 2); }
+	inline int32 QuestObjectiveCap() { return trace::IntValue("questobj_over", 1); }
+	inline int32 MobLevelCap() { return trace::IntValue("mob_over", 4); }
+	inline int32 BossLevelCap() { return trace::IntValue("boss_over", 3); }
+	inline int32 AreaLevelMargin() { return trace::IntValue("area_margin", 5); }
+	inline float LowbieDistance() { return (float)trace::IntValue("lowbie_distance", 1500); }
+	// Longest single-point step the movement dispatch will take directly (the rest of the
+	// route is still the pathfinder's job). Was hard-coded to 8 yards, which rejected the
+	// 8-20 yard tail of a clipped path and made the bot drop the travel target instead of
+	// walking the last stretch.
+	inline float SingleStepMax() { return (float)trace::IntValue("step_max", 20); }
+
 	struct MapTransferKeyHash
 	{
 		std::size_t operator()(std::pair<uint32, uint32> const& key) const noexcept
@@ -386,6 +411,36 @@ namespace ai
 
 		bool IsActive();
 
+		// True while the target sits in the deliberate "stop travelling" park that
+		// ResetTargetAction sets: null destination + COOLDOWN. It exists to let the rpg
+		// layer hand in a quest at a NPC standing right here (that is what the
+		// "has nearby quest taker" trigger asks for), so it keeps blocking new travel
+		// requests - but only while that hand-in is really on offer.
+		bool IsDeliberateTravelPause() const;
+
+		// COOLDOWN arrives by two routes and they do not mean the same thing.
+		//
+		// A real destination that went inactive (the quest was taken, the mob is not up)
+		// is a dead end: there is nothing here left to wait for. Freezing every travel
+		// request for the whole window is only useful when an ambient strategy
+		// (rpg / grind / gather) can consume the wait; a quest-only bot has none, so it
+		// just stood still. Measured on the live dev realm, 67% of all travel-request
+		// attempts were rejected with active=1, status=COOLDOWN. Planning may resume
+		// instead - the cooled destination is not re-offered because its own IsActive is
+		// still false - with a short delay so a flickering candidate cannot drive one
+		// candidate search per engine tick.
+		//
+		// The deliberate park is different: its reason is a hand-in on offer nearby, not
+		// the clock, so it ends with that condition. The ceiling below only covers the
+		// case where the arming trigger (itself 15-30 s stale) lit up for a hand-in the
+		// rpg layer never actually takes.
+		static constexpr uint32 COOLDOWN_REPLAN_DELAY_MS = 3000;
+		static constexpr uint32 DELIBERATE_PAUSE_MAX_MS = 20000;
+
+		// deliberateParkStillWanted is AI_VALUE("has nearby quest taker") for a deliberate
+		// park; the caller owns the value context.
+		bool CanReplanWhileCooling(bool deliberateParkStillWanted) const;
+
 		uint32 GetRetryCount(bool isMove) const { return isMove ? moveRetryCount : extendRetryCount; }
 		int32 GetTimeLeft() const { return statusTime - GetExpiredTime(); }
 		int32 GetExpiredTime() const { return WorldTimer::getMSTime() - startTime; }
@@ -407,6 +462,25 @@ namespace ai
 		void IncRetry(bool isMove) { if (isMove) moveRetryCount+=2; else extendRetryCount++; }
 		void DecRetry(bool isMove) { if (isMove && moveRetryCount > 0) moveRetryCount--; else if (extendRetryCount > 0) extendRetryCount--; }
 
+		// Rate-limited move-retry accounting.
+		//
+		// MoveToTravelTargetAction re-enters every tick and calls IncRetry(true) whenever
+		// MoveTo() returns false, so a wedged bot used to pile up +2 per tick and blow
+		// through IsMaxRetry(true) (> 10) in about two seconds - measured live: a bot
+		// picked a target 1082 yards away and dropped it 2 s later, then re-picked the
+		// same one, looping every 90-150 s with the counter climbing 12, 14, 16, 18, 22.
+		// Those were never six real attempts. A failure now only counts when this long has
+		// passed since the last counted one, so the budget reflects elapsed time.
+		static constexpr uint32 MOVE_RETRY_MIN_INTERVAL_MS = 3000;
+		void IncMoveRetryThrottled()
+		{
+			uint32 const now = WorldTimer::getMSTime();
+			if (moveRetryMs != 0 && now - moveRetryMs < MOVE_RETRY_MIN_INTERVAL_MS)
+				return;
+			moveRetryMs = now;
+			IncRetry(true);
+		}
+
 		void CopyTarget(TravelTarget* const target);
 	private:
 		uint32 GetMaxTravelTime() const { return (1000.0 * Distance(bot)) / bot->GetSpeed(MOVE_RUN); }
@@ -421,6 +495,7 @@ namespace ai
 
 		uint32 extendRetryCount = 0;
 		uint32 moveRetryCount = 0;
+		uint32 moveRetryMs = 0; // last time a move failure was counted (see IncMoveRetryThrottled)
 
 		TravelDestination* tDestination = nullptr;
 		std::vector<std::string> travelConditions = {};
@@ -436,6 +511,35 @@ namespace ai
 		TravelMgr() {};
         ~TravelMgr() { Clear(); };
 		void LoadQuestTravelTable();
+
+		// A cluster of quest givers - a town or quest camp - as generated off-instance
+		// by the deployment's tools/build-quest-hubs.py and stored in the world table
+		// ai_playerbot_questhub. band[] counts quests in 5-level bands (1-5, 6-10, ...
+		// 56-60). An empty table is a supported state: the layer behaves as before.
+		struct QuestHub
+		{
+			uint32 id = 0;
+			uint32 map = 0;
+			float x = 0.0f;
+			float y = 0.0f;
+			uint32 givers = 0;
+			uint32 quests = 0;
+			uint32 band[12] = { 0 };
+		};
+		void LoadQuestHubs();
+		// Nearest hub within AiPlayerbot.QuestHubRadius of the point, or nullptr.
+		QuestHub const* FindQuestHub(uint32 mapId, float x, float y) const;
+		uint32 QuestHubIdAt(uint32 mapId, float x, float y) const { QuestHub const* h = FindQuestHub(mapId, x, y); return h ? h->id : 0; }
+		// Quests in the hub that fall inside the level window of a bot of this level.
+		uint32 QuestHubWorkFor(QuestHub const& hub, uint32 level) const;
+		// Convenience: work at a point (0 when it is not inside any hub).
+		uint32 QuestHubWorkAt(uint32 mapId, float x, float y, uint32 level) const;
+		// Nearest hub on this map that still has quests for a bot of this level. Used to
+		// move a living, stuck bot somewhere it can actually do something. Returns false
+		// when the table is empty, the map has no hubs, or none has work for that level.
+		bool FindNearestQuestHubWithWork(uint32 mapId, float x, float y, uint32 level,
+			float& outX, float& outY) const;
+		uint32 GetQuestHubCount() const { return (uint32)questHubs.size(); }
 
 		void GetPopulatedGrids();
 		void GetPopulatedGrids(uint32 mapId);
@@ -479,6 +583,8 @@ namespace ai
 	private:
 		void Clear();
 		void SetNullTravelTarget(Player* player) const;
+		std::vector<QuestHub> questHubs;
+		std::unordered_map<uint32, std::vector<uint32>> questHubsByMap; // map -> hub indices
 		void AddMapTransfer(WorldPosition start, WorldPosition end, float portalDistance = 0.1f, bool makeShortcuts = true);
 
 		template<class T>

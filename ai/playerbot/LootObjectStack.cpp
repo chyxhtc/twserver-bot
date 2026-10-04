@@ -2,9 +2,24 @@
 #include "playerbot.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/TraceSwitch.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
 
 using namespace ai;
+
+namespace
+{
+    // LootGoSeen is by far the noisiest trace in the file: the "nothing here a quest needs"
+    // row fires on every loot-object refresh, and with a 50 bot pool it produced about 128
+    // lines per second - 94% of the whole trace (measured 2026-10-03). It is therefore
+    // opt-in only: bot_diag.conf "lootseen=1" turns it on, and nothing else does, neither
+    // AiPlayerbot.LootTrace nor an arm. The rows that matter for loot debugging
+    // (LootAttempt/LootResponse/ContainerOpened) stay under the "loot" switch.
+    bool LootGoSeenTraceOn(Player* bot)
+    {
+        return bot && trace::VerdictOf("lootseen") == trace::Verdict::On;
+    }
+}
 
 #define MAX_LOOT_OBJECT_COUNT 10
 
@@ -172,6 +187,64 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
     GameObject* go = ai->GetGameObject(guid);
     if (go && sServerFacade.isSpawned(go) && go->getLootState() == GO_READY)
     {
+        // Object-loot policy (AiPlayerbot.LootOpenObjects). A container cannot be told
+        // apart from a quest container by type: the Water Pitcher is a plain CHEST, and
+        // the quest (753) asks for the item inside it (4755), not for the object. So the
+        // "quest only" mode asks the loot table instead: open it only when its loot
+        // contains something one of this bot's quests needs. Corpses never reach here.
+        if (sPlayerbotAIConfig.lootOpenObjects != 1)
+        {
+            if (sPlayerbotAIConfig.lootOpenObjects == 0)
+                return;
+
+            bool neededForQuest = false;
+            for (auto& entry : GAI_VALUE2(std::list<uint32>, "entry loot list", -1 * (int)go->GetEntry()))
+            {
+                if (ItemUsageValue::IsNeededForQuest(bot, entry))
+                {
+                    neededForQuest = true;
+                    break;
+                }
+            }
+            if (!neededForQuest)
+            {
+                // Throttled like the row below: this branch used to be unthrottled and was the
+                // single largest trace producer in the pool.
+                if (LootGoSeenTraceOn(bot))
+                {
+                    static std::map<std::pair<uint32, uint32>, time_t> lastSeen;
+                    auto const k = std::make_pair(bot->GetGUIDLow(), (uint32)go->GetEntry());
+                    time_t const now = time(nullptr);
+                    auto const it = lastSeen.find(k);
+                    if (it == lastSeen.end() || now - it->second >= 30)
+                    {
+                        lastSeen[k] = now;
+                        sPlayerbotAIConfig.logEvent(ai, "LootGoSeen",
+                            std::to_string(go->GetEntry()), "mode2-no-quest-item");
+                    }
+                }
+                if (debug)
+                    ai->TellDebug(ai->GetMaster(), "Go loot has nothing a quest needs.", "debug loot");
+                return;
+            }
+        }
+
+        if (LootGoSeenTraceOn(bot))
+        {
+            // Throttled: Refresh runs many times per second for the same object (measured
+            // 2500 lines in ten minutes before this), which drowns the trace.
+            static std::map<std::pair<uint32, uint32>, time_t> lastSeen;
+            auto const k = std::make_pair(bot->GetGUIDLow(), (uint32)go->GetEntry());
+            time_t const now = time(nullptr);
+            auto const it = lastSeen.find(k);
+            if (it == lastSeen.end() || now - it->second >= 20)
+            {
+                lastSeen[k] = now;
+                sPlayerbotAIConfig.logEvent(ai, "LootGoSeen", std::to_string(go->GetEntry()),
+                    std::to_string(go->getLootState()) + "|" + std::to_string(sServerFacade.getDistance2d(bot, go)));
+            }
+        }
+
         bool isQuestItemOnly = false;
 
         /*if (!guid.IsEmpty())
@@ -207,8 +280,15 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
         LockEntry const* lockInfo = sLockStore.LookupEntry(lockId);
         if (!lockInfo)
         {
+            // No lock: the container is open to anyone, which is the normal case for quest
+            // containers and plain chests. This used to return without queueing the object,
+            // so an unlocked container could never be looted at all (measured: with the
+            // Water Pitcher's lock field set to 0 the loot chain stopped offering it).
+            // Loot it like any other object; skill/lock handling further down only runs
+            // when there really is a lock entry.
             if (debug)
-                ai->TellDebug(ai->GetMaster(), "Go has no lockid.", "debug loot");
+                ai->TellDebug(ai->GetMaster(), "Go has no lockid; queueing as unlocked.", "debug loot");
+            this->guid = guid;
             return;
         }
 

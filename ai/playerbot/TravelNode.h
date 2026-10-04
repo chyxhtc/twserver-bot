@@ -341,7 +341,11 @@ namespace ai
         bool shouldMoveToNextPoint(WorldPosition startPos, std::vector<PathNodePoint>::iterator beg, std::vector<PathNodePoint>::iterator ed, std::vector<PathNodePoint>::iterator p, float& moveDist, float maxDist);
         bool UpcommingSpecialMovement(WorldPosition startPos, float maxDist, bool onTransport);
 
-        void ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets);
+        // why (optional): tells the caller which rule cut the path short - "target",
+        // "hazard", "react-distance", "unwalkable" or "gap". A path that survives the
+        // pathfinder but comes out of here with a single point is what makes MoveTo fail
+        // with no visible reason, so the caller records this.
+        void ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets, std::string* why = nullptr);
         std::ostringstream print();
     private:
         std::vector<PathNodePoint>::iterator getNextPoint(WorldPosition startPos, float maxDist, bool onTransport);

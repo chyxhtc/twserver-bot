@@ -319,6 +319,69 @@ bool PlayerbotAIConfig::Initialize()
                 pinnedBotNames.push_back(name.substr(b, e - b + 1));
         }
     }
+    // Experiment arms: "Name=arm,Name2=arm" plus "arm:key=value,key=value;arm2:...".
+    // Parsed here, resolved to guidLow later (RandomBotService::ResolvePinnedBots).
+    // Empty configuration is inert: every lookup then falls back to the global value.
+    {
+        std::string const arms = config.GetStringDefault("AiPlayerbot.BotArms", "");
+        std::stringstream ss(arms);
+        std::string entry;
+        while (std::getline(ss, entry, ','))
+        {
+            size_t const b = entry.find_first_not_of(" \t");
+            if (b == std::string::npos)
+                continue;
+            size_t const e = entry.find_last_not_of(" \t");
+            entry = entry.substr(b, e - b + 1);
+            size_t const sep = entry.find_first_of("=:");
+            if (sep == std::string::npos)
+                continue;
+            std::string const name = entry.substr(0, sep);
+            std::string const arm = entry.substr(sep + 1);
+            if (!name.empty() && !arm.empty())
+                botArmNames[name] = arm;
+        }
+
+        std::string const armCfg = config.GetStringDefault("AiPlayerbot.ArmConfig", "");
+        std::stringstream as(armCfg);
+        std::string chunk;
+        while (std::getline(as, chunk, ';'))
+        {
+            size_t const b = chunk.find_first_not_of(" \t");
+            if (b == std::string::npos)
+                continue;
+            chunk = chunk.substr(b);
+            size_t const sep = chunk.find(':');
+            if (sep == std::string::npos)
+                continue;
+            std::string const arm = chunk.substr(0, sep);
+            std::stringstream kvs(chunk.substr(sep + 1));
+            std::string pair;
+            while (std::getline(kvs, pair, ','))
+            {
+                size_t const eq = pair.find('=');
+                if (eq == std::string::npos)
+                    continue;
+                std::string key = pair.substr(0, eq);
+                std::string value = pair.substr(eq + 1);
+                auto const trim = [](std::string& s)
+                {
+                    size_t const f = s.find_first_not_of(" \t");
+                    if (f == std::string::npos) { s.clear(); return; }
+                    size_t const l = s.find_last_not_of(" \t");
+                    s = s.substr(f, l - f + 1);
+                };
+                trim(key);
+                trim(value);
+                if (!arm.empty() && !key.empty())
+                    armConfig[arm][key] = value;
+            }
+        }
+
+        if (!botArmNames.empty())
+            sLog.outString("TortoiseBots: %u experiment arm assignment(s) configured",
+                static_cast<uint32>(botArmNames.size()));
+    }
     enableMinimalMove = config.GetBoolDefault("AiPlayerbot.EnableMinimalMove", true);
 
     transportTeleportType = config.GetIntDefault("AiPlayerbot.TransportTeleportType", 2);
@@ -400,9 +463,33 @@ bool PlayerbotAIConfig::Initialize()
     randomBotEvenStartZones = config.GetBoolDefault("AiPlayerbot.RandomBotEvenStartZones", true);
     allowIsolatedCustomStartingZones = config.GetBoolDefault("AiPlayerbot.AllowIsolatedCustomStartingZones", false);
     relocateHopelessDeaths = config.GetBoolDefault("AiPlayerbot.RelocateHopelessDeaths", true);
+    transferToOtherContinent = config.GetBoolDefault("AiPlayerbot.TransferToOtherContinent", true);
+    transferCooldownSec = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.TransferCooldownSec", 120));
+    questHubDistanceFactor = config.GetFloatDefault("AiPlayerbot.QuestHubDistanceFactor", 1.5f);
+    questHubMinWork = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.QuestHubMinWork", 2));
+    questHubRadius = config.GetFloatDefault("AiPlayerbot.QuestHubRadius", 200.0f);
+    questHubStayFactor = config.GetFloatDefault("AiPlayerbot.QuestHubStayFactor", 1.0f);
+    traceJsonl = config.GetBoolDefault("AiPlayerbot.TraceJsonl", false);
+    hopelessDeathLoopCount = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.HopelessDeathLoopCount", 4));
+    hopelessDeathLoopWindowSec = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.HopelessDeathLoopWindowSec", 30 * 60));
+    hopelessDeathLoopCooldownSec = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.HopelessDeathLoopCooldownSec", 20 * 60));
+    hopelessDeathLoopQuestBlockSec = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.HopelessDeathLoopQuestBlockSec", 10 * 60));
     repopAtGraveyard = config.GetBoolDefault("AiPlayerbot.RepopAtGraveyard", true);
     turtleMountAtLevel = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.TurtleMountAtLevel", 18));
     mountBreakEvenFactor = config.GetFloatDefault("AiPlayerbot.MountBreakEvenFactor", 1.5f);
+    mountTrainingFreeMoney = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.TrainerMountFreeMoney", 1000000));
+    trainerTradeSkillMargin = static_cast<uint32>(config.GetIntDefault("AiPlayerbot.TrainerTradeSkillMargin", 5));
+    gatherTravelEnabled = config.GetBoolDefault("AiPlayerbot.GatherTravelEnabled", true);
+    travelGenericRpgEnabled = config.GetBoolDefault("AiPlayerbot.TravelGenericRpgEnabled", true);
+    travelTrainerEnabled = config.GetBoolDefault("AiPlayerbot.TravelTrainerEnabled", true);
+    travelGrindEnabled = config.GetBoolDefault("AiPlayerbot.TravelGrindEnabled", true);
+    lootOpenObjects = config.GetIntDefault("AiPlayerbot.LootOpenObjects", 1);
+    randomBotRace = (uint8)config.GetIntDefault("AiPlayerbot.RandomBotRace", 0);
+    lootTrace = config.GetBoolDefault("AiPlayerbot.LootTrace", false);
+    diagFilePath = config.GetStringDefault("AiPlayerbot.DiagFile", "/opt/tortoise/storage/logs/bot_diag.conf");
+    lastMileTeleport = config.GetBoolDefault("AiPlayerbot.LastMileTeleport", true);
+    questTravelRelevance = config.GetFloatDefault("AiPlayerbot.QuestTravelRelevance", 6.3f);
+    forceGearSeed = config.GetBoolDefault("AiPlayerbot.ForceGearSeed", false);
     avoidHostileTowns = config.GetBoolDefault("AiPlayerbot.AvoidHostileTowns", true);
     unstuckHearthLevelFit = config.GetBoolDefault("AiPlayerbot.UnstuckHearthLevelFit", true);
     unstuckHearthMinDistance = config.GetFloatDefault("AiPlayerbot.UnstuckHearthMinDistance", 300.0f);
@@ -972,6 +1059,9 @@ bool PlayerbotAIConfig::Initialize()
         sTravelMgr.LoadQuestTravelTable();
     }
 
+    // Independent of autoDoQuests: the hub table only feeds destination preference.
+    sTravelMgr.LoadQuestHubs();
+
     sLog.outString("Named locations use native on-demand lookup.");
     sRandomBotFacade.LoadBattleMastersCache();
     sRandomBotFacade.LoadAuctionPrices();
@@ -1305,7 +1395,119 @@ void PlayerbotAIConfig::logEvent(PlayerbotAI* ai, std::string eventName, std::st
 
         log("bot_events.csv", out.str().c_str());
     }
+
+    // Structured trace, independent of the CSV switch above.
+    logTrace(ai, eventName, info1, info2);
 };
+
+std::string PlayerbotAIConfig::JsonEscape(std::string const& in)
+{
+    std::ostringstream out;
+    for (char const c : in)
+    {
+        switch (c)
+        {
+            case '"':  out << "\\\""; break;
+            case '\\': out << "\\\\"; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20)
+                {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+                    out << buf;
+                }
+                else
+                    out << c;
+        }
+    }
+    return out.str();
+}
+
+void PlayerbotAIConfig::logTrace(PlayerbotAI* ai, std::string const& eventName, std::string const& info1, std::string const& info2)
+{
+    logTraceTo("bot_trace-", ai, eventName, info1, info2);
+}
+
+std::string PlayerbotAIConfig::GetBotArmString(uint32 guidLow, std::string const& key, std::string const& fallback) const
+{
+    std::map<uint32, std::string>::const_iterator const a = botArmByGuid.find(guidLow);
+    if (a == botArmByGuid.end())
+        return fallback;
+    std::map<std::string, std::map<std::string, std::string>>::const_iterator const c = armConfig.find(a->second);
+    if (c == armConfig.end())
+        return fallback;
+    std::map<std::string, std::string>::const_iterator const v = c->second.find(key);
+    return v == c->second.end() ? fallback : v->second;
+}
+
+int PlayerbotAIConfig::GetBotArmInt(uint32 guidLow, std::string const& key, int fallback) const
+{
+    std::string const raw = GetBotArmString(guidLow, key, std::string());
+    if (raw.empty())
+        return fallback;
+    try
+    {
+        return std::stoi(raw);
+    }
+    catch (...)
+    {
+        return fallback;
+    }
+}
+
+void PlayerbotAIConfig::logTraceTo(std::string const& filePrefix, PlayerbotAI* ai,
+    std::string const& eventName, std::string const& info1, std::string const& info2)
+{
+    if (!traceJsonl || !ai)
+        return;
+
+    Player* bot = ai->GetBot();
+    if (!bot)
+        return;
+
+    std::string const timestamp = GetTimestampStr();
+    std::string const date = timestamp.size() >= 10 ? timestamp.substr(0, 10) : timestamp;
+    std::string const fileName = filePrefix + date + ".jsonl";
+
+    // log()/openLog() only accept file names listed in AllowedLogFiles, and this one is
+    // date-rotated. Open it explicitly with haslog = true; the handle is then reused by
+    // log() for the rest of the day. Reopen when the date rolls over so a long-running
+    // server keeps writing into today's file.
+    if (!isLogOpen(fileName))
+    {
+        if (!openLog(fileName, "a", true))
+            return;
+    }
+
+    // The hub the bot is standing in (0 = none). Lets the trace answer "was this
+    // decision taken inside a quest hub" without a second data source.
+    uint32 const hubId = sTravelMgr.QuestHubIdAt(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY());
+
+    std::ostringstream out;
+    out << "{"
+        << "\"ts\":\"" << timestamp << "\""
+        << ",\"bot\":\"" << JsonEscape(bot->GetName()) << "\""
+        << ",\"guid\":" << bot->GetGUIDLow()
+        << ",\"level\":" << (uint32)bot->GetLevel()
+        << ",\"map\":" << bot->GetMapId()
+        << ",\"zone\":" << bot->GetZoneId()
+        << ",\"area\":" << bot->GetAreaId()
+        << ",\"hub\":" << hubId
+        // Experiment arm (empty string when the bot has none), so analysis can split a
+        // round into arms without a second data source.
+        << ",\"arm\":\"" << JsonEscape(sPlayerbotAIConfig.GetBotArm(bot->GetGUIDLow())) << "\""
+        << ",\"x\":" << std::fixed << std::setprecision(1) << bot->GetPositionX()
+        << ",\"y\":" << bot->GetPositionY()
+        << ",\"event\":\"" << JsonEscape(eventName) << "\""
+        << ",\"info1\":\"" << JsonEscape(info1) << "\""
+        << ",\"info2\":\"" << JsonEscape(info2) << "\""
+        << "}";
+
+    log(fileName, out.str().c_str());
+}
 
 void PlayerbotAIConfig::logEvent(PlayerbotAI* ai, std::string eventName, ObjectGuid guid, std::string info2)
 {

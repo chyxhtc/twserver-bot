@@ -11,6 +11,8 @@
 #include "playerbot/strategy/values/GuildValues.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/RandomBotFacade.h"
+#include "playerbot/TraceSwitch.h"
+#include "runtime/BotManager.h"
 #include "Guild/GuildMgr.h"
 #include <iomanip>
 #include <mutex>
@@ -79,6 +81,63 @@ bool ChooseTravelTargetAction::Execute(Event& event)
 
     if (!SetBestTarget(requester, &newTarget, destinationList))
     {
+        // Liveness guard for the hand-in drain mode (BotQuestLogUpkeep). While it is
+        // engaged the fetch list is takers only; a failed pick means the mode cannot
+        // make progress, and because the mode re-arms on the next evaluation a plain
+        // release does nothing. Park it instead, so the bot goes back to giver and
+        // objective work and retries the hand-in when the park expires. Measured: a
+        // level-7 bot with one finished quest whose taker sits on the other continent
+        // reported "offered 1 taker, 0 objective, 0 giver" for as long as it was left
+        // running, and did nothing but auto-attack.
+        if (sRandomBotFacade.GetValue(bot, "quest hand-in") != 0)
+        {
+            sRandomBotFacade.SetValue(bot, "quest hand-in parked", 1, {}, 10 * 60);
+            sPlayerbotAIConfig.logEvent(ai, "TravelDrainParked", futureTravelPurposeName,
+                std::to_string(destinationList.size()));
+        }
+
+        // Why a search came back with nothing to travel to. destinationList is keyed by
+        // distance partition, so the candidate count is the sum over the partitions;
+        // "0 candidates" means the tables offered nothing, "N candidates" means every
+        // one was rejected downstream (IsActive, route gate, hostile town, ...).
+        size_t candidates = 0;
+        for (auto& [partition, points] : destinationList)
+            candidates += points.size();
+        uint32 finishedCount = 0;
+        for (auto& [questId, questStatus] : bot->getQuestStatusMap())
+            if (!questStatus.m_rewarded && questStatus.m_status == QUEST_STATUS_COMPLETE)
+                finishedCount++;
+        sPlayerbotAIConfig.logEvent(ai, "TravelNoTarget", futureTravelPurposeName,
+            std::to_string(destinationList.size()) + "|" + std::to_string(candidates) +
+            "|" + std::to_string(AI_VALUE(uint8, "free quest log slots")) +
+            // Finished-but-unhanded quests, the number the upkeep latch keys on. A bot
+            // can sit at "nothing travel-to" for hours while holding several of these
+            // (measured overnight: 0 quest accepts in four hours for the whole pool).
+            "|fin=" + std::to_string(finishedCount) +
+            // Which destinations were actually offered before every one of them was
+            // refused. Without the entries the line only says "something was rejected";
+            // with them a giver that never even made the list is distinguishable from one
+            // that made it and failed the activity check (measured 2026-10-03: a level-10
+            // bot with an empty log was offered exactly one candidate and never the level-10
+            // givers elsewhere in the same zone).
+            "|cand=" + [&]()
+            {
+                std::string out;
+                size_t shown = 0;
+                for (auto& [partition, points] : destinationList)
+                {
+                    for (auto& [destination, position, distance] : points)
+                    {
+                        if (shown++)
+                            out += ",";
+                        out += std::to_string(destination->GetEntry());
+                        if (shown >= 6)
+                            return out;
+                    }
+                }
+                return out;
+            }());
+
         // Park this purpose for a minute. RequestTravelTargetAction clears the
         // flag as soon as its "no travel purpose until" time has passed, and
         // without one it re-requested (and re-searched) on the very next tick.
@@ -98,6 +157,9 @@ bool ChooseTravelTargetAction::Execute(Event& event)
     }
 
     setNewTarget(requester, &newTarget, travelTarget);
+    // A hand-in journey was actually picked: the drain mode is making progress, so lift
+    // any liveness park from an earlier failed attempt.
+    sRandomBotFacade.SetValue(bot, "quest hand-in parked", 0);
 
     return true;
 }
@@ -124,7 +186,8 @@ bool ChooseTravelTargetAction::CanChooseTravel()
     return true;
 }
 
-void ChooseTravelTargetAction::setNewTarget(Player* requester, TravelTarget* newTarget, TravelTarget* oldTarget)
+void ChooseTravelTargetAction::setNewTarget(Player* requester, TravelTarget* newTarget, TravelTarget* oldTarget,
+    bool clearBlacklists)
 {
     if (CanFreeMoveValue::CanFreeMoveTo(ai, newTarget->GetPosStr()))
         ReportTravelTarget(bot, requester, newTarget, oldTarget);
@@ -187,7 +250,21 @@ void ChooseTravelTargetAction::setNewTarget(Player* requester, TravelTarget* new
         std::string purpose = GetTravelPurposeName(AI_VALUE2(std::string, "manual string", "future travel purpose"));
         std::string destZone = (oldTarget->getPosition() && oldTarget->getPosition()->GetArea())
             ? oldTarget->getPosition()->GetAreaName(true, true) : "";
-        sPlayerbotAIConfig.logEvent(ai, "TravelTarget", purpose, destZone);
+
+        // info2 carries "<zone>|<entry>|<x>|<y>" so the trace can name the exact NPC and
+        // place that was picked - the zone alone cannot tell a street NPC from one behind
+        // a door. Packed into the existing field because logEvent's signature is shared
+        // with every other event site; the CSV keeps one quoted column, and
+        // tools/trace-report.py splits it back out.
+        std::ostringstream dest;
+        dest << destZone << "|"
+             << (oldTarget->GetDestination() ? oldTarget->GetDestination()->GetEntry() : 0) << "|";
+        if (oldTarget->getPosition())
+            dest << (int32)oldTarget->getPosition()->getX() << "|" << (int32)oldTarget->getPosition()->getY();
+        else
+            dest << "|";
+
+        sPlayerbotAIConfig.logEvent(ai, "TravelTarget", purpose, dest.str());
     }
 
     oldTarget->SetStatus(TravelStatus::TRAVEL_STATUS_READY);
@@ -203,7 +280,8 @@ void ChooseTravelTargetAction::setNewTarget(Player* requester, TravelTarget* new
     RESET_AI_VALUE(ObjectGuid,"attack target");
     RESET_AI_VALUE(ObjectGuid,"explicit attack target");
     RESET_AI_VALUE(bool, "travel target active");
-    context->ClearValues("no active travel destinations");
+    if (clearBlacklists)
+        context->ClearValues("no active travel destinations");
     SET_AI_VALUE2(std::string, "manual string", "future travel detail", std::string());
 };
 
@@ -374,9 +452,17 @@ inline std::string PrintPartion(uint32 sqPartition)
 // destination: the gates in SetBestTarget only look at the area of the target itself
 // (a level-6 bot standing in Stormwind happily picks a Coldridge Valley quest and walks
 // the Burning Steppes to get there). The route is the travel-node route the bot would
-// follow; a route that does not exist at all (another continent without a transfer) is
-// rejected too. Short hops on the same map are not checked - no A* for the everyday case.
-static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, WorldPosition* position, std::string& blocker)
+// follow. A route that does not exist at all is handled per case: short hops on the same
+// map are not checked at all (no A* for the everyday case), same-map misses are handed
+// to the pathfinder, and a cross-continent miss on a QUEST destination triggers a
+// transfer to a validated town point on the destination map
+// (BotManager::TransferBotToMap) instead of dropping the target.
+//
+// allowTransfer is only set for quest destinations. Crossing an ocean to grind a mob
+// and crossing back later made no sense - measured: bots bounced between the
+// continents for ordinary grind targets - whereas a quest chain that points at the
+// other continent is exactly the case worth solving.
+static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, WorldPosition* position, std::string& blocker, bool allowTransfer)
 {
     std::vector<WorldPosition> beginPath, endPath;
     TravelNodeRoute route = sTravelNodeMap.getRoute(start, *position, beginPath, endPath, bot);
@@ -384,12 +470,23 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
     {
         if (start.getMapId() != position->getMapId())
         {
+            // Cross-continent: the bundled node graph has no usable route between the
+            // continents (the boat rows exist but the runtime search returns empty), and
+            // the old code dropped the target here with a message that reads like the
+            // continents are disconnected. For quest destinations, put the bot on the
+            // destination map at a validated, level-fitting town point and treat the
+            // route as survivable; it walks the rest locally. Everything else keeps the
+            // old drop-the-target behaviour. Cooldown and eligibility live in BotManager.
+            if (allowTransfer &&
+                TortoiseBots::BotManager::Instance().TransferBotToMap(bot, position->getMapId()))
+                return true;
+
             blocker = "no route to that continent";
             return false;
         }
         return true; // same map without a node route: the pathfinder handles it directly
     }
-    int32 const limit = (int32)bot->GetLevel() + 5;
+    int32 const limit = (int32)bot->GetLevel() + AreaLevelMargin();
     bool ok = true;
     // Hostile-town route leg (cheap: only the named route nodes are scanned, no
     // extra spawn-table walk beyond the per-node guard check; start/end legs and
@@ -409,7 +506,16 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
             ok = false;
             break;
         }
-        if (avoidTowns && p->IsGuardedHostileTownFor(bot))
+        // Hostile-town route leg. The destination itself is already checked separately
+        // (SetBestTarget's IsGuardedHostileTownFor on the target point), so vetoing the
+        // whole journey because the *route* passes a guarded camp refused perfectly good
+        // quest givers: measured with the rejection-reason instrumentation, 3 of 7 giver
+        // candidates for a level-15 bot were dropped with "route: The Barrens (hostile
+        // town guards)". Quest destinations may therefore pass such a node when the arm
+        // knob says so; grind/vendor/repair journeys keep the old veto.
+        bool const questPassAllowed = allowTransfer &&
+            sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "questtownpass", 0) != 0;
+        if (avoidTowns && !questPassAllowed && p->IsGuardedHostileTownFor(bot))
         {
             blocker = p->getAreaName(true, true) + " (hostile town guards)";
             ok = false;
@@ -426,7 +532,7 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
 // travel-node A* each time; with hundreds of bots that search dominated the
 // world thread. Gold, reputation and graph changes are picked up when the
 // entry expires.
-static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string& blocker)
+static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string& blocker, bool allowTransfer)
 {
     WorldPosition start(bot);
     if (start.getMapId() == position->getMapId() && start.distance(*position) < 1000.0f)
@@ -446,7 +552,8 @@ static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string&
 
     std::ostringstream key;
     key << bot->GetGUIDLow() << ':' << bot->GetLevel() << ':' << avoidTowns << ':'
-        << start.getMapId() << ':' << int32(std::floor(start.getX() / 200.0f)) << ':' << int32(std::floor(start.getY() / 200.0f)) << ':'
+        << allowTransfer << ':'
+        << start.getMapId() << ':' << int32(std::floor(start.getX() / 200.0f)) << ':' << int32(std::floor(start.getY() / 200.0f)) << ':' 
         << position->getMapId() << ':' << int32(std::floor(position->getX() / 25.0f)) << ':' << int32(std::floor(position->getY() / 25.0f));
 
     time_t const now = time(nullptr);
@@ -460,7 +567,7 @@ static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string&
         }
     }
 
-    bool const ok = RouteIsSurvivableUncached(bot, start, position, blocker);
+    bool const ok = RouteIsSurvivableUncached(bot, start, position, blocker, allowTransfer);
 
     std::lock_guard<std::mutex> lock(cacheMutex);
     if (cache.size() > 50000)
@@ -481,14 +588,131 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
 
     bool hasTarget = false;
 
+    // Rejection accounting (arm knob "reasons"): the open question from the overnight
+    // runs is why the candidate layer keeps offering quest givers that are never picked.
+    // Counting each refusal per reason and logging one line per selection turns that
+    // into a readable answer instead of another guess. Off by default; the counting
+    // costs nothing when the knob is off.
+    trace::Verdict const travelVerdict = trace::VerdictOf("travel");
+    bool const logReasons = travelVerdict == trace::Verdict::On ? true
+        : (travelVerdict == trace::Verdict::Off ? false
+            : sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "reasons", 0) != 0);
+    std::map<std::string, uint32> rejections;
+    // Which destinations were refused, per reason. A reason count alone cannot say whether
+    // the giver we expected was even offered (measured 2026-10-03: "inactive=6" for a
+    // level-10 bot whose level-10 givers were missing from the candidate list entirely).
+    std::map<std::string, std::vector<int32>> rejectionEntries;
+    TravelDestination* currentDestination = nullptr;
+    uint32 considered = 0;
+    auto reject = [&](std::string const& why)
+    {
+        if (!logReasons)
+            return;
+        ++rejections[why];
+        if (currentDestination && rejectionEntries[why].size() < 8)
+            rejectionEntries[why].push_back(currentDestination->GetEntry());
+    };
+    auto const rejectionDetail = [&]()
+    {
+        std::string out;
+        for (auto& [why, n] : rejections)
+        {
+            auto const it = rejectionEntries.find(why);
+            if (it == rejectionEntries.end() || it->second.empty())
+                continue;
+            if (!out.empty())
+                out += ";";
+            out += why + ":";
+            for (size_t i = 0; i < it->second.size(); ++i)
+            {
+                if (i)
+                    out += ",";
+                out += std::to_string(it->second[i]);
+            }
+        }
+        return out;
+    };
+
+    // Flatten the distance partitions so the walk below can be ordered per purpose.
+    struct OrderedCandidate
+    {
+        TravelDestination* destination;
+        WorldPosition* position;
+        float distance;
+        uint32 partition;
+    };
+    std::vector<OrderedCandidate> ordered;
     for (auto& [partition, travelPointList] : partitionedList)
     {
         ai->TellDebug(requester, "Found " + std::to_string(travelPointList.size()) + " points at range " + PrintPartion(partition), "debug travel");
-
         for (auto& [destination, position, distance] : travelPointList)
+            ordered.push_back(OrderedCandidate{ destination, position, distance, partition });
+    }
+
+    // Ordering for quest destinations: the quest's own level first (easiest content first),
+    // distance second. The shared walk is distance-first, which for questing means a bot
+    // standing next to a level 1 quest giver never walks to the level 12 quest 1.7k yards
+    // away - and it cannot prefer the true "on the way" case because the travel layer has no
+    // route planning. Level-then-distance is the stand-in for that. Errands (city/vendor),
+    // gathering and grinding keep the distance-first order.
+    if (AI_VALUE2(std::string, "manual string", "future travel purpose") == "quest")
+    {
+        std::stable_sort(ordered.begin(), ordered.end(),
+            [](OrderedCandidate const& a, OrderedCandidate const& b)
+            {
+                auto const questLevelOf = [](TravelDestination* destination) -> int
+                {
+                    if (auto* questDestination = dynamic_cast<QuestTravelDestination*>(destination))
+                        if (Quest const* quest = sObjectMgr.GetQuestTemplate(questDestination->GetQuestId()))
+                            return (int)quest->GetQuestLevel();
+                    return 1000; // non-quest rows sort after every quest row
+                };
+
+                int const levelA = questLevelOf(a.destination);
+                int const levelB = questLevelOf(b.destination);
+                if (levelA != levelB)
+                    return levelA < levelB;
+                return a.distance < b.distance;
+            });
+    }
+
+    uint32 const lastPartition = partitionedList.empty() ? 0 : std::prev(partitionedList.end())->first;
+
+    for (auto& candidate : ordered)
+    {
         {
+            TravelDestination* destination = candidate.destination;
+            WorldPosition* position = candidate.position;
+            float const distance = candidate.distance;
+            uint32 const partition = candidate.partition;
+            currentDestination = destination;
+            ++considered;
             if (!target->IsForced() && isActive.find(destination) != isActive.end() && !isActive[destination])
+            {
+                reject("inactive-cached");
                 continue;
+            }
+
+            // Destination-level cooldown: a destination this bot already dropped as
+            // unreachable is skipped until the stamp expires, instead of being re-picked
+            // forever (measured: the same quest giver re-picked and dropped 38 times in
+            // half an hour before this). Explicit player orders bypass it.
+            // Entry != 0 (not "> 0"): game-object destinations carry their entry negated, and
+            // a game object that the server never spawns (spawntimesecs negative) is exactly
+            // the kind of destination that has to be skippable. QuestAction blacklists those
+            // under the same negative key.
+            if (!target->IsForced() && destination->GetEntry() != 0)
+            {
+                if (auto* unreachable = context->GetValue<std::map<uint32, uint32>&>("unreachable entries"))
+                {
+                    auto const it = unreachable->Get().find((uint32)destination->GetEntry());
+                    if (it != unreachable->Get().end() && it->second > WorldTimer::getMSTime())
+                    {
+                        reject("entry-blacklisted");
+                        continue;
+                    }
+                }
+            }
 
             if (distanceCheck) //Check if we have moved significantly after getting the destinations.
             {
@@ -496,6 +720,16 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 if (position->distance(center) > distance * 2 && position->distance(center) > 100)
                 {
                     ai->TellDebug(requester, "We had some destinations but we moved too far since. Trying to get a new list.", "debug travel");
+                    reject("moved-too-far");
+                    if (logReasons)
+                    {
+                        std::ostringstream out;
+                        for (auto& [why, n] : rejections)
+                            out << why << "=" << n << ",";
+                        sPlayerbotAIConfig.logEvent(ai, "TravelRejectSummary",
+                            AI_VALUE2(std::string, "manual string", "future travel purpose"),
+                            std::to_string(considered) + "|" + out.str() + "|rej=" + rejectionDetail());
+                    }
                     return false;
                 }
 
@@ -511,6 +745,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     if (position->IsEnemyHomeZoneFor(bot->GetTeam()))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - enemy home zone", "debug travel");
+                        reject("enemy-home-zone");
                         continue;
                     }
 
@@ -523,6 +758,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         position->IsGuardedHostileTownFor(bot))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - hostile town guards", "debug travel");
+                        reject("hostile-town");
                         continue;
                     }
 
@@ -532,30 +768,37 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         (PlayerbotAIConfig::IsIsolatedCustomZone(zoneId) || (area && PlayerbotAIConfig::IsIsolatedCustomZone(area->Id))))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - custom starting zone", "debug travel");
+                        reject("isolated-zone");
                         continue;
                     }
 
                     int32 posAreaLevel = position->GetAreaLevel();
-                    if (posAreaLevel > 0 && posAreaLevel > (int32)bot->GetLevel() + 5)
+                    if (posAreaLevel > 0 && posAreaLevel > (int32)bot->GetLevel() + AreaLevelMargin())
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - area level too high", "debug travel");
+                        reject("area-level");
                         continue;
                     }
 
                     if (destination->GetPurpose() == TravelDestinationPurpose::GatherFishing && IsFishingSpotGuarded(bot, *position))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - fishing spot guarded by hostile creatures", "debug travel");
+                        reject("fishing-guarded");
                         continue;
                     }
 
-                    if (bot->GetLevel() <= 5 && position->distance(bot) > 1500.0f)
+                    if (bot->GetLevel() <= 5 && position->distance(bot) > LowbieDistance())
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - too far for starting level", "debug travel");
+                        reject("low-level-far");
                         continue;
                     }
 
                     std::string blocker;
-                    if (!RouteIsSurvivable(bot, position, blocker))
+                    // Only quest destinations may trigger a cross-continent transfer;
+                    // grind/gather/RPG targets are still dropped when unreachable.
+                    bool const questDestination = dynamic_cast<ai::QuestTravelDestination*>(destination) != nullptr;
+                    if (!RouteIsSurvivable(bot, position, blocker, questDestination))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - route crosses " + blocker, "debug travel");
                         if (sPlayerbotAIConfig.hasLog("travel_route_gate.csv"))
@@ -564,11 +807,12 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                             out << bot->GetName() << "," << bot->GetLevel() << "," << destination->GetTitle() << "," << blocker;
                             sPlayerbotAIConfig.log("travel_route_gate.csv", out.str().c_str());
                         }
+                        reject("route:" + blocker);
                         continue;
                     }
                 }
 
-                if (partition != std::prev(partitionedList.end())->first && !urand(0, 10)) //10% chance to skip to a longer partition.
+                if (partition != lastPartition && !urand(0, 10)) //10% chance to skip to a longer partition.
                 {
                     ai->TellDebug(requester, "Skipping range " + PrintPartion(partition), "debug travel");
                     break;
@@ -582,16 +826,28 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             else
             {
                 ai->TellDebug(requester, "Not active: " + destination->GetTitle() + " " + std::to_string((uint32)round(destination->DistanceTo(bot))) + "y", "debug travel");
+                reject("inactive");
             }
 
-        }
+        } // candidate scope
 
         if (hasTarget)
             break;
-    }
+    } // ordered candidates
 
     if(hasTarget)
         ai->TellDebug(requester, "Point at " + std::to_string(uint32(target->Distance(bot))) + "y selected.", "debug travel");
+
+    if (logReasons)
+    {
+        std::ostringstream out;
+        for (auto& [why, n] : rejections)
+            out << why << "=" << n << ",";
+        sPlayerbotAIConfig.logEvent(ai, "TravelRejectSummary",
+            AI_VALUE2(std::string, "manual string", "future travel purpose"),
+            std::to_string(considered) + "|" + (hasTarget ? "picked" : "none") + "|" + out.str() +
+            "|rej=" + rejectionDetail());
+    }
 
     return hasTarget;
 }
@@ -891,14 +1147,27 @@ bool ResetTargetAction::Execute(Event& event)
 {
     TravelTarget* oldTarget = AI_VALUE(TravelTarget*, "travel target");
 
-    context->ClearValues("no active travel destinations");
-
     TravelTarget newTarget = TravelTarget(ai);
     Player* requester = event.GetOwner() ? event.GetOwner() : GetMaster();
-    setNewTarget(requester, &newTarget, oldTarget);
+    // Park, not a new destination: keep the per-purpose "nothing to find" time boxes
+    // alive. Clearing them here re-ran the candidate search every couple of seconds for
+    // a bot that had nowhere to go (measured: 99 searches and 99 parks in seven minutes
+    // for one stranded bot, each search an A* over the quest destinations).
+    setNewTarget(requester, &newTarget, oldTarget, false);
 
     oldTarget->SetStatus(TravelStatus::TRAVEL_STATUS_COOLDOWN);
-    oldTarget->SetExpireIn(60000); //1 minute;
+    // How often the park is armed, and whether a live no-destination blacklist was in
+    // force when it was (seconds left on the quest purpose, negative = none). A park
+    // arming every few seconds is the search loop this used to trigger.
+    sPlayerbotAIConfig.logEvent(ai, "TravelPark", "",
+        std::to_string((long long)(AI_VALUE2(time_t, "manual time", "no travel purpose until::quest") - time(0))));
+
+    // The park only has to cover a hand-in at a NPC standing right here: seconds, not a
+    // minute. The trigger arming it can be 30 s stale, so a long park keeps the bot
+    // frozen well after the reason has gone (measured: a parked level-6 bot with no
+    // hand-in left nearby stood still for over 100 s). See
+    // TravelTarget::CanReplanWhileCooling for the matching request-side release.
+    oldTarget->SetExpireIn(TravelTarget::DELIBERATE_PAUSE_MAX_MS);
 
     ai->TellDebug(requester, "Cleared travel target fetches", "debug travel");
 
@@ -960,16 +1229,53 @@ bool RequestTravelTargetAction::Execute(Event& event)
 }
 
 bool RequestTravelTargetAction::isUseful() {
+    // Decision-trail visibility. The engine records "request quest travel target useless"
+    // thousands of times an hour with only the trigger name, which does not say *which*
+    // condition failed. Record the state once per decision instead of restructuring the
+    // checks: bg / allow-activity / target status / target active / can-move, so the failing
+    // one can be read straight off the line.
+    TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target");
+    bool const parkStillWanted = travelTarget->IsDeliberateTravelPause() &&
+        AI_VALUE(bool, "has nearby quest taker");
+    bool const canReplan = travelTarget->CanReplanWhileCooling(parkStillWanted);
+
+    sPlayerbotAIConfig.logTraceTo("bot_engine_try-", ai, "ReqState",
+        std::string("request travel state: bg=") + (bot->InBattleGround() ? "1" : "0") +
+        " allow=" + (ai->AllowActivity(TRAVEL_ACTIVITY) ? "1" : "0") +
+        " status=" + std::to_string((uint32)travelTarget->GetStatus()) +
+        " active=" + (AI_VALUE(bool, "travel target active") ? "1" : "0") +
+        " replan=" + (canReplan ? "1" : "0") +
+        // Which kind of COOLDOWN this is: "park" is the deliberate null-destination
+        // pause set by reset travel target, "dest" is a real destination that went
+        // inactive. Same status, opposite meaning - the whole point of the fix.
+        " cool=" + (travelTarget->GetStatus() != TravelStatus::TRAVEL_STATUS_COOLDOWN ? "-" :
+            (travelTarget->IsDeliberateTravelPause() ? "park" : "dest")) +
+        " dstEntry=" + std::to_string(travelTarget->GetEntry()) +
+        " coolMs=" + std::to_string(travelTarget->GetExpiredTime()) +
+        // The deliberate park hands the bot to the rpg layer, which is what hands in a
+        // quest at a NPC standing right here. When that layer does nothing with its turn
+        // the bot stands still, so record what it is holding: the rpg target it picked,
+        // the sub-action it decided on, and whether a hand-in is still on offer nearby.
+        " rpg=" + std::to_string(AI_VALUE(GuidPosition, "rpg target").GetEntry()) +
+        " nextRpg=[" + AI_VALUE(std::string, "next rpg action") + "]" +
+        " takerNear=" + (AI_VALUE(bool, "has nearby quest taker") ? "1" : "0") +
+        " canMove=" + (AI_VALUE(bool, "can move around") ? "1" : "0") +
+        " qualifier=" + getQualifier(),
+        "");
+
     if (bot->InBattleGround())
         return false;
 
     if (!ai->AllowActivity(TRAVEL_ACTIVITY))
         return false;
 
-    if (AI_VALUE(TravelTarget*, "travel target")->GetStatus() == TravelStatus::TRAVEL_STATUS_PREPARE)
+    if (travelTarget->GetStatus() == TravelStatus::TRAVEL_STATUS_PREPARE)
         return false;
 
-    if (AI_VALUE(bool, "travel target active"))
+    // A cooling real destination is a dead end, not a plan: let the bot ask for a new
+    // one instead of standing still until the cooldown expires (TravelTarget::
+    // CanReplanWhileCooling).
+    if (AI_VALUE(bool, "travel target active") && !canReplan)
         return false;
 
     // Time-boxed blacklist set by MoveToTravelTargetAction on repeated move
@@ -991,6 +1297,12 @@ bool RequestTravelTargetAction::isUseful() {
         ai->TellDebug(ai->GetMaster(), "Skipped " + GetTravelPurposeName(qualifier) + " because of skip chance", "debug travel");
         return false;
     }
+
+    // One line per actual re-plan - Execute() below parks the status on PREPARE, so the
+    // next tick no longer reaches this point.
+    if (canReplan)
+        sPlayerbotAIConfig.logEvent(ai, "TravelCoolReplan", GetTravelPurposeName(getQualifier()),
+            std::to_string(travelTarget->GetEntry()) + "|" + std::to_string(travelTarget->GetExpiredTime() / 1000));
 
     return true;
 }
@@ -1716,7 +2028,14 @@ bool RequestQuestTravelTargetAction::Execute(Event& event)
         if (upkeepBot)
         {
             bool draining = sRandomBotFacade.GetValue(bot, "quest hand-in") != 0;
-            if (!draining && finished >= handInThreshold)
+            // Parked = a drain search recently found nothing travel-to (see
+            // ChooseTravelTargetAction::Execute). While parked the bot keeps working on
+            // givers and objectives; the mode re-arms when the park expires. The
+            // log-almost-full override below still wins, because at that point keeping
+            // the log from filling is the priority and there is usually a reachable
+            // taker to clear anyway.
+            bool const drainParked = sRandomBotFacade.GetValue(bot, "quest hand-in parked") != 0;
+            if (!draining && !drainParked && finished >= handInThreshold)
             {
                 draining = true;
                 sRandomBotFacade.SetValue(bot, "quest hand-in", 1, {}, 3600);
@@ -1726,7 +2045,27 @@ bool RequestQuestTravelTargetAction::Execute(Event& event)
                 draining = false;
                 sRandomBotFacade.SetValue(bot, "quest hand-in", 0);
             }
-            if (draining || active + 2 >= MAX_QUEST_LOG_SIZE)
+            // Policy knob for the overnight rounds:
+            //   0 (default) = liveness park: drain while it can, park it after a failed
+            //                 drain search so the bot goes back to local work
+            //   1           = batch: drain only when the log is nearly full, so a
+            //                 single pending hand-in never interrupts local work
+            //   2           = strict: always drain while anything is finished (the
+            //                 behaviour before the liveness fix, kept for comparison)
+            int const drainPolicy = sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "drain", 0);
+            bool const logNearlyFull = active + 2 >= MAX_QUEST_LOG_SIZE;
+            // The park must suppress an already armed latch too, not just re-arming:
+            // the latch is held for an hour once set, so checking it only at the arming
+            // gate left it engaged (measured: the park fired every minute and the bot
+            // kept searching taker-only straight through it).
+            bool drainActive = false;
+            if (drainPolicy == 1)
+                drainActive = false;
+            else if (drainPolicy == 2)
+                drainActive = draining;
+            else
+                drainActive = draining && !drainParked;
+            if (drainActive || logNearlyFull)
             {
                 std::vector<std::tuple<uint32, int32, float>> handInOnly;
                 for (auto& fetch : destinationFetches)
@@ -1739,6 +2078,16 @@ bool RequestQuestTravelTargetAction::Execute(Event& event)
                 if (!handInOnly.empty())
                     destinationFetches = handInOnly;
             }
+
+            // Arm knob "giveronly": throw away every fetch except the quest-giver search
+            // (the first entry, pushed before the per-quest ones). Purpose: separate two
+            // explanations for the overnight "0 quest accepts" reading - either the bot
+            // never travels to a giver because a nearby objective always outranks it, or
+            // it gets there and cannot accept. With this on, the next accepted quest is
+            // the whole signal. Diagnostic knob, not a strategy candidate.
+            if (sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "giveronly", 0) &&
+                !destinationFetches.empty())
+                destinationFetches = { destinationFetches.front() };
         }
         else if (finished >= handInThreshold || active + 2 >= MAX_QUEST_LOG_SIZE)
         {

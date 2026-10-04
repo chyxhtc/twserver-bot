@@ -192,6 +192,122 @@ AiPlayerbot.TurtleMountAtLevel = 18
 # Turtle 9% (~3 s cast) -> ~350 y; 60% -> ~50 y; 100% -> ~30 y. Default 1.5.
 AiPlayerbot.MountBreakEvenFactor = 1.5
 
+# Copper a bot must still have free — after repair, ammo, AH, guild, spell and
+# travel reservations — before it will travel to learn riding or to buy a mount.
+# Riding at 40 plus a mount costs roughly 100g, so the default (1000000 copper =
+# 100g) makes mounting a spare-money decision instead of something a bot spends
+# its entire purse on. 0 disables the gate.
+AiPlayerbot.TrainerMountFreeMoney = 1000000
+
+# A trade-skill trainer trip only happens when the bot is within this many points
+# of its current profession rank cap, i.e. when the visit can actually raise the
+# rank. Without it bots walked to trainers for recipes alone, which was the
+# largest single consumer of travel decisions (56% of them in a 7h/50-bot run)
+# and the largest death cause on the road. 0 disables the rule.
+AiPlayerbot.TrainerTradeSkillMargin = 5
+
+# Whether gathering (skinning, mining, herbalism, fishing) may be a travel
+# purpose. A gathering trip walks the bot to a node, and the node is often
+# inside a mob camp; unlike a player the bot does not clear the camp first, so
+# these trips are a large share of outdoor deaths. Off leaves grinding and
+# questing as the only travel purposes. Default 1.
+AiPlayerbot.GatherTravelEnabled = 1
+
+# Whether aimless wandering to a generic NPC may be a travel purpose. It is the
+# lowest-information entry in the travel table; with gathering off it became the
+# largest one (38% of travel targets). Default 1.
+AiPlayerbot.TravelGenericRpgEnabled = 1
+
+# Whether trainer errands (class spells, trade skills, riding, pets) may be a
+# travel purpose. Upkeep rather than core play. Default 1.
+AiPlayerbot.TravelTrainerEnabled = 1
+
+# Whether the plain Grind purpose may be requested as a travel destination. Grind is
+# phase-gated (first 45 minutes of the bot's hour) rather than need-gated, so a bot
+# with nothing else to do walks out of town to fight. 0 leaves questing as the main
+# reason to travel. Default 1.
+AiPlayerbot.TravelGrindEnabled = 1
+
+# Lootable game objects (chests, quest containers, gathering nodes).
+#   1 = open every container the loot stack finds (upstream behaviour)
+#   2 = only containers whose loot contains an item one of the bot's quests needs
+#   0 = never open containers (corpse looting is unaffected by this switch)
+# Mode 2 exists because a container cannot be told apart from a quest container by type:
+# the Water Pitcher (game object 2907) is a plain chest, and quest 753 asks for the item
+# inside it (4755), not for the object itself.
+AiPlayerbot.LootOpenObjects = 1
+
+# Relevance of the plain quest travel request in the priority table. The shipped
+# value 6.3 sits below the unconditional Grind entry (6.35) and Grind almost
+# always finds a destination, so quests never won the race. Raise above 6.35 to
+# let questing pre-empt grinding. Values above 6.9 also outrank vendor, repair
+# and trainer errands.
+AiPlayerbot.QuestTravelRelevance = 6.3
+
+# Ignore the played-time half of the fresh-bot gear gate. A pool that starts at
+# level 1 is below the level-5 seeding floor on its only fresh login, so it never
+# receives level-appropriate gear: quest rewards and loot are unreliable at low
+# level. With this on, an existing bot gets its gear the next time it logs in or
+# the randomize timer fires, once per bot per server run. Seeding is incremental
+# and never wipes earned gear. Default 0.
+AiPlayerbot.ForceGearSeed = 0
+
+# --- Quest hubs (travel destination preference) -------------------------------------
+#
+# A hub is a cluster of quest givers - a town or quest camp - generated off-instance
+# into the world table ai_playerbot_questhub (schema in data/sql/world). With the
+# factor below above 1.0, a quest destination that sits in a hub with enough quests
+# for the bot's level band competes in the candidate list as if it were that many
+# times closer, so a town is preferred over a lone quest giver at a similar distance.
+# 1.0 disables the preference entirely. Default 1.5.
+AiPlayerbot.QuestHubDistanceFactor = 1.5
+
+# Quests in the bot's level window a hub needs before it is worth preferring.
+# Default 2.
+AiPlayerbot.QuestHubMinWork = 2
+
+# Radius in yards that decides which hub a point belongs to. Must be at least the
+# cluster radius used when the hubs were generated. Default 200.
+AiPlayerbot.QuestHubRadius = 200.0
+
+# Stronger factor for the hub the bot is already standing in, so it finishes a town's
+# quests before moving on instead of drifting to another town with one errand left
+# behind. Only applies while that hub still has quests for the bot's level band.
+# 1.0 (default) leaves the plain density preference in charge.
+AiPlayerbot.QuestHubStayFactor = 1.0
+
+# Structured behaviour trace: one JSON object per logged event, appended to
+# bot_trace-YYYY-MM-DD.jsonl in the log folder (unlike bot_events.csv, which is
+# truncated on every restart). Fields: ts, bot, guid, level, map, zone, area, the hub
+# the bot is standing in, x, y, event, info1, info2. Off by default. Default 0.
+AiPlayerbot.TraceJsonl = 0
+
+# --- Death-loop rescue (area-level independent) -------------------------------------
+#
+# A bot that revives this many times inside the window below without gaining a level
+# is looping on a local hazard the area-average level rule cannot see (a level 6-8
+# camp holding a quest objective inside a level-5 area, for instance). It is then
+# teleported to a terrain-validated, level-fitting point and its quest travel is
+# parked for QuestBlockSec seconds. 0 disables the rule. Defaults 4 / 1800 / 1200 / 600.
+AiPlayerbot.HopelessDeathLoopCount = 4
+AiPlayerbot.HopelessDeathLoopWindowSec = 1800
+AiPlayerbot.HopelessDeathLoopCooldownSec = 1200
+AiPlayerbot.HopelessDeathLoopQuestBlockSec = 600
+
+# --- Cross-continent transfer -------------------------------------------------------
+#
+# The travel node graph has no usable route between the two continents, so a quest
+# destination on the other continent used to be dropped. With this on, the bot is
+# teleported to a terrain-validated, level-fitting town point on the destination map
+# and walks the rest. Only random, masterless, headless bots on foot (alive, out of
+# combat, not in a battleground or dungeon) are moved. 0 restores dropping the target.
+# Default 1.
+AiPlayerbot.TransferToOtherContinent = 1
+
+# Minimum seconds between two transfers for the same bot, so it cannot bounce between
+# continents on every re-pick. Default 120.
+AiPlayerbot.TransferCooldownSec = 120
+
 
 # Whether a random bot without a player master avoids hostile towns: 1 = travel
 # destinations and grind targets guarded by town guards hostile to its team are

@@ -12,6 +12,10 @@
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/strategy/values/ItemCountValue.h"
 #include "playerbot/TravelMgr.h"
+#include "playerbot/TraceSwitch.h"
+
+#include <ctime>
+#include <map>
 
 using namespace ai;
 
@@ -184,18 +188,45 @@ bool IsTargetValidForItemUse(uint32 itemID, Unit* target)
         return true;
     }
 
+    // Quest-item-on-target probe (arm/diag switch "accept"). Items listed in
+    // item_required_target are the "use this on that" quests (Lazy Peons' blackjack, the
+    // paladin Tome, ...): the travel layer routes the bot to the target, and this call is the
+    // gate that decides whether the use may happen at all. Record every decision so a stuck
+    // quest can be told apart from "the bot never tried" - measured 2026-10-03, quest 5441
+    // sat unfinished for hours with no evidence either way.
+    bool valid = false;
     if (target)
     {
         for (ItemRequiredTargetMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
         {
             if (itr->second.IsFitToRequirements(target))
             {
-                return true;
+                valid = true;
+                break;
             }
         }
     }
 
-    return false;
+    if (ai::trace::VerdictOf("accept") == ai::trace::Verdict::On)
+    {
+        // The item is the first requirement's item; its targets are what the bot must reach.
+        static std::map<std::pair<uint32, uint32>, time_t> lastProbe;
+        uint32 const targetEntry = target ? target->GetEntry() : 0;
+        auto const key = std::make_pair(itemID, targetEntry);
+        time_t const now = time(nullptr);
+        auto const it = lastProbe.find(key);
+        if (it == lastProbe.end() || now - it->second >= 20)
+        {
+            lastProbe[key] = now;
+            std::string wanted;
+            for (ItemRequiredTargetMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
+                wanted += (wanted.empty() ? "" : ",") + std::to_string(itr->second.m_uiTargetEntry);
+            // logEvent needs an AI; use the global logger with a synthetic bot-less row.
+            sLog.outBasic("QuestItemUse: item=%u target=%u valid=%d wanted=%s", itemID, targetEntry, valid ? 1 : 0, wanted.c_str());
+        }
+    }
+
+    return valid;
 }
 
 bool RequiresItemToUse(const ItemPrototype* itemProto, PlayerbotAI* ai, Player* bot)
@@ -1393,4 +1424,106 @@ bool UseRandomQuestItemAction::Execute(Event& event)
     }
 
     return success;
+}
+
+bool UseQuestItemOnObjectiveAction::FindQuestItemUseTarget(Player* bot, uint32& outItemId, ObjectGuid& outTarget)
+{
+    outItemId = 0;
+    outTarget = ObjectGuid();
+
+    if (!bot)
+        return false;
+
+    QuestStatusMap& statuses = bot->getQuestStatusMap();
+    for (auto const& entry : statuses)
+    {
+        QuestStatusData const& status = entry.second;
+        if (status.m_rewarded || status.m_status != QUEST_STATUS_INCOMPLETE)
+            continue;
+
+        Quest const* quest = sObjectMgr.GetQuestTemplate(entry.first);
+        if (!quest)
+            continue;
+
+        uint32 const srcItem = quest->GetSrcItemId();
+        if (!srcItem || !bot->GetItemCount(srcItem))
+            continue;
+
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        {
+            int32 const reqEntry = quest->ReqCreatureOrGOId[i];
+            uint32 const reqCount = quest->ReqCreatureOrGOCount[i];
+            if (reqEntry <= 0 || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)
+                continue;
+
+            if (Creature* creature = bot->FindNearestCreature((uint32)reqEntry, kQuestItemUseSearchRange))
+            {
+                outItemId = srcItem;
+                outTarget = creature->getObjectGuid();
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool UseQuestItemOnObjectiveAction::isUseful()
+{
+    uint32 itemId = 0;
+    ObjectGuid target;
+    return FindQuestItemUseTarget(bot, itemId, target);
+}
+
+bool UseQuestItemOnObjectiveAction::Execute(Event& event)
+{
+    Player* requester = event.GetOwner() ? event.GetOwner() : GetMaster();
+
+    uint32 itemId = 0;
+    ObjectGuid targetGuid;
+    if (!FindQuestItemUseTarget(bot, itemId, targetGuid))
+        return false;
+
+    Unit* target = ai->GetUnit(targetGuid);
+    if (!target)
+        return false;
+
+    // The travel layer stops a dozen yards short of the objective creature, so walk the last
+    // stretch first: the item's spell has a normal unit range and using it from outside simply
+    // fails. One direct step is enough; the next tick then uses the item.
+    if (bot->GetDistance(target) > INTERACTION_DISTANCE)
+    {
+        float const dx = bot->GetPositionX() - target->GetPositionX();
+        float const dy = bot->GetPositionY() - target->GetPositionY();
+        float const len = std::max(0.001f, std::sqrt(dx * dx + dy * dy));
+        float const near = 3.0f;
+        bot->GetMotionMaster()->MovePoint(target->GetMapId(),
+            target->GetPositionX() + dx / len * near,
+            target->GetPositionY() + dy / len * near,
+            target->GetPositionZ(),
+            MOVE_RUN_MODE | MOVE_PATHFINDING);
+        return true;
+    }
+
+    if (!UseItem(requester, itemId, target))
+    {
+        static std::map<uint32, time_t> lastFail;
+        uint32 const lowTarget = target->GetEntry();
+        time_t const nowFail = time(nullptr);
+        auto itFail = lastFail.find(lowTarget);
+        if (itFail == lastFail.end() || nowFail - itFail->second >= 20)
+        {
+            lastFail[lowTarget] = nowFail;
+            sPlayerbotAIConfig.logEvent(ai, "QuestItemUseFailed", std::to_string(lowTarget),
+                "item=" + std::to_string(itemId) + " dist=" + std::to_string((int)bot->GetDistance(target)));
+        }
+        return false;
+    }
+
+    if (!GetDuration())
+        SetDuration(sPlayerbotAIConfig.globalCoolDown);
+
+    sPlayerbotAIConfig.logEvent(ai, "QuestItemUsed", std::to_string(target->GetEntry()),
+        "item=" + std::to_string(itemId));
+    return true;
 }

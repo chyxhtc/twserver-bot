@@ -1,9 +1,15 @@
 
 #include "playerbot/playerbot.h"
 #include "AcceptQuestAction.h"
+#include "QuestTrace.h"
+#include "playerbot/QuestGreyRule.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
 
 using namespace ai;
+
+// How many levels above the bot a quest may be before the accept gate refuses it. Two keeps
+// the pool inside yellow quests, which is what a fresh bot can actually finish alone.
+static uint32 const BOT_QUEST_LEVEL_OVER_CAP = 2;
 
 static bool IsFixedRewardUpgrade(AiObjectContext* context, Quest const* quest)
 {
@@ -18,6 +24,21 @@ static bool IsFixedRewardUpgrade(AiObjectContext* context, Quest const* quest)
 
 bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, WorldObject* questGiver)
 {
+    // acctrace: this method refuses before AcceptQuest() is ever called, and the refusal is
+    // invisible today. Measured 2026-10-03 14:26, Shorpulog stood at giver 2980 with quests
+    // 780/42054/60150 offered as status=0 "available", yet the trace contained no
+    // QuestAcceptAttempt row at all - so the answer is one of the gates below, not the core.
+    auto traceGate = [&](char const* gate, std::string const& extra = std::string())
+    {
+        if (QuestTraceDue(ai, "gate-" + std::to_string(quest->GetQuestId()) + "-" + gate))
+            sPlayerbotAIConfig.logEvent(ai, "QuestAcceptGate", gate,
+                std::to_string(quest->GetQuestId()) +
+                "|botLevel=" + std::to_string(bot->GetLevel()) +
+                "|questLevel=" + std::to_string(quest->GetQuestLevel()) +
+                "|giver=" + (questGiver ? QuestTraceGiver(questGiver->getObjectGuid()) : std::string("none")) +
+                extra);
+    };
+
     // Breadcrumb quests that lead bots out of the starting zone into dangerous territory.
     // Block until level 5 when the bot is actually ready to move on.
     static const std::unordered_set<uint32> startingZoneBreadcrumbs = {
@@ -28,19 +49,55 @@ bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, 
         2160, // Supplies to Tannok     (Dwarf/Gnome -> Dun Morogh)
         2161, // A Peon's Burden        (Orc        -> Durotar)
     };
-    if (startingZoneBreadcrumbs.count(quest->GetQuestId()) && bot->GetLevel() < 5)
+    // Gate lowered from 5 to 3: all six breadcrumbs lead to the NEXT TOWN INSIDE the same
+    // starting zone (Goldshire, Dolanaar, Kharanos, Razor Hill, Bloodhoof, Deathknell), not
+    // across zones, so the reason for the original level-5 gate - a level-1 bot wandering
+    // into dangerous territory - is covered by level 3 plus the tightened low-level grind cap.
+    // Measured 2026-10-03: a level-2 gnome's only remaining local offer was 2160 Supplies to
+    // Tannok, refused by this gate, so it had nothing to do but fight and die.
+    if (startingZoneBreadcrumbs.count(quest->GetQuestId()) && bot->GetLevel() < 3)
+    {
+        traceGate("breadcrumb-below-5");
         return false;
+    }
 
     // CLUCK! — a novelty quest bots can't meaningfully complete; block entirely.
     if (quest->GetQuestId() == 3861)
+    {
+        traceGate("cluck");
         return false;
+    }
 
     // Challenge quests (Hardcore mode, etc.) - must never be taken by bots.
     if (quest->GetQuestId() == 80388)
+    {
+        traceGate("challenge-quest");
         return false;
+    }
 
     if (questGiver && (questGiver->GetEntry() == 81030 || questGiver->GetEntry() == 62609))
+    {
+        traceGate("challenge-npc");
         return false;
+    }
+
+    // Upper bound on quest level. Until now this gate only refused quests that were too LOW
+    // (grey); nothing refused quests that were too HIGH, and the core does not either -
+    // Player::SatisfyQuestLevel only checks MinLevel. A giver that offers one low level quest
+    // therefore drew the bot in and the accept then took whatever else the menu held.
+    // Measured 2026-10-03: a level 2 night elf held a level 7 quest (4161, red) and a level 6
+    // one (2438, orange), a level 1 undead held level 5 quest 8 - all undeliverable at that
+    // level, and doing their objectives is what kept the low level pool dying.
+    // Yellow and below only: the quest may be at most two levels above the bot.
+    uint32 const questLevel = quest->GetQuestLevel();
+    // Same knob the travel layer reads (bot_diag.conf quest_over), so the accept side and the
+    // giver-search side cannot drift apart again.
+    int32 const overCap = trace::IntValue("quest_over", (int)BOT_QUEST_LEVEL_OVER_CAP);
+    if (questLevel > 0 && questLevel > bot->GetLevel() + overCap)
+    {
+        traceGate("too-high", "|cap=" + std::to_string(overCap));
+        return false;
+    }
 
     // Tortoise-wow rogue-only quests with excessive walking and poor reward.
     static const std::unordered_set<uint32> tortoiseOnlyBlacklist = {
@@ -48,23 +105,45 @@ bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, 
         50003, // Professor Papucho
     };
     if (tortoiseOnlyBlacklist.count(quest->GetQuestId()))
+    {
+        traceGate("blacklist");
         return false;
+    }
 
     // Quest-log upkeep for masterless random bots (donor IsQuestWorthDoing
-    // idea, own code): skip grey quests unless the reward is worth it. Grey
-    // here is quest level + low-level-hide-diff < bot level; the need-reward
-    // check below is the same "need quest reward" value the travel layer
-    // consults before fetching grey givers (QuestValues.cpp, TravelMgr.cpp),
-    // extended to fixed RewItemId upgrades as well as choice rewards.
+    // idea, own code): skip grey quests unless the reward is worth it. Grey is
+    // the core's quest colour, fixed at BOT_GREY_QUEST_LEVEL_DIFF levels below the bot.
+    //
+    // Measured 2026-10-03 14:30, before the threshold was fixed: a level 9 bot refused
+    // Mulgore's level 4-5 quests (780/42054/60150/3376/60115, all logged as grey-no-reward)
+    // while Mulgore has no level 9 quest at all - the whole zone topped out at level 8. The
+    // bot therefore had nothing left to accept and spent its time on level 3 mobs for 0 xp.
+    // The need-reward check below is the same "need quest reward" value the travel layer
+    // consults before fetching grey givers (QuestValues.cpp, TravelMgr.cpp), extended to
+    // fixed RewItemId upgrades as well as choice rewards.
+    uint32 const greyBelowLevel = questgrey::GreyBelowLevel(bot, quest);
+
     if (sPlayerbotAIConfig.botQuestLogUpkeep &&
         !ai->HasActivePlayerMaster() &&
         sRandomBotFacade.IsRandomBot(bot) &&
         !quest->GetRequiredClasses() &&
         quest->GetQuestLevel() > 0 &&
-        bot->GetLevel() > bot->GetQuestLevelForPlayer(quest) + (uint32)sWorld.getConfig(CONFIG_INT32_QUEST_LOW_LEVEL_HIDE_DIFF) + 1)
+        bot->GetLevel() > greyBelowLevel)
     {
         if (!AI_VALUE2(bool, "need quest reward", (int32)quest->GetQuestId()) && !IsFixedRewardUpgrade(context, quest))
-            return false;
+        {
+            // Chain exception: a grey quest that is the prerequisite of a quest this bot
+            // would still take is a link, not filler. Refusing it strands the whole chain.
+            if (questgrey::LeadsToNonGreyQuest(bot, quest->GetQuestId()))
+            {
+                traceGate("chain-link-kept", "|greyBelow=" + std::to_string(greyBelowLevel));
+            }
+            else
+            {
+                traceGate("grey-no-reward", "|greyBelow=" + std::to_string(greyBelowLevel));
+                return false;
+            }
+        }
     }
 
     if (AcceptQuest(requester, quest, questGiver->getObjectGuid()))

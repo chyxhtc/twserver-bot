@@ -21,7 +21,13 @@ namespace ai
         // Checks shared by every travel-target action (activity, movement,
         // no active target). isUseful adds the prepared-request check.
         bool CanChooseTravel();
-        void setNewTarget(Player* requester, TravelTarget* newTarget, TravelTarget* oldTarget);
+        // clearBlacklists: a genuinely new destination invalidates the "nothing to find"
+        // time boxes and they are dropped. The reset travel target park is not a new
+        // destination - it is a deliberate pause - so it keeps them (see
+        // ResetTargetAction::Execute: without this a park every couple of seconds wiped
+        // the one-minute no-destination throttle and re-ran the candidate search).
+        void setNewTarget(Player* requester, TravelTarget* newTarget, TravelTarget* oldTarget,
+            bool clearBlacklists = true);
 
         bool SetBestTarget(Player* requester, TravelTarget* target, PartitionedTravelList& travelPartitions, bool onlyActive = true);
     public:

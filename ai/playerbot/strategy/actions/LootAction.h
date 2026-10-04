@@ -17,6 +17,10 @@ namespace ai
     public:
         OpenLootAction(PlayerbotAI* ai) : MovementAction(ai, "open loot") {}
         virtual bool Execute(Event& event) override;
+        // MovementAction::isPossible() is just ai->CanMove(); when it refuses there was no
+        // trace of why, which is how "try: open loot impossible [can loot]" appeared for a
+        // bot standing right on a quest container. The override names the refusing gate.
+        virtual bool isPossible() override;
 
     private:
         bool DoLoot(LootObject& lootObject);

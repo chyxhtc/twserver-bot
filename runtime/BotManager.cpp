@@ -73,7 +73,13 @@ bool IsUsableTeleportPoint(ai::WorldPosition const& point)
 // Probes GenericRpg destinations in the bot's ±5 validated level window and
 // returns a terrain-validated point. Destinations stay TravelMgr-owned.
 // Returns nullptr on any miss (fail-closed, original position retained).
-ai::WorldPosition const* PickLevelFittingPoint(::Player* bot)
+// requireMapId: -1 means "any map" (login scatter, post-rez rescue). It used to be 0,
+// which collided with map 0 being a real map id, so a cross-continent transfer *to*
+// Eastern Kingdoms silently accepted a point on Kalimdor: measured, a bot heading for
+// Undercity got teleported from map 1 to (1452,-4180) on map 1 and then walked at an
+// unreachable target. The bug hid behind a self-contradictory log line ("map 1 -> map
+// 1") that used to be blamed on log timing.
+ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId = -1)
 {
     if (!bot)
         return nullptr;
@@ -124,6 +130,10 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot)
         {
             ai::WorldPosition* point = points[urand(0, static_cast<uint32>(points.size() - 1))];
             if (!point)
+                continue;
+            // Cross-continent transfer needs a landing point on the requested map;
+            // the login scatter and post-rez rescue leave this at 0 (any map).
+            if (requireMapId >= 0 && point->getMapId() != (uint32)requireMapId)
                 continue;
             // Reject unresolved area flag rather than silently using linkedZone fallback
             // from GetByAreaFlagAndMap. Allow safe parent-zone cached lookup via helper.
@@ -327,8 +337,105 @@ bool TeleportMisplacedBot(::Player* bot, int32 areaLevel, const std::string& cau
 }
 } // namespace
 
+// Death-loop rescue, area-level independent.
+//
+// The +5 rule in MisplacedBotEligible is a zone/area average, so it is blind to a
+// small pocket of over-level creatures sitting on top of a quest objective inside an
+// otherwise level-appropriate area. The 2026-10-02 night run had exactly that:
+// Fyrwezirn (level 5) looped on a "talk to questtaker [Sealed Supply Crate]" point
+// inside a level-6..8 Venture Co. camp in area 222 (validated level 5), dying every
+// couple of minutes for 20 deaths and 0 level-ups while the eligibility line kept
+// answering "area 222 level 5 fits level 5+5".
+//
+// The geography-free signal is "revives keep coming and the level never moves".
+// Counting happens here, at the single point every revive path goes through, and a
+// level gained since the window opened resets it - that is what keeps ordinary hard
+// churn out of the relocation set.
+bool BotManager::RelocateDeathLoopedBot(::Player* bot)
+{
+    if (!sPlayerbotAIConfig.relocateHopelessDeaths || !sPlayerbotAIConfig.hopelessDeathLoopCount)
+        return false;
+    if (!bot || !bot->GetSession() || !bot->GetSession()->IsHeadless())
+        return false;
+    if (!bot->IsInWorld() || bot->IsBeingTeleported() || bot->InBattleGround())
+        return false;
+    if (GroupHasRealPlayer(bot))
+        return false;
+    BotRecord* record = FindBot(bot->GetObjectGuid());
+    if (!record || !record->random || record->lifecycle != BotLifecycle::InWorld)
+        return false;
+    if (!record->masterGuid.IsEmpty())
+        return false;
+    if (sRandomBotFacade.IsPinnedBot(bot->GetGUIDLow()))
+        return false;
+    if (BotActivityLeaseManager::Instance().GetActivity(bot->GetGUIDLow()) == BotActivity::Dungeon)
+        return false;
+
+    ::PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(bot);
+    if (!ai || !ai->GetAiObjectContext())
+        return false;
+
+    uint32 const key = bot->GetGUIDLow();
+    DeathLoopState& state = m_deathLoop[key];
+    time_t const now = time(nullptr);
+
+    // A level gained since the window opened is progress: however many times it died,
+    // this bot is not pinned. Also restarts the window when it has aged out.
+    if (state.windowStart == 0 || state.levelAtWindowStart == 0 ||
+        now - state.windowStart > (time_t)sPlayerbotAIConfig.hopelessDeathLoopWindowSec ||
+        bot->GetLevel() > state.levelAtWindowStart)
+    {
+        state.windowStart = now;
+        state.revives = 0;
+        state.levelAtWindowStart = bot->GetLevel();
+    }
+    ++state.revives;
+
+    if (state.revives < sPlayerbotAIConfig.hopelessDeathLoopCount)
+        return false;
+    if (state.lastRelocate && now - state.lastRelocate < (time_t)sPlayerbotAIConfig.hopelessDeathLoopCooldownSec)
+        return false;
+
+    int32 areaLevel = 0;
+    MaNGOS::Singleton<ai::TravelMgr>::Instance().TryGetValidatedAreaLevel(bot->GetAreaId(), areaLevel);
+    std::string const cause = "death loop (" + std::to_string(state.revives) + " revives in " +
+        std::to_string((now - state.windowStart) / 60) + " min, no level)";
+    if (!TeleportMisplacedBot(bot, areaLevel, cause))
+        return false;
+
+    // Break the walk-back: retire the active travel target and park quest travel for a
+    // while, so the fresh position is actually used instead of the bot marching straight
+    // back to the same objective. Both are the same seams the framework already uses
+    // (XpGainAction expires the target on a ding; MoveToTravelTargetAction parks a
+    // purpose on a failed move).
+    if (ai::TravelTarget* travelTarget = ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target") ?
+        ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get() : nullptr)
+    {
+        sTravelMgr.SetNullTravelTarget(travelTarget);
+        travelTarget->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
+        travelTarget->SetExpireIn(1000);
+    }
+    if (auto* questBlock = ai->GetAiObjectContext()->GetValue<time_t>("manual time", "no travel purpose until::quest"))
+        questBlock->Set(now + (time_t)sPlayerbotAIConfig.hopelessDeathLoopQuestBlockSec);
+
+    state.lastRelocate = now;
+    state.revives = 0;
+    state.windowStart = now;
+    state.levelAtWindowStart = bot->GetLevel();
+    ++state.relocations;
+    sLog.outString("TortoiseBots: %s - relocated %s level %u area %u (relocation #%u this session)",
+        cause.c_str(), bot->GetName(), bot->GetLevel(), bot->GetAreaId(), state.relocations);
+    return true;
+}
+
 bool BotManager::RelocateHopelessBot(::Player* bot)
 {
+    // Area-level check first only when it can fire; the death-loop check is the
+    // fallback for local hazards the +5 rule cannot see, and it runs on the same
+    // revive event. Either one relocates at most once per call.
+    if (RelocateDeathLoopedBot(bot))
+        return true;
+
     // Diagnostic (15.9.): one line per revive saying why a bot was NOT relocated - a level-8
     // bot died fifteen times to level-20 spiders in Hillsbrad without a single relocation
     // although the zone table and the rule said it should have been.
@@ -364,6 +471,190 @@ bool BotManager::RelocateStrandedBot(::Player* bot)
     if (!MisplacedBotEligible(bot, areaLevel))
         return false;
     return TeleportMisplacedBot(bot, areaLevel, "stranded bot");
+}
+
+// Cross-continent transfer.
+//
+// The travel node graph connects the two continents on paper (the boat and zeppelin
+// rows exist and a recursive SQL query over the link table finds 1793 of 1839 nodes
+// reachable from Menethil), but the runtime route search still returns an empty route
+// for those pairs, and the gate then reported the misleading "no route to that
+// continent" and dropped the target. Rather than keep the bot on its home continent,
+// the transfer puts it on the destination map directly - the same mechanism the login
+// scatter and the death-loop rescue already use - and lets ordinary travel take over.
+//
+// Landing point: a GenericRpg destination point on the requested map whose validated
+// area level is inside the bot's +-5 window and whose terrain resolves (see
+// IsUsableTeleportPoint). GenericRpg points are built from NPC entry/travel-purpose
+// data, i.e. town NPCs such as innkeepers and flight masters, which is why they are
+// the safe choice the user asked for. Everything else fails closed.
+// Unstuck rescue for a living bot.
+//
+// UnstuckAction's "move long stuck" branch offers a hearthstone or a repop. The hearth is
+// refused when the bot is stuck near its own bind point (HearthLeadsSomewhereUseful, 300 yd)
+// and repop is a revive action, so a living bot that fell through both sat on the same
+// coordinate for 40+ minutes while two long-stuck trips were logged. Measured on a level-3
+// gnome in Coldridge Valley.
+//
+// Landing point: the nearest hub from ai_playerbot_questhub that still has quests in the
+// bot's level window, i.e. somewhere it can immediately pick up work, instead of the
+// area-checked town point the death rescue uses. Height comes from the terrain because the
+// hub table stores x/y only.
+bool BotManager::TeleportBotToNearestHub(::Player* bot)
+{
+    // Visibility: the rescue used to fail silently, so a wedged bot showed nothing at all in
+    // the log. One line per attempt with the outcome, so "nothing happens" can be told apart
+    // from "never called".
+    if (bot)
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub check %s level %u alive=%d map=%u",
+            bot->GetName(), bot->GetLevel(), (int)bot->IsAlive(), bot->GetMapId());
+
+    if (!bot || !bot->GetSession() || !bot->GetSession()->IsHeadless())
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped: no headless session");
+        return false;
+    }
+    if (!bot->IsInWorld() || bot->IsBeingTeleported() || bot->InBattleGround())
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: not in world / teleporting / battleground", bot->GetName());
+        return false;
+    }
+    if (!bot->IsAlive())
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: dead", bot->GetName());
+        return false;
+    }
+
+    BotRecord* record = FindBot(bot->GetObjectGuid());
+    if (!record || !record->random || record->lifecycle != BotLifecycle::InWorld)
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: not an in-world random bot", bot->GetName());
+        return false;
+    }
+    if (!record->masterGuid.IsEmpty())
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: has a master", bot->GetName());
+        return false;
+    }
+    if (sRandomBotFacade.IsPinnedBot(bot->GetGUIDLow()))
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: pinned", bot->GetName());
+        return false;
+    }
+    if (BotActivityLeaseManager::Instance().GetActivity(bot->GetGUIDLow()) == BotActivity::Dungeon)
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: dungeon crew", bot->GetName());
+        return false;
+    }
+
+    auto& travelMgr = MaNGOS::Singleton<ai::TravelMgr>::Instance();
+    float hubX = 0.0f, hubY = 0.0f;
+    if (!travelMgr.FindNearestQuestHubWithWork(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+        bot->GetLevel(), hubX, hubY))
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: no hub with work for level %u on map %u",
+            bot->GetName(), bot->GetLevel(), bot->GetMapId());
+        return false;
+    }
+
+    // The hub row has no height; resolve the ground/water level before teleporting.
+    ai::WorldPosition point(bot->GetMapId(), hubX, hubY, 0.0f);
+    if (!point.isOverworld() || !point.isValid() || !point.loadMapAndVMap(0))
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: hub (%.1f %.1f) has no usable map/vmap",
+            bot->GetName(), hubX, hubY);
+        return false;
+    }
+
+    TerrainInfo const* terrain = point.getTerrain();
+    if (!terrain)
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: no terrain at hub (%.1f %.1f)",
+            bot->GetName(), hubX, hubY);
+        return false;
+    }
+
+    float groundZ = INVALID_HEIGHT;
+    float const maxZ = terrain->GetWaterOrGroundLevel(hubX, hubY, 0.0f, &groundZ, false);
+    if (groundZ <= INVALID_HEIGHT || maxZ <= INVALID_HEIGHT)
+    {
+        TB_LOG_BASIC("TortoiseBots: unstuck-hub skipped %s: hub (%.1f %.1f) has no ground level",
+            bot->GetName(), hubX, hubY);
+        return false;
+    }
+
+    if (!bot->TeleportTo(bot->GetMapId(), hubX, hubY, groundZ + 1.0f, bot->GetOrientation(), 0))
+    {
+        sLog.outError("TortoiseBots: unstuck hub teleport failed for bot %s to map %u %.1f %.1f %.1f",
+            bot->GetName(), bot->GetMapId(), hubX, hubY, groundZ);
+        return false;
+    }
+
+    TB_LOG_BASIC("TortoiseBots: unstuck hub teleport %s level %u to (%.1f %.1f %.1f)",
+        bot->GetName(), bot->GetLevel(), hubX, hubY, groundZ);
+    return true;
+}
+
+bool BotManager::TransferBotToMap(::Player* bot, uint32 mapId)
+{
+    // Arm-aware: an overnight round can open the cross-continent transfer for one arm
+    // only, which is how the "does the far hand-in get finished, and what happens next"
+    // question is answered without moving the whole pool.
+    if (!sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "transfer",
+            sPlayerbotAIConfig.transferToOtherContinent ? 1 : 0))
+        return false;
+    if (!bot || !bot->GetSession() || !bot->GetSession()->IsHeadless())
+        return false;
+    if (!bot->IsInWorld() || bot->IsBeingTeleported() || bot->InBattleGround())
+        return false;
+    // Dead, ghosted or fighting bots stay put: a transfer would drop the corpse run or
+    // yank a bot out of a fight it is winning.
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST))
+        return false;
+    if (bot->GetMapId() == mapId)
+        return false;
+    // Below level 10 the quests are in the starting area and a level-fitting town on
+    // the other continent is behind zones the bot cannot cross; same rule as the
+    // login scatter.
+    if (bot->GetLevel() < 10)
+        return false;
+
+    BotRecord* record = FindBot(bot->GetObjectGuid());
+    if (!record || !record->random || record->lifecycle != BotLifecycle::InWorld)
+        return false;
+    if (!record->masterGuid.IsEmpty())
+        return false;
+    if (sRandomBotFacade.IsPinnedBot(bot->GetGUIDLow()))
+        return false;
+    if (BotActivityLeaseManager::Instance().GetActivity(bot->GetGUIDLow()) == BotActivity::Dungeon)
+        return false;
+
+    uint32 const key = bot->GetGUIDLow();
+    time_t const now = time(nullptr);
+    auto const it = m_lastTransfer.find(key);
+    if (it != m_lastTransfer.end() && now - it->second < (time_t)sPlayerbotAIConfig.transferCooldownSec)
+        return false;
+
+ai::WorldPosition const* chosen = PickLevelFittingPoint(bot, (int32)mapId);
+    if (!chosen)
+    {
+        TB_LOG_DETAIL("TortoiseBots: continent transfer %s level %u has no valid landing point on map %u",
+            bot->GetName(), bot->GetLevel(), mapId);
+        return false;
+    }
+
+    uint32 const fromMap = bot->GetMapId();
+    if (!bot->TeleportTo(chosen->getMapId(), chosen->getX(), chosen->getY(), chosen->getZ(), bot->GetOrientation(), 0))
+    {
+        sLog.outError("TortoiseBots: continent transfer TeleportTo failed for bot %s to map %u %.1f %.1f %.1f, retaining position",
+            bot->GetName(), chosen->getMapId(), chosen->getX(), chosen->getY(), chosen->getZ());
+        return false;
+    }
+
+    m_lastTransfer[key] = now;
+    TB_LOG_BASIC("TortoiseBots: continent transfer %s level %u map %u -> map %u (%.1f %.1f %.1f)",
+        bot->GetName(), bot->GetLevel(), fromMap, chosen->getMapId(), chosen->getX(), chosen->getY(), chosen->getZ());
+    return true;
 }
 
 void BotManager::SweepStrandedBots(uint32_t diff)
@@ -699,7 +990,8 @@ void BotManager::OnPlayerLogin(::Player* player)
     uint32 botGuidLow = player->GetGUIDLow();
 
     bool freshBot = TortoiseBots::NeedsInitialGearSeeding(
-        player->GetTotalPlayedTime(), sRandomBotFacade.GetValue(botGuidLow, "seeded"));
+        player->GetTotalPlayedTime(), sRandomBotFacade.GetValue(botGuidLow, "seeded"),
+        sPlayerbotAIConfig.forceGearSeed);
     if (record.random && sPlayerbotAIConfig.randomGearUpgradeEnabled && player->GetLevel() >= 5 && freshBot)
     {
         sRandomBotFacade.UpdateGearSpells(player);

@@ -18,25 +18,46 @@ bool DpsAssistAction::isUseful()
 
 bool AttackAnythingAction::isUseful()
 {
-    if (!bot->IsAlive()) // a ghost travelling or picking fights instead of going for its corpse
+    // GYDIAG: "attack anything useless" is the only trace a bot that never starts a fight
+    // leaves behind, and eight different checks can produce it. Name the one that fired,
+    // one line per bot per 30 s, only while out of combat. Paired with GrindNoTarget in
+    // GrindTargetValue; both go away with the next cleanup pass (search GYDIAG).
+    auto deny = [&](char const* why) -> bool
+    {
+        if (!bot->IsInCombat() && !ai->HasRealPlayerMaster() && !bot->InBattleGround())
+        {
+            time_t const now = time(nullptr);
+            time_t const last = AI_VALUE2(time_t, "manual time", "attackdiag logged");
+            if (!last || now - last >= 30)
+            {
+                SET_AI_VALUE2(time_t, "manual time", "attackdiag logged", now);
+                Unit* grindTarget = GetTarget();
+                sPlayerbotAIConfig.logEvent(ai, "AttackDenied", why,
+                    std::string("grindtarget=") + (grindTarget ? grindTarget->GetName() : "(none)"));
+            }
+        }
         return false;
+    };
+
+    if (!bot->IsAlive()) // a ghost travelling or picking fights instead of going for its corpse
+        return deny("dead");
 
     if (!ai->AllowActivity(GRIND_ACTIVITY)) //Bot not allowed to be active
-        return false;
+        return deny("no-grind-activity");
 
     if (ai->HasRealPlayerMaster())
-        return false;
+        return deny("has-real-master");
 
     if (!AI_VALUE(bool, "can move around"))
-        return false;
+        return deny("cannot-move-around");
 
     Unit* target = GetTarget();
 
     if (!target || !ai->IsSafe(target))
-        return false;
+        return deny(!target ? "no-grind-target" : "target-unsafe");
 
     if (ai->ContainsStrategy(STRATEGY_TYPE_HEAL) && !ai->HasStrategy("offdps", BotState::BOT_STATE_COMBAT))
-        return false;
+        return deny("heal-strategy");
 
     // A finished quest waiting at its taker is the bot's own business: the walk
     // to the hand-in must not lose to "attack before being attacked", or a bot
@@ -54,14 +75,14 @@ bool AttackAnythingAction::isUseful()
         QuestTravelDestination* questDestination = static_cast<QuestTravelDestination*>(destination);
         if (bot->GetQuestStatus(questDestination->GetQuestId()) == QUEST_STATUS_COMPLETE &&
             CanFreeMoveValue::CanFreeMoveTo(ai, *travelTarget->getPosition()))
-            return false;
+            return deny("quest-taker-waiting");
     }
 
     if(!target->IsPlayer() && sServerFacade.isInFront(bot, target, target->GetCombatReach(bot, false, 0.0f) * 1.5f, M_PI_F * 0.5f) && target->IsHostileTo(bot) && target->GetLevel() < bot->GetLevel() + 3.0) // Attack before being attacked.
         return true;
 
     if (AI_VALUE(bool, "travel target traveling") && CanFreeMoveValue::CanFreeMoveTo(ai, *travelTarget->getPosition())) //Bot is traveling
-        return false;
+        return deny("traveling");
 
     return true;
 }

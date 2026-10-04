@@ -517,6 +517,22 @@ bool ShouldLootObject::Calculate()
 		return true;
 	}
 
+	// Chicken and egg for containers: a chest's live loot is only generated when someone
+	// opens it, so "is anything in there worth taking" is always false before the first
+	// open - and the loot chain therefore never opens it. When the object's loot table
+	// holds an item one of this bot's quests needs, answer yes so the chain gets to open
+	// it. Measured live: a level-8 bot stood at the Water Pitcher (go 2907) for hours;
+	// LootGoSeen showed lootState 1 (ready) at 0-10 yards and not one LootAttempt fired.
+	if (object->IsGameObject())
+	{
+		GameObject* questGo = static_cast<GameObject*>(object);
+		for (auto& entry : GAI_VALUE2(std::list<uint32>, "entry loot list", -1 * (int)questGo->GetEntry()))
+		{
+			if (ItemUsageValue::IsNeededForQuest(bot, entry))
+				return true;
+		}
+	}
+
 	return false;
 }
 

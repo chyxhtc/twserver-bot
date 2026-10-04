@@ -20,7 +20,23 @@ GuidPosition GraveyardValue::Calculate()
     {
         auto travelTarget = AI_VALUE(TravelTarget*, "travel target");
 
-        if (travelTarget && travelTarget->getPosition() && travelTarget->getPosition()->GetMapId() == bot->GetMapId())
+        // The framework's idle travel target (TravelMgr::SetNullTravelTarget, which is also
+        // the state a freshly constructed TravelTarget starts in) carries a default
+        // constructed WorldPosition: map 0, (0,0,0). The old guard only compared map ids, so
+        // on Eastern Kingdoms (map 0) the reference position collapsed to the world origin and
+        // GetClosestGraveYard resolved the Alterac/Hillsbrad graveyards (ids 33 horde, 46
+        // alliance - the only entries linked to the zones covering (0,0)). A level-3 bot dying
+        // in Dun Morogh then "revived near its travel target" at Southshore/Tarren Mill on the
+        // 10-minute ghost timeout, the hopeless-bot rescue moved it back to its start, and it
+        // looped. Kalimdor bots were immune only because the null position's map id 0 never
+        // equals their map 1. A travel position counts only when the target really has a
+        // destination and the position is a live one on the bot's own map.
+        TravelDestination* travelDestination = travelTarget ? travelTarget->GetDestination() : nullptr;
+        bool hasRealTravelPosition = travelTarget && travelDestination &&
+            !dynamic_cast<NullTravelDestination*>(travelDestination) &&
+            travelTarget->getPosition() && (bool)*travelTarget->getPosition();
+
+        if (hasRealTravelPosition && travelTarget->getPosition()->GetMapId() == bot->GetMapId())
         {
             refPosition = *travelTarget->getPosition();
         }
@@ -82,12 +98,48 @@ GuidPosition BestGraveyardValue::Calculate()
 
     uint32 deathCount = AI_VALUE(uint32, "death count");
 
+    // GYDIAG: one throttled line per dead bot saying exactly which branch of this
+    // picker produced the revive point, plus every input it could have used. Added to
+    // chase the "low-level bot revives in Hillsbrad" report; remove once the cause is
+    // fixed (search GYDIAG).
+    auto gyDiag = [&](GuidPosition const& pick, const char* branch)
+    {
+        time_t const now = time(nullptr);
+        time_t const last = AI_VALUE2(time_t, "manual time", "gydiag logged");
+        if (last && now - last < 20)
+            return;
+        SET_AI_VALUE2(time_t, "manual time", "gydiag logged", now);
+
+        WorldPosition botPos(bot), corpsePos(corpse), masterPos(ai->GetGroupMaster());
+        auto const* selfGrave = sObjectMgr.GetClosestGraveYard(
+            botPos.getX(), botPos.getY(), botPos.getZ(), botPos.GetMapId(), bot->GetTeam());
+        ai::TravelTarget* travelTarget = AI_VALUE(ai::TravelTarget*, "travel target");
+        WorldPosition travelPos = (travelTarget && travelTarget->getPosition()) ? *travelTarget->getPosition() : WorldPosition();
+        TravelDestination* travelDest = travelTarget ? travelTarget->GetDestination() : nullptr;
+        std::string const travelDestName = travelDest ? travelDest->GetTitle() : "(none)";
+        bool const travelDestIsNull = travelDest && dynamic_cast<NullTravelDestination*>(travelDest) != nullptr;
+        sLog.outString(
+            "[GYDIAG] %s lvl=%u team=%d deaths=%u zone=%u area=%u branch=%s "
+            "bot=%u;%.1f;%.1f;%.1f corpse=%u;%.1f;%.1f;%.1f master=%s@%u;%.1f;%.1f travelHasPos=%d@%u;%.1f;%.1f "
+            "self=%u;%.1f;%.1f pick=%u;%.1f;%.1f;%.1f pickDist=%.1f travelDst=%s nullDst=%d",
+            bot->GetName(), bot->GetLevel(), (int)bot->GetTeam(), deathCount, bot->GetZoneId(), bot->GetAreaId(), branch,
+            botPos.GetMapId(), botPos.getX(), botPos.getY(), botPos.getZ(),
+            corpsePos.GetMapId(), corpsePos.getX(), corpsePos.getY(), corpsePos.getZ(),
+            (ai->GetGroupMaster() && ai->GetGroupMaster() != bot) ? ai->GetGroupMaster()->GetName() : "-",
+            masterPos.GetMapId(), masterPos.getX(), masterPos.getY(),
+            (travelTarget && travelTarget->getPosition()) ? 1 : 0, travelPos.GetMapId(), travelPos.getX(), travelPos.getY(),
+            selfGrave ? selfGrave->map_id : 0, selfGrave ? selfGrave->x : 0.0f, selfGrave ? selfGrave->y : 0.0f,
+            pick.GetMapId(), pick.getX(), pick.getY(), pick.getZ(), pick.fDist(botPos),
+            travelDestName.c_str(), travelDestIsNull ? 1 : 0);
+    };
+
     //attempt to revive at other same map graveyards which are not enemy territory
     if (!ai->HasActivePlayerMaster() && deathCount >= DEATH_COUNT_BEFORE_TRYING_ANOTHER_GRAVEYARD)
     {
         GuidPosition anotherGraveyard = AI_VALUE2(GuidPosition, "graveyard", "another closest appropriate");
         if (anotherGraveyard)
         {
+            gyDiag(anotherGraveyard, "another");
             return anotherGraveyard;
         }
         sLog.outDetail(
@@ -107,6 +159,7 @@ GuidPosition BestGraveyardValue::Calculate()
         GuidPosition masterGraveyard = AI_VALUE2(GuidPosition, "graveyard", "master");
         if (masterGraveyard)
         {
+            gyDiag(masterGraveyard, "master");
             return masterGraveyard;
         }
         sLog.outDetail(
@@ -119,11 +172,18 @@ GuidPosition BestGraveyardValue::Calculate()
     }
 
     //Revive near travel target if it's far away from last death.
-    if (AI_VALUE2(GuidPosition, "graveyard", "travel") && AI_VALUE2(GuidPosition, "graveyard", "travel").fDist(corpse) > sPlayerbotAIConfig.reactDistance)
+    // Requiring the travel graveyard to sit on the corpse's own map is a second line of
+    // defence behind the GraveyardValue fix: "revive near my travel target" must never
+    // move a corpse run to another continent (see the GYDIAG trail; this branch is what
+    // sent low-level Eastern Kingdoms bots to Hillsbrad).
+    GuidPosition travelGraveyardValue = AI_VALUE2(GuidPosition, "graveyard", "travel");
+    if (travelGraveyardValue && travelGraveyardValue.GetMapId() == corpse->GetMapId() &&
+        travelGraveyardValue.fDist(corpse) > sPlayerbotAIConfig.reactDistance)
     {
-        GuidPosition travelGraveyard = AI_VALUE2(GuidPosition, "graveyard", "travel");
+        GuidPosition travelGraveyard = travelGraveyardValue;
         if (travelGraveyard)
         {
+            gyDiag(travelGraveyard, "travel");
             return travelGraveyard;
         }
         sLog.outDetail(
@@ -135,7 +195,9 @@ GuidPosition BestGraveyardValue::Calculate()
         );
     }
 
-    return AI_VALUE2(GuidPosition, "graveyard", "self");
+    GuidPosition selfGraveyard = AI_VALUE2(GuidPosition, "graveyard", "self");
+    gyDiag(selfGraveyard, "self");
+    return selfGraveyard;
 }
 
 bool ShouldSpiritHealerValue::Calculate()

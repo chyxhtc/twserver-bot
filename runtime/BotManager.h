@@ -118,6 +118,22 @@ public:
     // RelocateHopelessBot). Same eligibility, +5 rule and destinations;
     // relocates after a grace period of continuous stranding.
     bool RelocateStrandedBot(::Player* bot);
+    // Cross-continent transfer for a random bot whose chosen travel target sits on
+    // another map. Picks a terrain-validated, level-fitting GenericRpg point (an
+    // NPC/town point) on the requested map and teleports there, so the travel layer
+    // can keep the target instead of dropping it. Fail-closed: any validation miss,
+    // cooldown, ownership, group, battleground or dungeon membership keeps position.
+    //
+    // Caller contract: only for QUEST destinations. Crossing an ocean to kill one
+    // mob and crossing back afterwards made no sense and was measured bouncing bots
+    // between the continents, so the travel layer passes this flag from a
+    // dynamic_cast to QuestTravelDestination and nothing else.
+    bool TransferBotToMap(::Player* bot, uint32 mapId);
+    // Move a living, stuck random bot to the nearest quest hub that still has quests for
+    // its level. The long-stuck rescue in UnstuckAction used to fall through to repop,
+    // which is a revive action and does nothing for a living bot, so a bot wedged near
+    // its own bind point stayed wedged forever. Fail-closed like the other rescues.
+    bool TeleportBotToNearestHub(::Player* bot);
 
     // Durable manual ownership is separate from the transient Headless record.
     // GetOwnedCharacters includes every undeleted same-account character plus
@@ -230,6 +246,23 @@ private:
     void SweepStrandedBots(uint32_t diff);
     uint32_t m_strandedSweepElapsedMs = 0;
     std::unordered_map<uint32_t, time_t> m_strandedSince; // key = guid counter
+    // Last successful cross-continent transfer per bot (key = guid counter), used for
+    // the anti-bounce cooldown.
+    std::unordered_map<uint32_t, time_t> m_lastTransfer;
+    // Area-level independent death-loop rescue. Every revive passes through
+    // RelocateHopelessBot, so the counter lives here rather than in the AI: a bot
+    // that revives repeatedly inside the configured window without gaining a level
+    // is looping on a local hazard the +5 area rule cannot see. Key = guid counter.
+    struct DeathLoopState
+    {
+        time_t windowStart = 0;
+        uint32_t revives = 0;
+        uint32_t levelAtWindowStart = 0;
+        time_t lastRelocate = 0;
+        uint32_t relocations = 0;
+    };
+    std::unordered_map<uint32_t, DeathLoopState> m_deathLoop;
+    bool RelocateDeathLoopedBot(::Player* bot);
     uint8_t m_packetTestStage = 0;
 };
 } // namespace TortoiseBots

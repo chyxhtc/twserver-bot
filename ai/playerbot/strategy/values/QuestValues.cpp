@@ -4,6 +4,7 @@
 #include "SharedValueContext.h"
 #include "ItemUsageValue.h"
 #include "playerbot/TravelMgr.h"
+#include "playerbot/QuestGreyRule.h"
 
 using namespace ai;
 
@@ -493,16 +494,32 @@ uint32 DialogStatusValue::getDialogStatus(Player* bot, int32 questgiver, uint32 
 			{
 				if (bot->SatisfyQuestLevel(pQuest, false))
 				{
-					int32 lowLevelDiff = sWorld.getConfig(CONFIG_INT32_QUEST_LOW_LEVEL_HIDE_DIFF);
-						if (pQuest->IsAutoComplete() || (pQuest->IsRepeatable() && bot->getQuestStatusMap()[itr->second].m_rewarded))
+					// Use the same grey rule the accept layer applies (questgrey::). Asking
+					// the core instead reads Quests.LowLevelHideDiff = -1 as "never hide",
+					// which made this layer keep proposing givers whose only offers the
+					// accept gate refuses; the bot then looped on the nearest grey giver
+					// instead of walking to a giver with real content.
+					// A quest this bot cannot take must not colour its giver at all: the core
+					// never lists it, but this relation-map walk would. Measured 2026-10-04:
+					// Stunograr (race 6, class 5) was sent back to creature 2980 every 6-7
+					// minutes for quests 3091/3092 (warrior/hunter class masks) and 3094
+					// (druid); 2980's real menu only ever held grey 60150. Jartorrn (race 1,
+					// class 2) kept re-picking 3107, a paladin rune that is also dwarf-only
+					// (RequiredRaces 4), so the class mask alone was not enough. Gating both
+					// masks still lets a bot's own class quests bypass the grey rule below.
+					bool const classRaceOk =
+						bot->SatisfyQuestClass(pQuest, false) && bot->SatisfyQuestRace(pQuest, false);
+
+					if (classRaceOk &&
+					    (pQuest->IsAutoComplete() || (pQuest->IsRepeatable() && bot->getQuestStatusMap()[itr->second].m_rewarded)))
 					{
 						dialogStatusNew = DIALOG_STATUS_REWARD_REP;
 					}
-                    else if (lowLevelDiff < 0 || bot->GetLevel() <= bot->GetQuestLevelForPlayer(pQuest) + uint32(lowLevelDiff) || pQuest->GetRequiredClasses())
-					{
-						dialogStatusNew = DIALOG_STATUS_AVAILABLE;
-					}
-					else
+                    else if (classRaceOk && (pQuest->GetRequiredClasses() || !questgrey::IsGreyAndNotChain(bot, pQuest)))
+                    {
+                        dialogStatusNew = DIALOG_STATUS_AVAILABLE;
+                    }
+					else if (classRaceOk)
 					{
 						dialogStatusNew = DIALOG_STATUS_CHAT;
 					}
@@ -528,7 +545,11 @@ bool NeedQuestRewardValue::Calculate()
 	uint32 questId = stoi(getQualifier());
 	Quest const* pQuest = sObjectMgr.GetQuestTemplate(questId);
 
-	if (pQuest->GetRequiredClasses()) //Always try to do class quests.
+	// Always try to do class quests - of this bot's own class and race. A quest restricted to
+	// somebody else would otherwise keep its giver "worth travelling to" through the low-level
+	// fallback even after the availability test above stopped calling it available.
+	if ((pQuest->GetRequiredClasses() || pQuest->GetRequiredRaces()) &&
+		bot->SatisfyQuestClass(pQuest, false) && bot->SatisfyQuestRace(pQuest, false))
         return true;
 
 	for (uint8 i = 0; i < pQuest->GetRewChoiceItemsCount(); ++i)
@@ -647,10 +668,15 @@ bool CanUseItemOn::Calculate()
 			if (spellInfo->Effect[0] == SPELL_EFFECT_DUMMY && spellInfo->Id == 19938)  // Awaken Lazy Peon (hardcoded in core!)
 			{
 				// 17743 = Lazy Peon Sleep | 10556 = Lazy Peon
-				if (!unit->HasAura(17743) || unit->GetEntry() != 10556)
-					return false;
-
-				return true;
+				//
+				// The aura requirement here was a module-side invention that can never be met on
+				// this database: creature_template for 10556 has auras = NULL, so no Lazy Peon
+				// ever carries 17743 and the Blackjack (item 16114, spell 19938) was therefore
+				// never used. Measured 2026-10-04: all eight bots holding quest 5441 had
+				// mobcount1 = 0 after hours of standing next to the peons, while the core's own
+				// spell 19938 handling (SPELL_EFFECT_DUMMY, "Awaken Lazy Peon" hardcoded) is what
+				// credits the quest. Gate on the creature entry only.
+				return unit->GetEntry() == 10556;
 			}
 
 			if (ai->CanCastSpell(spellId, unit, 0, false, nullptr, true))

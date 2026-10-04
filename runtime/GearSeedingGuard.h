@@ -19,8 +19,19 @@ namespace TortoiseBots
 //   played == 0, seeded   -> skip (already seeded this process)
 //   played >  0, unseeded -> skip (veteran after a restart; gear is earned)
 //   played >  0, seeded   -> skip (established bot)
-inline bool NeedsInitialGearSeeding(std::uint32_t playedTimeSeconds, std::uint32_t seededMark)
+//
+// forceSeed overrides the played-time half of the heuristic, once per process
+// per bot (the seeded stamp still applies). It exists for pools that start at
+// level 1: such a bot is below the level-5 seeding floor on its only fresh
+// login and would otherwise never receive level-appropriate gear, because both
+// upgrade paths (quest rewards, loot) are unreliable at low level. The seeding
+// itself is incremental and never wipes earned gear.
+inline bool NeedsInitialGearSeeding(std::uint32_t playedTimeSeconds, std::uint32_t seededMark,
+                                    bool forceSeed = false)
 {
-    return playedTimeSeconds == 0 && seededMark == 0;
+    if (seededMark != 0)
+        return false;
+
+    return forceSeed || playedTimeSeconds == 0;
 }
 }

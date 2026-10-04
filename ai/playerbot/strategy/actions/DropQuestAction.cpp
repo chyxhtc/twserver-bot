@@ -1,8 +1,59 @@
 
 #include "playerbot/playerbot.h"
 #include "DropQuestAction.h"
+#include "playerbot/QuestGreyRule.h"
+#include "playerbot/strategy/values/SharedValueContext.h"
 
 using namespace ai;
+
+namespace ai { namespace questgrey
+{
+bool ItemHasKnownSource(uint32 itemId)
+{
+    if (!itemId)
+        return false;
+
+    static std::map<uint32, bool> cache;
+    auto const cached = cache.find(itemId);
+    if (cached != cache.end())
+        return cached->second;
+
+    ItemRequiredTargetMapBounds const bounds = sObjectMgr.GetItemRequiredTargetMapBounds(itemId);
+    bool const hasSource =
+        !GAI_VALUE2(std::list<int32>, "item drop list", itemId).empty() ||
+        !GAI_VALUE2(std::list<int32>, "item vendor list", itemId).empty() ||
+        bounds.first != bounds.second;
+
+    cache[itemId] = hasSource;
+    return hasSource;
+}
+
+bool QuestHasNoKnownSource(Quest const* quest)
+{
+    if (!quest)
+        return false;
+
+    bool anyItem = false;
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+    {
+        if (!quest->ReqItemId[i] || !quest->ReqItemCount[i])
+            continue;
+
+        anyItem = true;
+        if (ItemHasKnownSource(quest->ReqItemId[i]))
+            return false;
+    }
+
+    if (!anyItem)
+        return false;
+
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        if (quest->ReqCreatureOrGOId[i] && quest->ReqCreatureOrGOCount[i])
+            return false;
+
+    return true;
+}
+}} // namespace ai::questgrey
 
 bool DropQuestAction::Execute(Event& event)
 {
@@ -51,7 +102,9 @@ bool CleanQuestLogAction::IsGreyIncomplete(Quest const* quest)
     // level, so such quests are never treated as grey.
     if (!quest || quest->GetQuestLevel() <= 0)
         return false;
-    return bot->GetLevel() >= bot->GetQuestLevelForPlayer(quest) + 8;
+    // Same threshold the accept gate uses (bot_diag.conf grey_level_diff, hot reloaded):
+    // a quest must never be accepted as non-grey and then dropped as grey in the same breath.
+    return bot->GetLevel() > questgrey::GreyBelowLevel(bot, quest);
 }
 
 bool CleanQuestLogAction::HasRequiredDeliverItems(Quest const* quest)
@@ -70,6 +123,17 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
         return false;
     if (status == QUEST_STATUS_INCOMPLETE)
     {
+        // A quest whose entire objective is a set of items the module cannot source anywhere
+        // is unroutable: it never gets a destination, so the bot can never finish it, and it
+        // still costs a quest-log slot and still tells the outgrown-zone rule that there is
+        // work left here. Measured 2026-10-04 with a join over creature_loot_template,
+        // gameobject_loot_template and item_required_target: nine such quests were open, held
+        // by 20 of the 50 bots (Lazy Peons 8, Dwarven Digging 6, Crown of the Earth 4, ...).
+        // "Sourceless" is judged with the same three sources the travel layer itself consults,
+        // so this only drops quests the module provably cannot plan for.
+        if (upkeep && questgrey::QuestHasNoKnownSource(quest))
+            return true;
+
         if (IsGreyIncomplete(quest) && !quest->HasSpecialFlag(QUEST_SPECIAL_FLAG_DELIVER))
             return true;
         // Core reverts DELIVER quests to INCOMPLETE when the required items

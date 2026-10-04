@@ -1,6 +1,7 @@
 #include "playerbot/playerbot.h"
 #include "TravelValues.h"
 #include "playerbot/TravelMgr.h"
+#include "playerbot/QuestGreyRule.h"
 #include "QuestValues.h"
 #include "SharedValueContext.h"
 #include "BudgetValues.h"
@@ -282,9 +283,17 @@ bool NeedTravelPurposeValue::Calculate()
     case TravelDestinationPurpose::GatherFishing:
         if (!AI_VALUE2(bool, "has strategy", "tfish"))
             return false;
+        // fall through
     case TravelDestinationPurpose::GatherSkinning:
     case TravelDestinationPurpose::GatherMining:
     case TravelDestinationPurpose::GatherHerbalism:
+        // Gathering trips walk a bot to a node, and the node is often inside a
+        // mob camp: unlike a player, a bot does not clear the camp first (only
+        // stealthed classes could work around it). Turning this off leaves
+        // grinding and questing as the only travel purposes.
+        if (!sPlayerbotAIConfig.gatherTravelEnabled)
+            return false;
+
         skill = gatheringSkills.at(purpose);
         if (bot->GetSkillValue(skill) < std::min(bot->GetSkillMax(skill), bot->GetSkillMaxForLevel(bot)))
         {
@@ -300,6 +309,12 @@ bool NeedTravelPurposeValue::Calculate()
         return ai->HasStrategy("explore", BotState::BOT_STATE_NON_COMBAT);
     case TravelDestinationPurpose::GenericRpg:
     {
+        // Aimless wandering to a generic NPC. Lowest-information entry in the
+        // travel table; once gathering was switched off it became the largest
+        // one (38%). Off leaves grinding and questing.
+        if (!sPlayerbotAIConfig.travelGenericRpgEnabled)
+            return false;
+
         uint32 rpgPhase = ai->GetFixedBotNumber(BotTypeNumber::RPG_PHASE_NUMBER, 60, 1);
 
         if (rpgPhase < 15) //Only last 45 minutes of the hour allow generic rpg.
@@ -309,6 +324,18 @@ bool NeedTravelPurposeValue::Calculate()
     }
     case TravelDestinationPurpose::Grind:
     {
+        // Grind is the noisiest travel purpose for a closed-loop behaviour test: it is
+        // phase-gated (first 45 minutes of the bot's hour) rather than need-gated, so a
+        // bot with nothing else to do walks out of town to fight. Measured: a single
+        // test bot teleported into Goldshire picked a Grind target 20 s later and left
+        // town northward, with no quest interaction at all. Same shape as the gather /
+        // generic-rpg / trainer switches above. Default 1 keeps upstream behaviour.
+        // Arm-aware so a round can compare "travel to grind" on against off in the
+        // same pool (default falls back to the global config).
+        if (!sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "travelgrind",
+                sPlayerbotAIConfig.travelGrindEnabled ? 1 : 0))
+            return false;
+
         uint32 rpgPhase = ai->GetFixedBotNumber(BotTypeNumber::RPG_PHASE_NUMBER, 60, 1);
 
         if (rpgPhase > 45) //Only first 45 minutes of the hour allow generic grind.
@@ -440,6 +467,11 @@ bool ShouldTravelNamedValue::Calculate()
     }
     else if (name.find("trainer") == 0)
     {
+        // Trainer errands are upkeep, not core play: class spells, trade skills,
+        // riding, pets. Off leaves grinding and questing as the travel purposes.
+        if (!sPlayerbotAIConfig.travelTrainerEnabled)
+            return false;
+
         if (ai->HasRealPlayerMaster())
             return false;
 
@@ -463,14 +495,53 @@ bool ShouldTravelNamedValue::Calculate()
             trainerType = TRAINER_TYPE_TRADESKILLS;
             budgetType = NeedMoneyFor::skilltraining;
         }
-        if (name == "trainer pet")
-        {
-            trainerType = TRAINER_TYPE_PETS;
-            budgetType = NeedMoneyFor::anything;
-        }
+          if (name == "trainer pet")
+          {
+              trainerType = TRAINER_TYPE_PETS;
+              budgetType = NeedMoneyFor::anything;
+          }
 
-        if (AI_VALUE2(uint32, "train cost", trainerType) == 0) //Has nothing to train
-            return false;
+          // Riding is a luxury, not a need: only travel once real spare money is
+          // left after every other reservation. Vanilla riding plus a mount costs
+          // roughly 100g, so a bot that merely affords the cheapest trainer visit
+          // should not walk there. 0 disables the gate.
+          if (name == "trainer mount" && sPlayerbotAIConfig.mountTrainingFreeMoney &&
+              AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::anything) < sPlayerbotAIConfig.mountTrainingFreeMoney)
+              return false;
+
+          // A trade-skill trip only pays off near a rank cap. Walking to a trainer
+          // for recipes alone made this the largest single consumer of travel
+          // decisions (56% of them in a 7h/50-bot run) and the largest death cause
+          // on the road. 0 disables the rule.
+          if (name == "trainer trade" && sPlayerbotAIConfig.trainerTradeSkillMargin)
+          {
+              bool nearRankCap = false;
+
+              for (uint32 skillId = 0; skillId < sSkillLineStore.GetNumRows() && !nearRankCap; ++skillId)
+              {
+                  SkillLineEntry const* skillLine = sSkillLineStore.LookupEntry(skillId);
+                  if (!skillLine)
+                      continue;
+                  if (skillLine->categoryId != SKILL_CATEGORY_PROFESSION &&
+                      skillLine->categoryId != SKILL_CATEGORY_SECONDARY)
+                      continue;
+                  if (!bot->HasSkill(skillId))
+                      continue;
+
+                  uint16 const maxValue = bot->GetSkillMax(skillId);
+                  if (!maxValue || maxValue >= 300) // unknown, or already at the top rank
+                      continue;
+
+                  if (uint32(bot->GetSkillValue(skillId)) + sPlayerbotAIConfig.trainerTradeSkillMargin >= maxValue)
+                      nearRankCap = true;
+              }
+
+              if (!nearRankCap)
+                  return false;
+          }
+
+          if (AI_VALUE2(uint32, "train cost", trainerType) == 0) //Has nothing to train
+              return false;
 
         // Partial-purse rule: travel when at least the cheapest trainable spell
         // fits the free-money budget. The old "has all money for" check demanded
@@ -537,6 +608,40 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     if (bot->GetLevel() < 10)
         return false;
 
+    // The area level is not the only way a zone can be finished: a bot whose quest log holds
+    // nothing it can still work on has nothing left here either. Measured 2026-10-03, a
+    // level-10 tauren in Mulgore (area level 5, so "outgrown" needs level 11) stood at a
+    // quest giver for half an hour with an empty log, refused every local quest as grey, and
+    // never left. Count only quests with work left in them: dangling status-NONE rows must
+    // not keep a bot at home. Used by both the leave-anyway timer below and the final answer.
+    uint32 actionableQuests = 0;
+    for (auto const& questStatus : bot->getQuestStatusMap())
+    {
+        if (questStatus.second.m_rewarded)
+            continue;
+        if (questStatus.second.m_status == QUEST_STATUS_INCOMPLETE ||
+            questStatus.second.m_status == QUEST_STATUS_COMPLETE ||
+            questStatus.second.m_status == QUEST_STATUS_FAILED)
+        {
+            // A quest the module cannot plan for (every item requirement has no drop, no
+            // vendor and no use-target) is not work the bot can do here. Counting it kept
+            // bots standing in zones they had outlevelled: measured 2026-10-04, 20 of 50
+            // bots held at least one such quest, Lazy Peons eight times over.
+            Quest const* quest = sObjectMgr.GetQuestTemplate(questStatus.first);
+            if (quest && questgrey::QuestHasNoKnownSource(quest))
+                continue;
+            ++actionableQuests;
+        }
+    }
+    // Nothing left to do = no actionable quest in the log AND the quest travel source just
+    // came back empty. That source only offers givers whose quest passes the same accept
+    // rules the bot applies (not grey, or a chain link, level/prereq/race all satisfied), so
+    // an empty search means "no acceptable quest is reachable from here" - which is what
+    // "no quest to do" has to mean for the leave rule.
+    bool const questSupplyEmpty =
+        AI_VALUE2(time_t, "manual time", "no travel purpose until::quest") > time(0);
+    bool const nothingToDo = actionableQuests == 0 && questSupplyEmpty;
+
     // No IsActive early-out here: this value doubles as the travel condition
     // stored on the Grind target it requests, and bailing while a target is
     // active drops that target to cooldown on the first status check after it
@@ -559,7 +664,10 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     {
         int32 areaLevel = 0;
         bool const areaKnown = sTravelMgr.TryGetValidatedAreaLevel(sServerFacade.GetAreaId(bot), areaLevel) && areaLevel > 0;
-        bool const outgrown = areaKnown && areaLevel + 5 < (int32)bot->GetLevel();
+        // areaOutgrown drives the 10-minute escape hatch; nothingToDo is what actually lets
+        // the bot go, so a bot with quests left in an outgrown zone stays and finishes them.
+        bool const areaOutgrown = areaKnown && areaLevel + 5 < (int32)bot->GetLevel();
+        bool const outgrown = areaOutgrown || nothingToDo;
         if (outgrown)
         {
             time_t outgrownSince = AI_VALUE2(time_t, "manual time", "outgrown since");
@@ -605,12 +713,15 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
         return true;
     }
 
-    // Fail closed: unknown area levels never trigger the rule.
-    int32 areaLevel = 0;
-    if (!sTravelMgr.TryGetValidatedAreaLevel(sServerFacade.GetAreaId(bot), areaLevel) || areaLevel <= 0)
-        return false;
+    // Stuck too long in an area this bot has outgrown: leave even if the log still has work,
+    // so an unhand-in-able quest cannot pin the bot forever.
+    if (leaveAnyway)
+        return true;
 
-    return areaLevel + 5 < (int32)bot->GetLevel();
+    // Otherwise leave only when there is genuinely nothing left to do here: no actionable
+    // quest, and no acceptable quest giver reachable. This also covers the unknown-area case
+    // (the signal does not depend on the area table).
+    return nothingToDo;
 }
 
 bool TravelTargetActiveValue::Calculate()

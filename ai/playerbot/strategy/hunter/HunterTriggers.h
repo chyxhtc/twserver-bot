@@ -224,13 +224,12 @@ private:
 
         bool IsActive() override
         {
-            // Below level 10, Hunter has no viable kiting toolkit (8yd ranged minimum, no
-            // traps yet) - once melee starts, stay in it rather than repeatedly trying to
-            // reopen ranged distance (which the "target->GetVictim() != bot" case below would
-            // otherwise attempt even against a target just as fast as the bot, e.g. whenever
-            // the pet currently has aggro, regardless of what happens if aggro flips back).
-            if (bot->GetClass() == CLASS_HUNTER && bot->GetLevel() < HUNTER_KITING_LEVEL)
-                return false;
+            // The old level gate here ("below 10 stay in melee once melee starts") is gone:
+            // the two strategies are symmetrical again, so a low level hunter that meleed a
+            // mob down can go back to the bow the moment the conditions below hold (target
+            // not on the bot, or distance reopened past 8 yards). Measured 2026-10-03: with
+            // only the melee direction open, level 2-3 hunters were locked into melee for
+            // the rest of the level and could not use their ranged kit at all.
 
             bool hasAmmo = ai->HasCheat(BotCheatMask::item) || AI_VALUE2(uint32, "item count", "ammo");
             if (!hasAmmo)
@@ -282,15 +281,15 @@ private:
 
         bool IsActive() override
         {
-            // A hunter below the kiting level keeps its ranged kit:
-            // SwitchToRangedTrigger never switches back below
-            // HUNTER_KITING_LEVEL, and the auto shot that the kit keeps running
-            // is gated on the "ranged" strategy - one melee switch here ends the
-            // hunter's sustained ranged attack for the rest of the level. The
-            // melee fallback stays for a hunter with no loaded ranged weapon (no
-            // weapon, wrong or no ammo, spent thrown stack).
-            if (bot->GetClass() == CLASS_HUNTER && bot->GetLevel() < HUNTER_KITING_LEVEL && HunterHasLoadedRangedWeapon(ai))
-                return false;
+            // The old rule kept a level 1-9 hunter in ranged no matter what, on the theory
+            // that its only fallback - stepping back out of the shot's dead zone - would
+            // always work. It does not: measured 2026-10-03, a level 3 hunter with a loaded
+            // bow was killed twice by a LEVEL 1 boar, logging ranged=1 close=0 for the whole
+            // fight, because the target stayed glued inside the 8 yard minimum and nothing
+            // ever selected the melee kit. Inside the dead zone melee is the only answer, so
+            // the conditions below decide (target on the bot, within 8 yards, and either
+            // faster than half the bot's run speed or a wounded creature while the bot has no
+            // living pet). Kiting still opens ranged again through SwitchToRangedTrigger.
 
             bool hasAmmo = ai->HasCheat(BotCheatMask::item) || AI_VALUE2(uint32, "item count", "ammo");
             if (!hasAmmo)

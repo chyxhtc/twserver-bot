@@ -1119,6 +1119,14 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
             }
 
             nonCombatEngine->ChangeStrategy(sPlayerbotAIConfig.randomBotNonCombatStrategies);
+            // Per-arm strategy delta, applied after the global string (empty = no-op).
+            // Lets an overnight round compare strategy strings without a rebuild.
+            {
+                std::string const armNc = sPlayerbotAIConfig.GetBotArmString(
+                    player->GetGUIDLow(), "nc", std::string());
+                if (!armNc.empty())
+                    nonCombatEngine->ChangeStrategy(armNc);
+            }
         }
         else
         {
@@ -1151,6 +1159,14 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
                         }
 
                         nonCombatEngine->ChangeStrategy(sPlayerbotAIConfig.randomBotNonCombatStrategies);
+                        // Per-arm strategy delta, applied after the global string
+                        // (empty = no-op). Same knob as the masterless branch above.
+                        {
+                            std::string const armNc = sPlayerbotAIConfig.GetBotArmString(
+                                player->GetGUIDLow(), "nc", std::string());
+                            if (!armNc.empty())
+                                nonCombatEngine->ChangeStrategy(armNc);
+                        }
                     }
                     else
                     {

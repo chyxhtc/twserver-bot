@@ -10,6 +10,20 @@ float TravelActionMultiplier::GetValue(Action* action)
     if (action == NULL) return 1.0f;
 
     bool hasTarget = AI_VALUE(bool, "travel target active");
+
+    // A cooling target does not always mean "busy": a real destination that went
+    // inactive has nothing left to wait for, and the deliberate null-destination park
+    // only covers a hand-in on offer right here. Vetoing the request actions through
+    // those is what made a quest-only bot stand still; let them through instead (see
+    // TravelTarget::CanReplanWhileCooling).
+    if (hasTarget)
+    {
+        TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target");
+        if (travelTarget->CanReplanWhileCooling(travelTarget->IsDeliberateTravelPause() &&
+            AI_VALUE(bool, "has nearby quest taker")))
+            hasTarget = false;
+    }
+
     std::string name = action->GetName();
 
     if (hasTarget && name.find("request") == 0)
@@ -97,7 +111,10 @@ void TravelStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
         {"val::not::travel target active","refresh travel target", 6.7f},                                     // 90%
         {"val::not::travel target active","choose group travel target", 6.65f},                               // 50%
         {"val::should travel named::trainer trade","request named travel target::trainer trade", 6.51f},      // 25%
-        {"val::has strategy::rpg quest", "request quest travel target", 6.3f}                                 // 95%
+        // Config-driven: the shipped 6.3f sits below the unconditional Grind
+        // entry at 6.35f, and Grind almost always finds a destination, so quests
+        // never won the race. Above 6.35 questing pre-empts grinding.
+        {"val::has strategy::rpg quest", "request quest travel target", sPlayerbotAIConfig.questTravelRelevance} // 95%
     };
 
     for (auto& [trigger, action, relevance] : StringActions)

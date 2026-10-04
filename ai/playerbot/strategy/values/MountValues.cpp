@@ -411,6 +411,13 @@ bool CanBuyMountValue::Calculate()
     if (bot->GetLevel() < minRidingLevel)
         return false;
 
+    // Buying the mount is the second half of the same luxury spend as learning
+    // riding: wait until real spare money is left after every other
+    // reservation. 0 disables the gate.
+    if (sPlayerbotAIConfig.mountTrainingFreeMoney &&
+        AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::anything) < sPlayerbotAIConfig.mountTrainingFreeMoney)
+        return false;
+
     if (!AI_VALUE(bool, "can buy"))
         return false;
 

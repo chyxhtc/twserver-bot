@@ -2,6 +2,7 @@
 
 #include "playerbot/playerbot.h"
 #include "TalkToQuestGiverAction.h"
+#include "QuestTrace.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/strategy/values/QuestValues.h"
 #include "playerbot/strategy/values/GuildValues.h"
@@ -24,6 +25,21 @@ bool TalkToQuestGiverAction::ProcessQuest(Player* requester, Quest const* quest,
     args["%quest"] = chat->formatQuest(quest);
 
     QuestStatus status = bot->GetQuestStatus(quest->GetQuestId());
+
+    // acctrace: the hand-in side of the chain. TurnInQuest already logs a successful hand-in
+    // (TalkToQuestGiverAction/QuestRewarded), but a giver that was reached and then answered
+    // "incomplete" or "available" left no row at all, so "bot stood at the NPC and nothing
+    // happened" could not be told apart from "the action never ran".
+    auto traceTalk = [&](char const* outcome)
+    {
+        if (QuestTraceDue(ai, "talk-" + std::to_string(quest->GetQuestId())))
+            sPlayerbotAIConfig.logEvent(ai, "QuestGiverTalk",
+                questGiver ? QuestTraceGiver(questGiver->getObjectGuid()) : std::string("none"),
+                std::to_string(quest->GetQuestId()) +
+                "|status=" + std::to_string((int)bot->GetQuestStatus(quest->GetQuestId())) +
+                "|" + outcome);
+    };
+
     if (sPlayerbotAIConfig.syncQuestForPlayer)
     {
         if (requester && (!PlayerbotAIStorage::Instance().GetAI(requester) || PlayerbotAIStorage::Instance().GetAI(requester)->IsRealPlayer()))
@@ -50,25 +66,34 @@ bool TalkToQuestGiverAction::ProcessQuest(Player* requester, Quest const* quest,
         case QUEST_STATUS_COMPLETE:
         {
             isCompleted |= TurnInQuest(requester, quest, questGiver, outputMessage);
+            traceTalk(isCompleted ? "turned-in" : "turn-in-refused");
             break;
         }
         case QUEST_STATUS_INCOMPLETE:
         {
             outputMessage = BOT_TEXT2("quest_status_incomplete", args);
+            traceTalk("incomplete");
             break;
         }
         case QUEST_STATUS_AVAILABLE:
         case QUEST_STATUS_NONE:
         {
             if (quest->IsAutoComplete() && bot->CanTakeQuest(quest, false) && bot->CanRewardQuest(quest, false))
+            {
                 isCompleted |= TurnInQuest(requester, quest, questGiver, outputMessage);
+                traceTalk("auto-complete");
+            }
             else
+            {
                 outputMessage = BOT_TEXT2("quest_status_available", args);
+                traceTalk("available");
+            }
             break;
         }
         case QUEST_STATUS_FAILED:
         {
             outputMessage = BOT_TEXT2("quest_status_failed", args);
+            traceTalk("failed");
             break;
         }
     }

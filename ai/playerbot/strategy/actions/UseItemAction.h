@@ -78,6 +78,48 @@ namespace ai
         virtual uint32 GetItemId() override { return  0; }
     };
 
+    // "Use the item a quest gave me on the creature that quest asks for."
+    //
+    // Deliver/use quests hand the bot an item (SrcItemId) and ask it to use that item on a
+    // creature or object (ReqCreatureOrGOId). The travel layer already routes the bot to that
+    // creature, but nothing on the quest side ever used the item: the only "use quest item on
+    // target" path in the module lives in the RPG layer (RpgSubActions.cpp RpgItemAction),
+    // whose target comes from the rpg target list, and hostile objective creatures never
+    // appear there. Measured 2026-10-04: eight bots stood at the Lazy Peons with quest 5441
+    // (item 16114, Foreman's Blackjack) for hours and every one of them had mobcount1 = 0.
+    // This action closes exactly that loop, and is registered in WorldPacketActionContext +
+    // TriggerContext and hung on "use quest item on objective" in QuestStrategies.cpp.
+    class UseQuestItemOnObjectiveAction : public UseItemIdAction
+    {
+    public:
+        UseQuestItemOnObjectiveAction(PlayerbotAI* ai) : UseItemIdAction(ai, "use quest item on objective") {}
+
+        virtual bool isUseful() override;
+        virtual bool Execute(Event& event) override;
+
+        // UseItemIdAction::isPossible() starts with GetItemId(), which reads the qualifier -
+        // and this action has none (the item is resolved per tick from the quest's SrcItemId).
+        // Without this override isPossible() is always false and the engine skips the action
+        // even though the trigger fires (measured 2026-10-04: 9 QuestItemUseTry rows, zero
+        // Execute calls).
+        virtual bool isPossible() override
+        {
+            uint32 itemId = 0;
+            ObjectGuid target;
+            return FindQuestItemUseTarget(bot, itemId, target);
+        }
+
+    protected:
+        // Same search the trigger uses (kept in both places on purpose: the trigger decides
+        // whether the engine tries this action at all, the action re-resolves the target on the
+        // tick it actually runs).
+        // Radius note: the travel layer parks the bot ~12 yards from the objective creature
+        // (measured on the Lazy Peons), so the search must look wider than interaction range;
+        // Execute walks the last stretch before using the item.
+        static constexpr float kQuestItemUseSearchRange = 25.0f;
+        static bool FindQuestItemUseTarget(Player* bot, uint32& outItemId, ObjectGuid& outTarget);
+    };
+
     class UseSpellItemAction : public UseAction
     {
     public:

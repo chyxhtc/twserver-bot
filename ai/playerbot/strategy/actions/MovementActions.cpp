@@ -14,6 +14,7 @@
 #include "Movement/TargetedMovementGenerator.h"
 #include "Movement/spline/MoveSplineInit.h"
 #include "playerbot/TravelMgr.h"
+#include "playerbot/TraceSwitch.h"
 #include "Transports/Transport.h"
 #include "playerbot/strategy/generic/CombatStrategy.h"
 
@@ -24,6 +25,49 @@ using namespace ai;
 // of a real ground clamp. A stair step or slope is well under this; the
 // subterranean terrain fallback is not.
 static constexpr float kMaxWaypointDrop = 4.0f;
+
+// Why a move was refused (arm knob "reasons", the same knob the travel rejection summary
+// uses). The travel layer already counts the failure and then drops the destination, but
+// nothing recorded what actually failed inside MoveTo - a bot frozen on one coordinate for
+// 53 minutes (Zefeth, Shrine of the Dormant Flame, 2026-10-03) only produced "move failed,
+// retrying". These rows separate the candidates: the travel node graph found no route, the
+// navmesh found no path, the path collapsed below the two points the spline needs, or the
+// hazard rewrite ate it. Throttled per bot and reason to one row per 20 s through the bot's
+// own manual-time store, the same pattern as HunterRangedTelemetry.h.
+static void LogMoveFail(PlayerbotAI* ai, char const* reason, WorldPosition const& from,
+    WorldPosition const& to, uint32 pathPoints)
+{
+    Player* bot = ai ? ai->GetBot() : nullptr;
+    if (!bot)
+        return;
+
+    trace::Verdict const moveVerdict = trace::VerdictOf("move");
+    if (moveVerdict == trace::Verdict::Off)
+        return;
+    if (moveVerdict == trace::Verdict::Unset &&
+        !sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "reasons", 0))
+        return;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    if (!context)
+        return;
+
+    Value<time_t>* last = context->GetValue<time_t>("manual time", std::string("move fail::") + reason);
+    if (!last)
+        return;
+
+    time_t const now = time(nullptr);
+    if (last->Get() && now - last->Get() < 20)
+        return;
+    last->Set(now);
+
+    sPlayerbotAIConfig.logEvent(ai, "MoveFail", reason,
+        "from=" + std::to_string((int)from.getX()) + "," + std::to_string((int)from.getY()) +
+        " to=" + std::to_string((int)to.getX()) + "," + std::to_string((int)to.getY()) +
+        " dist=" + std::to_string((int)from.distance(to)) +
+        " dist2d=" + std::to_string((int)from.fDist(to)) +
+        " pathPoints=" + std::to_string(pathPoints));
+}
 
 // Elevator boarding (issue #216): maximum 3D distance at which a bot may step
 // directly onto the master's transport. Large enough to cover the gap between
@@ -562,12 +606,31 @@ TravelPath MovementAction::ResolveMovePath(const WorldPosition& startPosition, c
     if (needsLongPath && !sTravelNodeMap.GetNodes().empty() && !bot->InBattleGround())
     {
         outMovePath = sTravelNodeMap.GetFullPath(startPosition, endPosition, bot); //Pathfind using nodes.
+        if (outMovePath.empty())
+            LogMoveFail(ai, "node-path-empty", startPosition, endPosition, 0);
     }
     else
     {
         std::vector<WorldPosition> path = startPosition.GetPathTo(endPosition, bot); //Navemesh pathfinding only.
 
         outMovePath.addPath(path);
+        if (path.empty())
+            LogMoveFail(ai, "navmesh-path-empty", startPosition, endPosition, 0);
+
+        // The navmesh pathfinder answers "no route" with a path that is only the bot's own
+        // position. For anything farther than a single step that deserves a second opinion
+        // from the travel-node graph - the same graph the long-distance branch above uses.
+        // Measured 2026-10-04: the clipped-to-one family carried 20-728 yard requests whose
+        // pre-clip path held exactly one point, i.e. these are failed pathfinds, not routes.
+        // Requests within SingleStepMax() keep the degenerate path on purpose, so the direct
+        // step in MoveTo2 can walk those last yards.
+        if (outMovePath.GetPointPath().size() < 2 && totalDistance > SingleStepMax() &&
+            !sTravelNodeMap.GetNodes().empty() && !bot->InBattleGround())
+        {
+            TravelPath nodePath = sTravelNodeMap.GetFullPath(startPosition, endPosition, bot);
+            if (nodePath.GetPointPath().size() >= 2)
+                outMovePath = nodePath;
+        }
     }
 
     if (!lastMove.lastPath.empty() && !outMovePath.empty() && lastMove.lastPath.GetBack().distance(endPosition) <= outMovePath.GetBack().distance(endPosition))
@@ -733,7 +796,33 @@ bool MovementAction::DispatchMovement(TravelPath movePath, bool generatePath, bo
     // is always the current position) and the caller would ask for the same move every
     // tick. Report the failure instead, so the travel target counts a retry and cools down.
     if (path.size() < 2)
+    {
+        // A single point that is NOT the bot's own position is a real short step. For a move
+        // of a few yards the pathfinder returns [current position, next waypoint] and
+        // ClipPath keeps only the waypoint - so refusing every one-point path made every
+        // "last few yards" step fail. Measured 2026-10-03 with the ClipProbe: a level-2 bot
+        // stood in open ground next to the quest NPC logging MoveFail
+        // clipped-to-one-unknown + short-path in a loop, dropping the target and parking,
+        // because the 3 yard step to the NPC was always rejected. A one-point spline is
+        // invalid, but a direct MovePoint to that spot is exactly what the step is.
+        if (!path.empty())
+        {
+            WorldPosition const step = path.back();
+            WorldPosition const from(bot);
+            float const stepDistance = from.fDist(step);
+            if (step.GetMapId() == from.GetMapId() && stepDistance > 0.5f && stepDistance <= SingleStepMax())
+            {
+                uint32 const options = (moveMode == FORCED_MOVEMENT_WALK ? MOVE_WALK_MODE : MOVE_RUN_MODE) |
+                    MOVE_PATHFINDING;
+                mm.MovePoint(step.GetMapId(), step.getX(), step.getY(), step.getZ(), options);
+                return true;
+            }
+        }
+
+        LogMoveFail(ai, "short-path", WorldPosition(bot),
+            path.empty() ? WorldPosition(bot) : path.back(), (uint32)path.size());
         return false;
+    }
 
     if (!generatePath || !bot->IsFlying())
     {
@@ -757,7 +846,11 @@ bool MovementAction::DispatchMovement(TravelPath movePath, bool generatePath, bo
 
     GeneratePathAvoidingHazards(path);
     if (path.size() < 2)
+    {
+        LogMoveFail(ai, "hazard-rewrite", WorldPosition(bot),
+            path.empty() ? WorldPosition(bot) : path.back(), (uint32)path.size());
         return false; // the hazard rewrite left nothing to walk
+    }
 
     std::vector<G3D::Vector3> pointPath = WorldPosition().toPointsArray(path);
     float size = WorldPosition().GetPathLength(path);
@@ -856,7 +949,12 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
     float totalDistance = startPos.distance(endPos);
     float maxDistChange = totalDistance * 0.1f;
 
-    if (totalDistance < sPlayerbotAIConfig.targetPosRecalcDistance)
+    // Already there. 0.1 yards in 3D, or 0.5 yards in 2D: a destination that differs only in
+    // height is the slope the bot already stands on, and asking the pathfinder for it returns
+    // a path containing just the bot's own position - which used to end as a MoveFail
+    // "short-path" retry every tick until the travel target was dropped. Report success so
+    // the caller re-reads the distance instead of counting a failure.
+    if (totalDistance < sPlayerbotAIConfig.targetPosRecalcDistance || startPos.fDist(endPos) < 0.5f)
     {
         if (!lastMove.lastPath.empty() && lastMove.lastPath.GetBack().distance(endPos) <= totalDistance)
             lastMove.clear();
@@ -866,7 +964,7 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
         else
             mover->StopMoving();
 
-        return false;
+        return true;
     }
 
     WorldPosition flyMovePosition;
@@ -881,7 +979,10 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
     lastMove.setPath(movePath);
 
     if (movePath.empty())
+    {
+        LogMoveFail(ai, "no-path", startPos, endPos, 0);
         return false;
+    }
 
 
     if (!bot->GetTransport())
@@ -890,6 +991,7 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
     if (movePath.empty())
     {
         lastMove.setPath(movePath);
+        LogMoveFail(ai, "collapsed", startPos, endPos, 0);
         return true; // Path collapsed — will rebuild next tick.
     }
 
@@ -911,8 +1013,44 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
         lastMove.setPath(movePath);
     }
 
-    movePath.ClipPath(ai, mover, ignoreEnemyTargets);
+    uint32 const pathPointsBeforeClip = (uint32)movePath.GetPointPath().size();
+    std::string clipWhy;
+    movePath.ClipPath(ai, mover, ignoreEnemyTargets, &clipWhy);
+    if (clipWhy.empty())
+        clipWhy = "unknown";
+    std::string const clippedTo = "clipped-to-one-" + clipWhy;
+    std::string const clippedEmpty = "clipped-" + clipWhy;
 
+    // A path that survives ResolveMovePath but comes out of ClipPath with a single point is
+    // the failure that actually bit us on 2026-10-03: DispatchMovement rejects a one-point
+    // spline, the caller counts a retry, and the bot looks "stuck" with no reason recorded.
+    // Log it here as well as the empty case below.
+    if (!movePath.empty() && movePath.GetPointPath().size() < 2)
+        LogMoveFail(ai, clippedTo.c_str(), startPos, endPos, pathPointsBeforeClip);
+
+    // Degenerate clip: the pathfinder returned a path whose only survivor is the point the
+    // bot already stands on, even though the destination is a yard or two away (measured:
+    // the 1->1 ClipProbe rows, request distance 1, ClipPath keeps nothing usable). The move
+    // has a real destination, so walk the last stretch straight at it - the same direct
+    // step DispatchMovement does, but with endPos instead of the useless point. Bounded by
+    // the same step cap, so this can never turn into a long blind walk.
+    if (movePath.GetPointPath().size() < 2 && endPos.GetMapId() == bot->GetMapId() && !endPos.isUnderWater())
+    {
+        float const lastMile = startPos.fDist(endPos);
+        if (lastMile > 0.5f && lastMile <= SingleStepMax())
+        {
+            uint32 const options = MOVE_RUN_MODE | MOVE_PATHFINDING;
+            bot->GetMotionMaster()->MovePoint(endPos.GetMapId(), endPos.getX(), endPos.getY(), endPos.getZ(), options);
+            return true;
+        }
+    }
+
+    // NOTE (2026-10-04 02:15): a second attempt here - walking straight at that far waypoint
+    // with a 300 yard cap - was measured and REVERTED: MoveFail went from 14.4/min back to
+    // 20/min and XpGain dropped from 16/min to 12/min in the following window. The gap family
+    // therefore stays as it was; whoever picks this up next should instrument the gap case
+    // (remaining point distance, whether the leg is a road leg or a real ledge) before
+    // changing behaviour again.
     if(ai->HasStrategy("debug move", BotState::BOT_STATE_NON_COMBAT))
     {
         for (auto& p : movePath.GetPath())
@@ -926,6 +1064,7 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
 
     if (movePath.empty())
     {
+        LogMoveFail(ai, clippedEmpty.c_str(), startPos, endPos, pathPointsBeforeClip);
         return false;
     }
 
@@ -1623,7 +1762,10 @@ bool MovementAction::Flee(Unit *target)
     if (!target)
         return false;
 
-    if (!sPlayerbotAIConfig.fleeingEnabled)
+    // Arm-aware (see PlayerbotAIConfig::GetBotArmInt): lets one round keep fleeing off
+    // and another turn it on inside the same pool.
+    if (!sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "flee",
+            sPlayerbotAIConfig.fleeingEnabled ? 1 : 0))
         return false;
 
     if (!ai->CanMove())

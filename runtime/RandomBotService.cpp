@@ -560,11 +560,35 @@ RandomBotService::AutoCreateCharResult RandomBotService::TryCreateCharacterOnAcc
 
         std::vector<std::pair<uint8_t, uint8_t>> const* pool = &validForAccount;
         std::vector<std::pair<uint8_t, uint8_t>> evenPool;
+        // Race filter for the control experiment (AiPlayerbot.RandomBotRace, 0 = any):
+        // force, say, a Tauren so the fresh character starts in Mulgore and picks up the
+        // local level-1 chain instead of landing in a random start zone.
+        std::vector<std::pair<uint8_t, uint8_t>> racePool;
+        if (sPlayerbotAIConfig.randomBotRace)
+        {
+            for (auto const& pr : *pool)
+                if (pr.first == sPlayerbotAIConfig.randomBotRace)
+                    racePool.push_back(pr);
+            if (!racePool.empty())
+                pool = &racePool;
+        }
         if (sPlayerbotAIConfig.randomBotEvenStartZones)
         {
             evenPool = LeastPopulatedZoneCombos(validForAccount, m_startZoneCounts);
             if (!evenPool.empty())
-                pool = &evenPool;
+            {
+                if (sPlayerbotAIConfig.randomBotRace)
+                {
+                    std::vector<std::pair<uint8_t, uint8_t>> evenRacePool;
+                    for (auto const& pr : evenPool)
+                        if (pr.first == sPlayerbotAIConfig.randomBotRace)
+                            evenRacePool.push_back(pr);
+                    if (!evenRacePool.empty())
+                        pool = &evenRacePool;
+                }
+                else
+                    pool = &evenPool;
+            }
         }
         auto pr = (*pool)[urand(0, uint32(pool->size() - 1))];
         uint8 race = pr.first;
@@ -983,7 +1007,9 @@ void RandomBotService::ResolvePinnedBots()
         return;
     if (!IsPoolAvailable())
         return;
-    if (sPlayerbotAIConfig.pinnedBotNames.empty())
+    // Arms are resolved in the same pass: a round may pin nothing but still assign
+    // arms to existing pool bots, so an empty pinned list must not skip this.
+    if (sPlayerbotAIConfig.pinnedBotNames.empty() && sPlayerbotAIConfig.botArmNames.empty())
     {
         m_pinnedResolved = true;
         return;
@@ -1033,8 +1059,26 @@ void RandomBotService::ResolvePinnedBots()
         TB_LOG_DETAIL("TortoiseBots: pinned bot '%s' resolved to guid %u", rawName.c_str(), guidLow);
     }
 
+    // One lookup per configured arm name, same database and same one-time policy.
+    for (auto const& [name, arm] : sPlayerbotAIConfig.botArmNames)
+    {
+        std::string escaped = name;
+        CharacterDatabase.escape_string(escaped);
+        std::unique_ptr<QueryResult> result(CharacterDatabase.PQuery("SELECT guid FROM characters WHERE name = '%s' LIMIT 1", escaped.c_str()));
+        if (!result)
+        {
+            TB_LOG_BASIC("TortoiseBots: arm bot '%s' not found, ignored", name.c_str());
+            continue;
+        }
+        uint32 const guidLow = result->Fetch()[0].GetUInt32();
+        if (!guidLow)
+            continue;
+        sPlayerbotAIConfig.SetBotArm(guidLow, arm);
+        TB_LOG_BASIC("TortoiseBots: arm bot '%s' (guid %u) = arm %s", name.c_str(), guidLow, arm.c_str());
+    }
+
     m_pinnedResolved = true;
-    if (m_pinnedGuids.empty())
+    if (m_pinnedGuids.empty() && sPlayerbotAIConfig.botArmNames.empty())
         TB_LOG_BASIC("TortoiseBots: no pinned bots resolved from %u configured names", static_cast<uint32>(sPlayerbotAIConfig.pinnedBotNames.size()));
     else
         TB_LOG_BASIC("TortoiseBots: %u pinned bot(s) cached", static_cast<uint32>(m_pinnedGuids.size()));
@@ -1569,7 +1613,8 @@ void RandomBotService::Update(uint32_t diff)
             // somehow entered the world unseeded.
             uint32 timerGuidLow = player->GetGUIDLow();
             bool freshTimerBot = TortoiseBots::NeedsInitialGearSeeding(
-                player->GetTotalPlayedTime(), sRandomBotFacade.GetValue(timerGuidLow, "seeded"));
+                player->GetTotalPlayedTime(), sRandomBotFacade.GetValue(timerGuidLow, "seeded"),
+                sPlayerbotAIConfig.forceGearSeed);
             if (player->GetLevel() >= 5 && freshTimerBot)
             {
                 sRandomBotFacade.UpdateGearSpells(player);

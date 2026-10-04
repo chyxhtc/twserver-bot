@@ -1,5 +1,7 @@
 #include "TravelNode.h"
 #include "playerbot/TravelMgr.h"
+#include "playerbot/TraceSwitch.h"
+#include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/TravelRoutePolicy.h"
 
 #include <iomanip>
@@ -1112,11 +1114,54 @@ bool TravelPath::UpcommingSpecialMovement(WorldPosition startPos, float maxDist,
     return false;
 }
 
-void TravelPath::ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets)
+void TravelPath::ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets, std::string* why)
 {
+    auto const mark = [&](char const* reason)
+    {
+        if (why && why->empty())
+            *why = reason;
+    };
+
+    // A path that survives the pathfinder and comes out of here with a single point is what
+    // makes MoveTo fail with no recorded reason ("clipped-to-one-unknown" was the largest
+    // MoveFail bucket on 2026-10-03). None of the loop's rules fired in those cases, so the
+    // truncation must come from the opening cutTo(); record what it was given: the point
+    // count before and after, which point getNextPoint picked, and where the bot stood
+    // relative to the path's first point.
+    if (fullPath.empty())
+        return;
+
+    uint32 const pointsBefore = (uint32)fullPath.size();
+    WorldPosition const botPos(mover);
+    WorldPosition const firstPoint = fullPath.begin()->point;
+    WorldPosition const lastPoint = fullPath.back().point;
+
     auto startP = getNextPoint(mover, 0.0f, false);
+    uint32 const startIndex = (startP == fullPath.end())
+        ? pointsBefore
+        : (uint32)std::distance(fullPath.begin(), startP);
+    WorldPosition const startPoint = (startP == fullPath.end()) ? lastPoint : startP->point;
 
     cutTo(*startP, false);
+
+    if (fullPath.size() < 2 && ai && trace::On("move"))
+    {
+        static std::map<uint32, time_t> lastProbe;
+        uint32 const botLow = ai->GetBot()->GetGUIDLow();
+        time_t const now = time(nullptr);
+        auto const it = lastProbe.find(botLow);
+        if (it == lastProbe.end() || now - it->second >= 30)
+        {
+            lastProbe[botLow] = now;
+            sPlayerbotAIConfig.logEvent(ai, "ClipProbe",
+                std::to_string(pointsBefore) + "->" + std::to_string((uint32)fullPath.size()),
+                "startIdx=" + std::to_string(startIndex) +
+                " bot=" + std::to_string((int)botPos.getX()) + "," + std::to_string((int)botPos.getY()) +
+                " start=" + std::to_string((int)startPoint.getX()) + "," + std::to_string((int)startPoint.getY()) +
+                " first=" + std::to_string((int)firstPoint.getX()) + "," + std::to_string((int)firstPoint.getY()) +
+                " last=" + std::to_string((int)lastPoint.getX()) + "," + std::to_string((int)lastPoint.getY()));
+        }
+    }
 
     if (startP == fullPath.end())
         return;
@@ -1153,6 +1198,7 @@ void TravelPath::ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets)
                 continue;
 
             endP = p;
+            mark("target");
             break;
         }
 
@@ -1168,6 +1214,7 @@ void TravelPath::ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets)
             {
 
                 endP = p;
+                mark("hazard");
                 break;
             }
         }
@@ -1176,12 +1223,13 @@ void TravelPath::ClipPath(PlayerbotAI* ai, Unit* mover, bool ignoreEnemyTargets)
             break;
 
         if (p->point.sqDistance(fullPath.begin()->point) > sPlayerbotAIConfig.reactDistance * sPlayerbotAIConfig.reactDistance)
-            endP = p;
+            endP = p, mark("react-distance");
         else if (!p->IsWalkable())
-            endP = p;
+            endP = p, mark("unwalkable");
         else if (p->point.sqDistance(prevP->point) > 125)
         {
             endP = prevP;
+            mark("gap");
         }
 
 

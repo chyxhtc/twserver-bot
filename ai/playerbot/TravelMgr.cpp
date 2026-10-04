@@ -9,6 +9,7 @@
 #include "TravelNode.h"
 #include "PlayerbotAI.h"
 #include "playerbot/RandomBotFacade.h"
+#include "playerbot/TraceSwitch.h"
 #include "ObjectAccessor.h"
 
 using namespace ai;
@@ -58,6 +59,28 @@ PlayerTravelInfo::PlayerTravelInfo(Player* player)
 
     for (auto& [valueName, value] : uint32Values)
         value = AI_VALUE(uint32, valueName);
+
+    // TEMPORARY DIAGNOSTIC (2026-10-01): quest travel targets are never
+    // produced even when the quest request outranks Grind. Print the inputs the
+    // quest destination gates read, throttled to once per bot per five minutes.
+    {
+        static std::map<uint32, time_t> s_questDiagLast;
+        uint32 const diagGuid = player->GetGUIDLow();
+        time_t const diagNow = time(nullptr);
+        if (diagNow - s_questDiagLast[diagGuid] > 300)
+        {
+            s_questDiagLast[diagGuid] = diagNow;
+            sLog.outString("[QUESTDIAG] %s lv%u loopLookup_rpgQuest=%d proper_rpgQuest=%d proper_rpg=%d proper_grind=%d proper_travel=%d freeSlots=%u",
+                player->GetName(), player->GetLevel(),
+                boolValues["has strategy::rpg quest"] ? 1 : 0,
+                AI_VALUE2(bool, "has strategy", "rpg quest") ? 1 : 0,
+                AI_VALUE2(bool, "has strategy", "rpg") ? 1 : 0,
+                AI_VALUE2(bool, "has strategy", "grind") ? 1 : 0,
+                AI_VALUE2(bool, "has strategy", "travel") ? 1 : 0,
+                uint8Values["free quest log slots"],
+                0);
+        }
+    }
 }
 
 std::string EntryTravelDestination::GetShortName() const
@@ -124,10 +147,23 @@ bool QuestRelationTravelDestination::IsPossible(const PlayerTravelInfo& info) co
 
     if (GetRelation() == 0)
     {
-        if (!forceThisQuest && (int32)quest->GetQuestLevel() >= (int32)info.GetLevel() + (int32)5)
+        // Same ceiling the accept gate applies (quest may be at most two levels above the
+        // bot), so a giver whose only offers are orange/red is not a travel destination
+        // either. The old limit was +5, which let bots walk to givers whose quests the
+        // accept side then had no reason to refuse.
+        if (!forceThisQuest && (int32)quest->GetQuestLevel() > (int32)info.GetLevel() + (int32)QuestOverCap())
             return false;
 
-        if ((int32)info.GetLevel() < quest->GetMinLevel() || (int32)info.GetLevel() > quest->GetMaxLevel())
+        // MaxLevel is 0 for almost every quest in this database, and the core never looks at
+        // it at all (Player::SatisfyQuestLevel only checks MinLevel), so 0 means "no upper
+        // bound". Comparing against it directly threw away every such quest: measured
+        // 2026-10-03, a level-10 bot's quest-giver candidate list held exactly one entry, the
+        // giver of quest 60150 - the only nearby quest whose MaxLevel column is not 0 - so it
+        // could never travel to the level-10 givers elsewhere in Mulgore and never picked up
+        // the zone-exit quest 854.
+        uint32 const maxLevel = quest->GetMaxLevel();
+        if ((int32)info.GetLevel() < quest->GetMinLevel() ||
+            (maxLevel != 0 && (int32)info.GetLevel() > (int32)maxLevel))
             return false;
 
         if (OnMap(info.getPosition())) //CanTakeQuest will check required conditions which will fail on a different map.
@@ -167,10 +203,10 @@ bool QuestRelationTravelDestination::IsPossible(const PlayerTravelInfo& info) co
     if (point)
     {
         int32 destAreaLevel = point->GetAreaLevel();
-        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + 5)
+        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + AreaLevelMargin())
             return false;
 
-        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > 1500.0f)
+        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > LowbieDistance())
             return false;
     }
 
@@ -263,7 +299,7 @@ bool QuestObjectiveTravelDestination::IsPossible(const PlayerTravelInfo& info) c
 
     if (!forceThisQuest)
     {
-        if ((int32)GetQuestTemplate()->GetQuestLevel() > (int32)info.GetLevel() + (int32)1)
+        if ((int32)GetQuestTemplate()->GetQuestLevel() > (int32)info.GetLevel() + (int32)QuestObjectiveCap())
             return false;
 
         if (!skipShouldGrindCheck && GetQuestTemplate()->GetQuestLevel() + 5 > (int)info.GetLevel() && !info.GetBoolValue("can fight equal"))
@@ -293,7 +329,7 @@ bool QuestObjectiveTravelDestination::IsPossible(const PlayerTravelInfo& info) c
 
         if (!skipKillableCheck && !forceThisQuest)
         {
-            if (cInfo && (int)cInfo->level_max - (int)info.GetLevel() > 4)
+            if (cInfo && (int)cInfo->level_max - (int)info.GetLevel() > MobLevelCap())
                 return false;
 
             //Do not try to hand-in dungeon/elite quests in instances without a group.
@@ -332,10 +368,10 @@ bool QuestObjectiveTravelDestination::IsPossible(const PlayerTravelInfo& info) c
     if (point)
     {
         int32 destAreaLevel = point->GetAreaLevel();
-        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + 5)
+        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + AreaLevelMargin())
             return false;
 
-        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > 1500.0f)
+        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > LowbieDistance())
             return false;
     }
 
@@ -367,8 +403,25 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
 
     std::vector<std::string> qualifier = { std::to_string(GetQuestTemplate()->GetQuestId()), std::to_string(GetObjective()) };
 
-    if (!AI_VALUE2(bool, "group or", "following party,need quest objective::" + Qualified::MultiQualify(qualifier, ","))) //Noone needs the quest objective.
+    std::string const objectiveQualifier = Qualified::MultiQualify(qualifier, ",");
+
+    // The "group or" wrapper is "following party,need quest objective::<quest>,<objective>". That
+    // inner qualifier contains the separator the wrapper itself splits on, so record both
+    // answers before refusing: 2026-10-03, a bot still missing two of eight quest items had
+    // every objective destination refused as inactive, and the two candidates must be told
+    // apart - the bot not needing the objective, or the nested qualifier failing to parse.
+    bool const needObjective = AI_VALUE2(bool, "need quest objective", objectiveQualifier);
+    bool const groupOr = AI_VALUE2(bool, "group or", "following party,need quest objective::" + objectiveQualifier);
+
+    if (!groupOr) //Noone needs the quest objective.
+    {
+        if (trace::On("travel"))
+            sPlayerbotAIConfig.logEvent(ai, "ObjInactive", objectiveQualifier,
+                std::string("need=") + (needObjective ? "1" : "0") +
+                " groupOr=" + (groupOr ? "1" : "0") +
+                " entry=" + std::to_string(GetEntry()));
         return false;
+    }
 
     WorldPosition botPos(bot);
 
@@ -462,7 +515,7 @@ bool RpgTravelDestination::IsPossible(const PlayerTravelInfo& info) const
             return false;
 
         int32 destAreaLevel = point->GetAreaLevel();
-        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + 5)
+        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + AreaLevelMargin())
             return false;
 
         // Outgrown services: skip NPCs in zones the bot outlevels by 10+, unless
@@ -484,7 +537,7 @@ bool RpgTravelDestination::IsPossible(const PlayerTravelInfo& info) const
         if (beginner && point->distance(info.getPosition()) > sPlayerbotAIConfig.lowLevelVendorMaxDistance)
             return false;
 
-        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > 1500.0f)
+        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > LowbieDistance())
             return false;
     }
     else if (beginner) //A vendor trip we cannot measure is not worth the risk.
@@ -668,10 +721,10 @@ bool GrindTravelDestination::IsPossible(const PlayerTravelInfo& info) const
             return false;
 
         int32 destAreaLevel = point->GetAreaLevel();
-        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + 5)
+        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + AreaLevelMargin())
             return false;
 
-        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > 1500.0f)
+        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > LowbieDistance())
             return false;
     }
 
@@ -719,7 +772,7 @@ bool BossTravelDestination::IsPossible(const PlayerTravelInfo& info) const
 
     CreatureInfo const* cInfo = sObjectMgr.GetCreatureTemplate(GetEntry());
 
-    if ((int32)cInfo->level_max > info.GetLevel() + 3)
+    if ((int32)cInfo->level_max > info.GetLevel() + BossLevelCap())
         return false;
 
     const MapEntry* mapEntry = ClosetMapEntry(info.getPosition());
@@ -860,10 +913,10 @@ bool GatherTravelDestination::IsPossible(const PlayerTravelInfo& info) const
     if (point)
     {
         int32 destAreaLevel = point->GetAreaLevel();
-        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + 5)
+        if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + AreaLevelMargin())
             return false;
 
-        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > 1500.0f)
+        if (info.GetLevel() <= 5 && point->distance(info.getPosition()) > LowbieDistance())
             return false;
     }
 
@@ -1110,6 +1163,23 @@ bool TravelTarget::IsActive() {
     return true;
 };
 
+bool TravelTarget::IsDeliberateTravelPause() const
+{
+    return m_status == TravelStatus::TRAVEL_STATUS_COOLDOWN &&
+        (!tDestination || typeid(*tDestination) == typeid(NullTravelDestination));
+}
+
+bool TravelTarget::CanReplanWhileCooling(bool deliberateParkStillWanted) const
+{
+    if (m_status != TravelStatus::TRAVEL_STATUS_COOLDOWN)
+        return false;
+
+    if (!IsDeliberateTravelPause())
+        return GetExpiredTime() >= COOLDOWN_REPLAN_DELAY_MS;
+
+    return !deliberateParkStillWanted || GetExpiredTime() >= DELIBERATE_PAUSE_MAX_MS;
+}
+
 TravelState TravelTarget::GetTravelState() {
     if (!tDestination || typeid(*tDestination) == typeid(NullTravelDestination))
         return TravelState::TRAVEL_STATE_IDLE;
@@ -1163,6 +1233,144 @@ void TravelMgr::Clear()
     destinationMap.clear();
     pointsMap.clear();
     fishPoints.clear();
+    questHubs.clear();
+    questHubsByMap.clear();
+}
+
+void TravelMgr::LoadQuestHubs()
+{
+    questHubs.clear();
+    questHubsByMap.clear();
+
+    if (!WorldDatabase.PQuery("SHOW TABLES LIKE 'ai_playerbot_questhub'"))
+    {
+        sLog.outString("TortoiseBots: ai_playerbot_questhub is missing; quest-hub preference stays off.");
+        return;
+    }
+
+    auto result = WorldDatabase.PQuery(
+        "SELECT id, `map`, x, y, givers, quests, "
+        "q01_05, q06_10, q11_15, q16_20, q21_25, q26_30, "
+        "q31_35, q36_40, q41_45, q46_50, q51_55, q56_60 FROM ai_playerbot_questhub");
+
+    if (!result)
+    {
+        sLog.outString("TortoiseBots: ai_playerbot_questhub is empty; quest-hub preference stays off.");
+        return;
+    }
+
+    do
+    {
+        Field* fields = result->Fetch();
+
+        QuestHub hub;
+        hub.id = fields[0].GetUInt32();
+        hub.map = fields[1].GetUInt32();
+        hub.x = fields[2].GetFloat();
+        hub.y = fields[3].GetFloat();
+        hub.givers = fields[4].GetUInt32();
+        hub.quests = fields[5].GetUInt32();
+        for (uint32 i = 0; i < 12; ++i)
+            hub.band[i] = fields[6 + i].GetUInt32();
+
+        questHubsByMap[hub.map].push_back((uint32)questHubs.size());
+        questHubs.push_back(hub);
+
+    } while (result->NextRow());
+
+    sLog.outString(">> Loaded " SIZEFMTD " quest hubs.", questHubs.size());
+}
+
+TravelMgr::QuestHub const* TravelMgr::FindQuestHub(uint32 mapId, float x, float y) const
+{
+    if (questHubs.empty())
+        return nullptr;
+
+    auto const it = questHubsByMap.find(mapId);
+    if (it == questHubsByMap.end())
+        return nullptr;
+
+    float const r2 = sPlayerbotAIConfig.questHubRadius * sPlayerbotAIConfig.questHubRadius;
+
+    QuestHub const* best = nullptr;
+    float bestSq = r2;
+    for (uint32 idx : it->second)
+    {
+        QuestHub const& hub = questHubs[idx];
+        float const dx = hub.x - x;
+        float const dy = hub.y - y;
+        float const sq = dx * dx + dy * dy;
+        if (sq <= bestSq)
+        {
+            bestSq = sq;
+            best = &hub;
+        }
+    }
+
+    return best;
+}
+
+uint32 TravelMgr::QuestHubWorkFor(QuestHub const& hub, uint32 level) const
+{
+    // Count only the quests a bot of this level may actually take: the travel gate
+    // allows quest level < bot level + 5 while the accept layer drops anything far
+    // below unless the reward is an upgrade, so [level-5, level+4] is the useful window.
+    // Bands are five levels wide, so a partially covered band contributes pro rata.
+    int32 const lo = std::max<int32>(1, (int32)level - 5);
+    int32 const hi = std::min<int32>(60, (int32)level + 4);
+    uint32 work = 0;
+    for (uint32 i = 0; i < 12; ++i)
+    {
+        int32 const bandLo = (int32)i * 5 + 1;
+        int32 const bandHi = (int32)i * 5 + 5;
+        int32 const overlap = std::min(hi, bandHi) - std::max(lo, bandLo) + 1;
+        if (overlap <= 0)
+            continue;
+        work += hub.band[i] * (uint32)overlap / 5u;
+    }
+    return work;
+}
+
+uint32 TravelMgr::QuestHubWorkAt(uint32 mapId, float x, float y, uint32 level) const
+{
+    QuestHub const* best = FindQuestHub(mapId, x, y);
+    if (!best)
+        return 0;
+
+    return QuestHubWorkFor(*best, level);
+}
+
+bool TravelMgr::FindNearestQuestHubWithWork(uint32 mapId, float x, float y, uint32 level,
+    float& outX, float& outY) const
+{
+    auto const it = questHubsByMap.find(mapId);
+    if (it == questHubsByMap.end())
+        return false;
+
+    QuestHub const* best = nullptr;
+    float bestSq = FLT_MAX;
+    for (uint32 const idx : it->second)
+    {
+        QuestHub const& hub = questHubs[idx];
+        if (QuestHubWorkFor(hub, level) < 1)
+            continue;
+
+        float const dx = hub.x - x;
+        float const dy = hub.y - y;
+        float const sq = dx * dx + dy * dy;
+        if (sq < bestSq)
+        {
+            bestSq = sq;
+            best = &hub;
+        }
+    }
+
+    if (!best)
+        return false;
+
+    outX = best->x;
+    outY = best->y;
+    return true;
 }
 
 int32 TravelMgr::GetAreaLevel(uint32 area_id)
@@ -2415,7 +2623,27 @@ bool TravelMgr::IsLocationLevelValid(const WorldPosition& position, const Player
     // to masterless random bots so owned lowbies never wander off mid-follow.
     bool const beginnerGrind = (purposeFlag & (uint32)TravelDestinationPurpose::Grind) &&
         info.GetLevel() <= 4 && info.IsMasterlessRandom();
-    if (!beginnerGrind && !(purposeFlag & (uint32)TravelDestinationPurpose::QuestTaker) && !beginnerVendorTrip)
+
+    // Quest destinations do not use this zone-average gate at all (change of 2026-10-04).
+    //
+    // The gate reads the SUB-area rating, and a quest destination already has its own, more
+    // precise limits in QuestRelation/QuestObjectiveTravelDestination::IsPossible: the quest
+    // level, the quest's MinLevel/MaxLevel, the target mob's level_max, and the destination's
+    // own area level (+5). Re-checking the average here only ever made the effective rule
+    // tighter than any of those, and only for some purposes: the exemption list below used to
+    // be extended one case at a time - givers were exempted on 2026-10-03 (every level 3
+    // night elf in Shadowglen had zero destinations because the next givers sit in Dolanaar,
+    // rated 5) and objectives were still missing on 2026-10-04 (Subish, level 3, could not
+    // reach a single objective of the five Teldrassil quests it already held, while level 6-9
+    // bots in the same zone reached the same quests fine). Each miss silently stranded a bot
+    // in its starting zone. Services, gather, explore and grind have no quest or mob level to
+    // look at, so they keep the gate; their own IsPossible checks are unchanged.
+    bool const questDestination =
+        (purposeFlag & ((uint32)TravelDestinationPurpose::QuestGiver |
+                        (uint32)TravelDestinationPurpose::QuestTaker |
+                        (uint32)TravelDestinationPurpose::QuestAllObjective)) != 0;
+
+    if (!beginnerGrind && !beginnerVendorTrip && !questDestination)
     {
         if (!areaLevel || (uint32)botLevel < areaLevel) //Skip points that are in a area that is too high level.
             return false;
@@ -2449,6 +2677,17 @@ bool TravelMgr::IsLocationLevelValid(const WorldPosition& position, const Player
     return true;
 }
 
+// True only when both maps are the two continents and they differ. Dungeon,
+// battleground and transport maps (30 = Alterac Valley, 33, 36, 37, 389, ...) are
+// deliberately not treated as "another continent".
+static bool IsOtherContinent(uint32 fromMap, uint32 toMap)
+{
+    if (fromMap == toMap)
+        return false;
+    auto const isContinent = [](uint32 mapId) { return mapId == 0 || mapId == 1; };
+    return isContinent(fromMap) && isContinent(toMap);
+}
+
 PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, const std::vector<uint32>& distancePartitions, const PlayerTravelInfo& info, uint32 purposeFlag, const std::vector<int32>& entries, bool onlyPossible, float maxDistance, int32 grindZoneFloor) const
 {
     sTravelMgr.GetPartitionsLock();
@@ -2456,6 +2695,9 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     PartitionedTravelList pointMap;
     DestinationList destinations = GetDestinations(info, purposeFlag, entries, onlyPossible, maxDistance);
 
+    // The hub the bot is standing in, if any: used for the "finish this town before
+    // moving on" preference (see the partition step below).
+    QuestHub const* botHub = FindQuestHub(center.GetMapId(), center.getX(), center.getY());
 
 
     unsigned seed = GetStableTravelSelectionSeed(info.GetIdentitySeed(), purposeFlag,
@@ -2469,10 +2711,15 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     // answer is in.
     uint32 probeTotal = destinations.size(), probeNoPartition = 0, probeNoPoint = 0;
     uint32 probeRejectLevel = 0, probeRejectDistance = 0, probeFarthest = 0;
+    uint32 probeRejectContinent = 0;
 
     for (auto& dest : destinations)
     {
         TravelPoint point(dest, sTravelMgr.nullWorldPosition, 0.0f);
+
+        // Quest destinations keep their cross-continent handling (they can trigger a
+        // transfer); everything else is filtered here.
+        bool const questDestination = dynamic_cast<QuestTravelDestination*>(dest) != nullptr;
 
         std::pair<uint32, std::vector<WorldPosition*>> pointRange = dest->GetClosestPartition(center, distancePartitions);
 
@@ -2490,6 +2737,17 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
         float minDistance = FLT_MAX;
         for (auto& position : points)
         {
+            // Grind / gather / RPG work on the other continent is never worth the trip
+            // and the travel graph cannot route it anyway: cross-continent candidates
+            // were the largest single source of rejected routes in the 2026-10-02 logs
+            // (about half of travel_route_gate.csv, dominated by grind targets). Drop
+            // them here so they never reach the route gate and its A*.
+            if (!questDestination && IsOtherContinent(center.GetMapId(), position->getMapId()))
+            {
+                probeRejectContinent++;
+                continue;
+            }
+
             if (!IsLocationLevelValid(*position, info, purposeFlag, grindZoneFloor))
             {
                 probeRejectLevel++;
@@ -2506,7 +2764,7 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
                 continue;
             }
 
-            if (info.GetLevel() <= 5 && distance > 1500.0f)
+            if (info.GetLevel() <= 5 && distance > LowbieDistance())
             {
                 probeRejectDistance++;
                 continue;
@@ -2520,15 +2778,78 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
         }
 
         if (std::get<2>(point) > 0)
-            pointMap[pointRange.first].push_back(point);
+        {
+            uint32 partitionKey = pointRange.first;
+
+            // Quest-hub preference. A quest destination that sits in a hub with quests
+            // for this bot's level band competes as if it were closer, so a town is
+            // chosen over a lone quest giver at a similar distance - the way a player
+            // picks a quest hub instead of chasing single NPCs. Hubs and their per-band
+            // quest counts come from ai_playerbot_questhub (see LoadQuestHubs).
+            float const maxFactor = std::max(sPlayerbotAIConfig.questHubDistanceFactor,
+                sPlayerbotAIConfig.questHubStayFactor);
+            if (questDestination && maxFactor > 1.0f)
+            {
+                WorldPosition const* pointPos = std::get<1>(point);
+                if (pointPos)
+                {
+                    QuestHub const* destHub = FindQuestHub(center.GetMapId(), pointPos->getX(), pointPos->getY());
+                    uint32 const work = destHub ? QuestHubWorkFor(*destHub, info.GetLevel()) : 0;
+
+                    // Same hub the bot is already standing in gets the stronger factor:
+                    // that is "finish this town's work before moving on", which is what a
+                    // player does. Other hubs keep the plain density preference.
+                    float factor = sPlayerbotAIConfig.questHubDistanceFactor;
+                    if (botHub && destHub && botHub->id == destHub->id &&
+                        sPlayerbotAIConfig.questHubStayFactor > factor)
+                        factor = sPlayerbotAIConfig.questHubStayFactor;
+
+                    if (factor > 1.0f && work >= sPlayerbotAIConfig.questHubMinWork)
+                    {
+                        float const discounted = minDistance / factor;
+                        uint32 const discountedSq = (uint32)(discounted * discounted);
+
+                        for (uint32 const band : distancePartitions)
+                        {
+                            if (discountedSq <= band)
+                            {
+                                partitionKey = band;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            pointMap[partitionKey].push_back(point);
+        }
         else
             probeNoPoint++;
     }
 
-    if (pointMap.empty() && probeTotal && (purposeFlag & (uint32)TravelDestinationPurpose::QuestTaker))
-        sLog.outBasic("PARTPROBE: level %u, %u taker destinations, none survived - %u had no partition, %u no usable point; points rejected: %u by level, %u by distance (max allowed %.0f, farthest seen %u)",
-            info.GetLevel(), probeTotal, probeNoPartition, probeNoPoint,
-            probeRejectLevel, probeRejectDistance, maxDistance, probeFarthest);
+    // Widened from taker-only to every quest purpose (2026-10-04): after quest destinations
+    // stopped using the zone-average gate, an empty quest search points at partition / point /
+    // distance loss instead, and this line plus the per-reason counters is how that is told
+    // apart from "the bot simply has nothing to do". The quest ids carried in `entries` are
+    // printed too, because an objective fetch is per-quest.
+    bool const questPurposeSearch =
+        (purposeFlag & ((uint32)TravelDestinationPurpose::QuestGiver |
+                        (uint32)TravelDestinationPurpose::QuestTaker |
+                        (uint32)TravelDestinationPurpose::QuestAllObjective)) != 0;
+    if (pointMap.empty() && probeTotal && questPurposeSearch)
+    {
+        std::string questIds;
+        for (int32 entry : entries)
+        {
+            if (!questIds.empty())
+                questIds += ",";
+            questIds += std::to_string(entry);
+        }
+        sLog.outBasic("PARTPROBE: %s level %u quest=%s, %u destinations, none survived - %u had no partition, %u no usable point; points rejected: %u by level, %u by distance, %u on the other continent (max allowed %.0f, farthest seen %u)",
+            destinations.front()->GetShortName().c_str(), info.GetLevel(), questIds.empty() ? "-" : questIds.c_str(),
+            probeTotal, probeNoPartition, probeNoPoint,
+            probeRejectLevel, probeRejectDistance, probeRejectContinent, maxDistance, probeFarthest);
+    }
 
     sTravelMgr.GetPartitionsLock(false);
 
