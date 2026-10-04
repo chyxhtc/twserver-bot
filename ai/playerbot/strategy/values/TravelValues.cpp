@@ -644,12 +644,16 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
         AI_VALUE2(time_t, "manual time", "no travel purpose until::quest") > time(0);
     bool const nothingToDo = actionableQuests == 0 && questSupplyEmpty;
 
-    // Lowbie escape hatch. A level 8-9 bot sitting in a zone whose only mobs are grey has no
-    // xp supply and no acceptable quest, and before this the rule refused to run at all below
-    // level 10, so the whole cluster was frozen. GrindTargetValue records when the local mobs
-    // went grey-only; after ten minutes of that this counts as nothing to do here.
+    // Grey-only escape hatch, any level from 8 up. A bot standing in a zone whose only nearby
+    // mobs are grey has no xp supply, and if it also has no acceptable quest it has nothing to
+    // do here - but the area-level test misses it whenever the zone is only *slightly* below
+    // the bot (measured 2026-10-04 13:40: level 12 in Dun Morogh and level 15-19 in Mulgore and
+    // Durotar all sat at AttackDenied no-grind-target with zone level +5 still above their own,
+    // so areaOutgrown was false and nothingToDo was blocked by grey quests still in the log).
+    // GrindTargetValue records when the local mobs went grey-only; after ten minutes of that
+    // this counts as nothing to do here. Level 8 is kept as the floor: below that the start
+    // zone is small and the walk out is what kills bots.
     bool greyOnlyLowbie = false;
-    if (bot->GetLevel() < 10)
     {
         time_t const greySince = AI_VALUE2(time_t, "manual time", "grey-only grind since");
         greyOnlyLowbie = greySince != 0 && time(0) - greySince >= 10 * MINUTE;
