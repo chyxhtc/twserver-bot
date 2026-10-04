@@ -51,6 +51,8 @@ namespace ai
         //Returns true once the bags are back under the 90% threshold.
         bool DestroyGreyJunk(Player* requester);
         bool DestroyUsages(Player* requester, std::vector<ItemUsage> const& usages);
+        //Trims a piled-up no-use stackable down to two stacks, one pile per pass.
+        bool TrimBulkNoUsePiles();
     };
 
     class DestroyAllGrayItemsAction : public DestroyItemAction

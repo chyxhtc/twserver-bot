@@ -34,6 +34,51 @@ void DestroyItemAction::DestroyItem(FindItemVisitor* visitor, Player* requester)
     }
 }
 
+// Destroys all but the first two stacks of every no-use stackable the bot has piled up. One
+// pile per pass: the action runs from the 90% maintenance trigger, which re-checks on the
+// next tick, so the sweep cannot stall the engine on a huge hoard.
+bool SmartDestroyItemAction::TrimBulkNoUsePiles()
+{
+    std::list<uint32> ids = AI_VALUE2(std::list<uint32>, "inventory item ids",
+        "usage " + std::to_string((uint8)ItemUsage::ITEM_USAGE_NONE));
+
+    for (uint32 itemId : ids)
+    {
+        if (HAS_AI_VALUE2("force item usage", itemId))
+            continue;
+
+        ItemPrototype const* proto = sObjectMgr.GetItemPrototype(itemId);
+        if (!proto || proto->GetMaxStackSize() < 2) // unstackables are one slot each; leave them
+            continue;
+
+        FindItemByIdVisitor visitor(itemId);
+        ai->InventoryIterateItems(&visitor, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+        std::list<Item*> found = visitor.GetResult();
+
+        if (found.size() <= 2)
+            continue;
+
+        uint32 kept = 0;
+        bool destroyed = false;
+        for (Item* item : found)
+        {
+            if (!item)
+                continue;
+
+            if (kept++ < 2)
+                continue;
+
+            bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+            destroyed = true;
+        }
+
+        if (destroyed)
+            return true;
+    }
+
+    return false;
+}
+
 bool SmartDestroyItemAction::DestroyGreyJunk(Player* requester)
 {
     //Item ids, never item pointers: DestroyItem() frees every stack carrying
@@ -142,6 +187,16 @@ bool SmartDestroyItemAction::Execute(Event& event)
     //We need money: keep quest items and anything a vendor would buy (sell
     //first), destroy only genuinely useless stuff.
     bool const needsMoney = AI_VALUE(bool, "should get money") || ShouldSellValue::CantAffordNextSpell(ai);
+
+    // Bulk trim first: a pile of an item the bot has no use for never shrank, because the
+    // usage sweep below destroys the NEWEST item of each usage first and stops as soon as the
+    // bags dip under the 90% line - a hoard piled up earlier sat at the bottom of that order
+    // forever. Measured 2026-10-05: eight bots carried 600-1200 Smoked Sagefish each (30-60 of
+    // about 80 slots), bags pinned at 100%, and 449 loot items were skipped for space in 1.2 h
+    // against 376 taken. Two stacks of a no-use stackable are plenty (eating selects food and
+    // drink by class/subclass, so what is kept stays edible); the rest goes.
+    if (TrimBulkNoUsePiles())
+        return true;
 
     std::vector<ItemUsage> bestToDestroy = { ItemUsage::ITEM_USAGE_NONE }; //First destroy anything useless.
 
