@@ -834,6 +834,13 @@ void BotManager::SweepInstanceDwellers(uint32_t diff)
 constexpr uint32_t STALLED_SWEEP_INTERVAL_MS = 60 * 1000;
 constexpr time_t STALLED_AFTER_SEC = 15 * 60;
 constexpr time_t STALLED_RESCUE_COOLDOWN_SEC = 30 * 60;
+// A trickle is not output. The level-8 Tirisfal bots gained 29-42 experience over a whole day
+// against a pool where the busiest bots gain hundreds, but an exactly-unchanged (level, xp)
+// pair was the only thing the sweep looked for: every single grey kill postponed the rescue
+// another fifteen minutes. Require a real fraction of the next level instead. At level 9 one
+// even-level kill is about 1.4% of the level, so 2% is roughly one kill per fifteen minutes -
+// below that the bot is not playing, whatever the log says.
+constexpr uint32 STALLED_MIN_LEVEL_PERCENT = 2;
 
 void BotManager::SweepStalledBots(uint32_t diff)
 {
@@ -858,14 +865,33 @@ void BotManager::SweepStalledBots(uint32_t diff)
             m_stalled.erase(key);
             continue;
         }
+        // Nothing to measure once the next level costs nothing (level cap): the experience
+        // field stops moving and the bot would look stalled forever.
+        if (p->GetUInt32Value(PLAYER_NEXT_LEVEL_XP) == 0)
+        {
+            m_stalled.erase(key);
+            continue;
+        }
 
         uint64_t const progress = ((uint64_t)p->GetLevel() << 32) | p->GetUInt32Value(PLAYER_XP);
         StalledState& st = m_stalled[key];
         if (st.progress != progress)
         {
+            // Meaningful output: a level gained, or at least STALLED_MIN_LEVEL_PERCENT of the
+            // experience the next level needs. Anything less keeps the stall timer ageing.
+            uint32 const prevXp = (uint32)(st.progress & 0xffffffffu);
+            uint32 const nowXp = p->GetUInt32Value(PLAYER_XP);
+            uint32 const nextXp = p->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+            bool const leveled = p->GetLevel() > (uint32)(st.progress >> 32);
+            uint32 const gained = nowXp > prevXp ? nowXp - prevXp : 0;
+            bool const meaningful = leveled ||
+                (nextXp > 0 && (uint64_t)gained * 100 >= (uint64_t)nextXp * STALLED_MIN_LEVEL_PERCENT);
             st.progress = progress;
-            st.since = now;
-            st.rescueStreak = 0;
+            if (meaningful)
+            {
+                st.since = now;
+                st.rescueStreak = 0;
+            }
             continue;
         }
         if (!st.since)
@@ -927,7 +953,28 @@ void BotManager::SweepStalledBots(uint32_t diff)
                 p->GetName(), p->GetLevel(), stalledMin, st.rescueStreak);
         TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp) -> level-fitting point",
             p->GetName(), p->GetLevel(), stalledMin);
-        TeleportMisplacedBot(p, 0, "stalled bot (" + std::to_string(stalledMin) + " min without xp)", escalate);
+        if (TeleportMisplacedBot(p, 0, "stalled bot (" + std::to_string(stalledMin) + " min without xp)", escalate))
+        {
+            // Break the walk-back, exactly as the death-loop rescue does. Without this the bot
+            // re-picks the same quest objective and marches straight back into the pocket it
+            // was just carried out of: measured 2026-10-04, Warkryrzith was relocated from
+            // Tirisfal to Mulgore at 18:46:53 and was back in Tirisfal by 19:00 with seven
+            // "QuestTravelToObjective Marla's Last Wish" requests, still at 0 xp for the hour.
+            ::PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(p);
+            if (ai && ai->GetAiObjectContext())
+            {
+                auto* travelValue = ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target");
+                ai::TravelTarget* travelTarget = travelValue ? travelValue->Get() : nullptr;
+                if (travelTarget)
+                {
+                    sTravelMgr.SetNullTravelTarget(travelTarget);
+                    travelTarget->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
+                    travelTarget->SetExpireIn(1000);
+                }
+                if (auto* questBlock = ai->GetAiObjectContext()->GetValue<time_t>("manual time", "no travel purpose until::quest"))
+                    questBlock->Set(now + (time_t)sPlayerbotAIConfig.hopelessDeathLoopQuestBlockSec);
+            }
+        }
     }
 }
 
