@@ -556,13 +556,24 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
     // only; the check needs an ai for the master gate, so callers pass it in.
         PlayerbotAI* routeAi = PlayerbotAIStorage::Instance().GetAI(bot);
         bool const avoidTowns = sPlayerbotAIConfig.avoidHostileTowns && routeAi && !routeAi->HasRealPlayerMaster();
+        // A15 tail: a bot already standing inside an area above its limit has to be able to
+        // walk out of it, but every route from there runs through nodes of that same area, so
+        // the four avoid rounds could never succeed and the destination was dropped for good.
+        // Garzaryr (level 22) sat in Wetlands (level 28) and 30 destinations were refused
+        // with "route: Wetlands (level 28)" in one day, one of them after excluding four
+        // Wetlands/Dun Garok waypoints. Where the bot already is is not a risk this route
+        // takes, so its current area is exempt; the destination itself is still checked
+        // against the plain margin separately (SetBestTarget) and every other area keeps the
+        // old veto.
+        AreaTableEntry const* const startArea = start.GetArea();
         for (TravelNode* node : route.getNodes())
         {
             WorldPosition* p = node ? node->getPosition() : nullptr;
             if (!p)
                 continue;
             int32 const level = p->GetAreaLevel();
-            if (level > 0 && level > limit)
+            bool const inCurrentArea = startArea && p->GetArea() == startArea;
+            if (level > 0 && level > limit && !inCurrentArea)
             {
                 blocker = p->getAreaName(true, true) + " (level " + std::to_string(level) + ")";
                 // A15: the route is only refused because of this waypoint, so try a second
