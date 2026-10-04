@@ -517,12 +517,15 @@ void WorldPosition::EnsureHostileTownIndex()
                 {
                     return guard->IsHostileTo(*player);
                 };
-                // Neutral-town bruisers: guard-bit faction neutral to BOTH baseline
-                // templates (Booty Bay 121, Gadgetzan 475, Ratchet 637, Everlook
-                // 854 — all our 1 / hostile 8). They kill whoever fights in town
-                // regardless of standing, so both teams avoid them unconditionally
-                // (query skips the live check for these).
-                bool neutralBruiser = !hostileTo(guardFaction, ally) && !hostileTo(guardFaction, horde);
+                // Neutral-town bruisers: Booty Bay 121, Gadgetzan 475, Ratchet 637, Everlook 854.
+                // The old test was "hostile to neither baseline template", which is true of every
+                // friendly neutral guard faction as well: measured 2026-10-04 17:03-17:13, the
+                // Moonglade Cenarion Wardens (faction 1254) made both Alliance and Horde bots
+                // refuse creature 11802 with hostile-town, so the druid class quests 5921/5922
+                // could never be handed in and Moonglade - a quest hub - was off-limits. Keep the
+                // four bruiser factions listed explicitly instead of inferring from hostility.
+                static uint32 const kBruiserFactions[] = { 121, 475, 637, 854 };
+                bool const neutralBruiser = std::find(std::begin(kBruiserFactions), std::end(kBruiserFactions), info->faction) != std::end(kBruiserFactions);
                 // Opposing-faction guard: hostile to T, NOT hostile to T's enemy
                 // (keeps out monster-team mobs that hate everyone — no town).
                 // Faction id stored for the query-time live check (bot hostile to
