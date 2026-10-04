@@ -384,6 +384,29 @@ bool TeleportMisplacedBot(::Player* bot, int32 areaLevel, const std::string& cau
 // Counting happens here, at the single point every revive path goes through, and a
 // level gained since the window opened resets it - that is what keeps ordinary hard
 // churn out of the relocation set.
+// Break the walk-back: retire the active travel target and park quest travel for a while, so
+// the fresh position is actually used instead of the bot marching straight back to the same
+// objective. Both are the same seams the framework already uses (XpGainAction expires the
+// target on a ding; MoveToTravelTargetAction parks a purpose on a failed move). Every rescue
+// that moves a bot now calls this: without it Warkryrzith was carried from Tirisfal to Mulgore
+// and walked back within a quarter of an hour (measured 2026-10-04 18:46-19:00).
+static void BreakWalkBack(::Player* bot)
+{
+    ::PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(bot);
+    if (!ai || !ai->GetAiObjectContext())
+        return;
+    auto* travelValue = ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target");
+    ai::TravelTarget* travelTarget = travelValue ? travelValue->Get() : nullptr;
+    if (travelTarget)
+    {
+        sTravelMgr.SetNullTravelTarget(travelTarget);
+        travelTarget->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
+        travelTarget->SetExpireIn(1000);
+    }
+    if (auto* questBlock = ai->GetAiObjectContext()->GetValue<time_t>("manual time", "no travel purpose until::quest"))
+        questBlock->Set(time(nullptr) + (time_t)sPlayerbotAIConfig.hopelessDeathLoopQuestBlockSec);
+}
+
 bool BotManager::RelocateDeathLoopedBot(::Player* bot)
 {
     if (!sPlayerbotAIConfig.relocateHopelessDeaths || !sPlayerbotAIConfig.hopelessDeathLoopCount)
@@ -436,20 +459,7 @@ bool BotManager::RelocateDeathLoopedBot(::Player* bot)
     if (!TeleportMisplacedBot(bot, areaLevel, cause))
         return false;
 
-    // Break the walk-back: retire the active travel target and park quest travel for a
-    // while, so the fresh position is actually used instead of the bot marching straight
-    // back to the same objective. Both are the same seams the framework already uses
-    // (XpGainAction expires the target on a ding; MoveToTravelTargetAction parks a
-    // purpose on a failed move).
-    if (ai::TravelTarget* travelTarget = ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target") ?
-        ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get() : nullptr)
-    {
-        sTravelMgr.SetNullTravelTarget(travelTarget);
-        travelTarget->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
-        travelTarget->SetExpireIn(1000);
-    }
-    if (auto* questBlock = ai->GetAiObjectContext()->GetValue<time_t>("manual time", "no travel purpose until::quest"))
-        questBlock->Set(now + (time_t)sPlayerbotAIConfig.hopelessDeathLoopQuestBlockSec);
+    BreakWalkBack(bot);
 
     state.lastRelocate = now;
     state.revives = 0;
@@ -477,9 +487,11 @@ bool BotManager::RelocateHopelessBot(::Player* bot)
     uint32 deathCount = deathCountValue ? deathCountValue->Get() : 0;
     int32 areaLevel = 0;
     std::string why;
-    // A10: ten levels below the bot is outgrown no matter how the death count reads; the
-    // death threshold below still decides whether the bot is actually in trouble.
-    if (!MisplacedBotEligible(bot, areaLevel, &why, 10))
+    // A10: an area more than the same five level margin below the bot is outgrown - the
+    // symmetric counterpart of the "fits level+5" test that lets an area through - and a bot
+    // that keeps dying there is not passing through. Measured 2026-10-04: Morojar level 17 was
+    // refused with "area 809 level 7 fits level 17+5" while earning one XpGain in an hour.
+    if (!MisplacedBotEligible(bot, areaLevel, &why, 5))
     {
         if (bot && deathCount)
             TB_LOG_BASIC("TortoiseBots: hopeless check %s level %u zone %u area %u deaths %u: not eligible - %s",
@@ -497,7 +509,10 @@ bool BotManager::RelocateHopelessBot(::Player* bot)
             bot->GetName(), bot->GetLevel(), bot->GetZoneId(), bot->GetAreaId(), areaLevel, deathCount, minDeaths);
         return false;
     }
-    return TeleportMisplacedBot(bot, areaLevel, "hopeless bot (" + std::to_string(deathCount) + " deaths)");
+    if (!TeleportMisplacedBot(bot, areaLevel, "hopeless bot (" + std::to_string(deathCount) + " deaths)"))
+        return false;
+    BreakWalkBack(bot);
+    return true;
 }
 
 bool BotManager::RelocateStrandedBot(::Player* bot)
@@ -962,27 +977,7 @@ void BotManager::SweepStalledBots(uint32_t diff)
         TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp) -> level-fitting point",
             p->GetName(), p->GetLevel(), stalledMin);
         if (TeleportMisplacedBot(p, 0, "stalled bot (" + std::to_string(stalledMin) + " min without xp)", escalate))
-        {
-            // Break the walk-back, exactly as the death-loop rescue does. Without this the bot
-            // re-picks the same quest objective and marches straight back into the pocket it
-            // was just carried out of: measured 2026-10-04, Warkryrzith was relocated from
-            // Tirisfal to Mulgore at 18:46:53 and was back in Tirisfal by 19:00 with seven
-            // "QuestTravelToObjective Marla's Last Wish" requests, still at 0 xp for the hour.
-            ::PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(p);
-            if (ai && ai->GetAiObjectContext())
-            {
-                auto* travelValue = ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target");
-                ai::TravelTarget* travelTarget = travelValue ? travelValue->Get() : nullptr;
-                if (travelTarget)
-                {
-                    sTravelMgr.SetNullTravelTarget(travelTarget);
-                    travelTarget->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
-                    travelTarget->SetExpireIn(1000);
-                }
-                if (auto* questBlock = ai->GetAiObjectContext()->GetValue<time_t>("manual time", "no travel purpose until::quest"))
-                    questBlock->Set(now + (time_t)sPlayerbotAIConfig.hopelessDeathLoopQuestBlockSec);
-            }
-        }
+            BreakWalkBack(p);
     }
 }
 
