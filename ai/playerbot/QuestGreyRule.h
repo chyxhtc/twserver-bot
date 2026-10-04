@@ -121,6 +121,20 @@ namespace ai { namespace questgrey
     // callers (quest-log upkeep, outgrown-zone rule) on one definition.
     bool ItemHasKnownSource(uint32 itemId);
 
+    // The same question, but for one bot and with reachability applied to vendors: a vendor
+    // only counts when at least one of its spawns is somewhere the destination gate would
+    // send this bot (not an enemy home zone, not a guarded hostile town, and inside the area
+    // level margin). Used by the quest-objective travel fetch, which otherwise spends a
+    // destination search on an objective nothing can ever satisfy. Measured 2026-10-05:
+    // quest 116 Dry Times (Alliance only) needs 1262 Keg of Thunderbrew Lager, whose only
+    // vendor in the world is 6930 Innkeeper Karakul, standing in Stonard among level 45-60
+    // Horde guards; four Alliance bots held the quest and that objective was never offered.
+    //
+    // Deliberately NOT used by QuestHasNoKnownSource: that one feeds the quest-drop rule, and
+    // widening it to reachability would drop quests a bot could still do later (and re-accept,
+    // then drop again).
+    bool ItemHasReachableSource(Player* bot, uint32 itemId);
+
     // True when every item requirement is sourceless and the quest has no kill requirement:
     // nothing in it can be planned against, so it is dead weight in the quest log. Measured
     // 2026-10-04: nine such quests were open, held by 20 of the 50 bots (Lazy Peons 8,

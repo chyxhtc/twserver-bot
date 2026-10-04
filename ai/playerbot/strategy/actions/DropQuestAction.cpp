@@ -29,6 +29,48 @@ bool ItemHasKnownSource(uint32 itemId)
     return hasSource;
 }
 
+bool ItemHasReachableSource(Player* bot, uint32 itemId)
+{
+    if (!itemId)
+        return false;
+
+    if (!GAI_VALUE2(std::list<int32>, "item drop list", itemId).empty())
+        return true;
+
+    ItemRequiredTargetMapBounds const bounds = sObjectMgr.GetItemRequiredTargetMapBounds(itemId);
+    if (bounds.first != bounds.second)
+        return true;
+
+    // Vendor-only items: the vendor has to stand somewhere this bot is allowed to travel. The
+    // three predicates below are exactly the ones the destination gate applies (SetBestTarget),
+    // so a vendor behind any of them can never become a travel target either. The scan behind
+    // "entry guidps" is a shared value built once, and this path only runs for quest items
+    // without a drop or use-target source, so the lookup stays cheap.
+    EntryGuidps const& guidps = GAI_VALUE(EntryGuidps, "entry guidps");
+    for (int32 entry : GAI_VALUE2(std::list<int32>, "item vendor list", itemId))
+    {
+        auto const it = guidps.find(entry);
+        if (it == guidps.end())
+            continue;
+
+        for (GuidPosition const& position : it->second)
+        {
+            if (position.IsEnemyHomeZoneFor(bot->GetTeam()))
+                continue;
+            if (position.IsGuardedHostileTownFor(bot))
+                continue;
+
+            int32 const areaLevel = position.GetAreaLevel();
+            if (areaLevel > 0 && areaLevel > (int32)bot->GetLevel() + AreaLevelMargin())
+                continue;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool QuestHasNoKnownSource(Quest const* quest)
 {
     if (!quest)

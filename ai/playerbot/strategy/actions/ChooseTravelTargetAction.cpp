@@ -12,6 +12,7 @@
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/QuestGreyRule.h"
 #include "runtime/BotManager.h"
 #include "Guild/GuildMgr.h"
 #include <iomanip>
@@ -2138,6 +2139,31 @@ bool RequestQuestTravelTargetAction::Execute(Event& event)
                     TravelDestinationPurpose purposeFlag = (TravelDestinationPurpose)(1 << (objective + 1));
 
                     std::vector<std::string> qualifier = { std::to_string(questId), std::to_string(objective) };
+
+                    // A17: an item objective whose item has no source this bot can reach can
+                    // never be satisfied, so asking the travel layer to plan a search for it
+                    // only produces empty candidate lists while the quest stays open forever.
+                    // Measured 2026-10-05: quest 116 Dry Times (Alliance only) needs three
+                    // vendor drinks; 1262's only vendor in the world is 6930 Innkeeper Karakul
+                    // in Stonard, standing among level 45-60 Horde guards, so that objective
+                    // was never once offered while Rolor ran 15 objective journeys for the
+                    // quest. Name it once per bot per objective per six hours instead.
+                    if (questTemplate->ReqItemId[objective] && questTemplate->ReqItemCount[objective] &&
+                        !questTemplate->ReqCreatureOrGOId[objective] &&
+                        !questgrey::ItemHasReachableSource(bot, questTemplate->ReqItemId[objective]))
+                    {
+                        std::string const key = "objnosource::" + std::to_string(questId) + "::" + std::to_string(objective);
+                        time_t const now = time(nullptr);
+                        time_t const last = AI_VALUE2(time_t, "manual time", key);
+                        if (!last || now - last >= 6 * HOUR)
+                        {
+                            SET_AI_VALUE2(time_t, "manual time", key, now);
+                            sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveNoSource", questTemplate->GetTitle(),
+                                std::to_string(questId) + "|obj=" + std::to_string(objective) +
+                                "|item=" + std::to_string(questTemplate->ReqItemId[objective]));
+                        }
+                        continue;
+                    }
 
                     if (AI_VALUE2(bool, "group or", "following party,need quest objective::" + Qualified::MultiQualify(qualifier, ","))) //Noone needs the quest objective.
                         flag = flag | (uint32)purposeFlag;
