@@ -2615,9 +2615,11 @@ void PlayerbotFactory::InitBags()
     // items in a day.
     PurgeSpareQuivers(bot);
 
-    // Hunters always want a quiver/ammo pouch (INVTYPE_BAG, same four
-    // slots): InitAmmo runs after this and must find a free slot, so fill
-    // at most three plain bags and leave one slot for the quiver.
+    // A hunter gets one bag slot reserved for a quiver/ammo pouch: InitAmmo runs after this and
+    // can only equip one into a slot that is really empty, so fill at most three plain bags.
+    // InitLevelBags has already filled all four by tier for level 10+, so in practice this only
+    // applies to bots with fewer bags - and no bag is dropped to manufacture the free slot (see
+    // the note at the end of this function).
     uint32 maxPlainBags = (INVENTORY_SLOT_BAG_END - INVENTORY_SLOT_BAG_START) - (bot->GetClass() == CLASS_HUNTER ? 1 : 0);
     uint32 plainBags = 0;
     for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
@@ -2636,70 +2638,12 @@ void PlayerbotFactory::InitBags()
         }
     }
 
-    // The reservation above only works while a slot is still empty. InitLevelBags runs first and
-    // fills all four by tier, so from level 10 up a hunter never had a free slot: EquipNewItem
-    // never ran, the quiver was never equipped (the InitAmmo comment says so, "nothing ever
-    // equipped a quiver"), and every refresh added another copy to the backpack instead - 13
-    // hunters ended up with 20-64 of them. Free one slot by dropping the smallest *empty* plain
-    // bag; a non-empty bag cannot be relocated, so InitAmmo simply retries next time.
-    if (bot->GetClass() == CLASS_HUNTER)
-    {
-        PurgeSpareQuivers(bot);
-
-        // Now free one slot so InitAmmo can equip the quiver. Pick the bag with the fewest
-        // items and move those out first: a non-empty bag cannot be moved or destroyed, and the
-        // core refuses to relocate a bag from a specific slot while it holds anything. If the
-        // leftovers do not fit anywhere, nothing is lost - the next refresh retries.
-        bool hasQuiver = false;
-        uint8 candidateSlot = 0;
-        uint32 candidateItems = 0xFFFFFFFF;
-        for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
-        {
-            Item* bagItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-            if (!bagItem || !bagItem->GetProto())
-                continue;
-            if (bagItem->GetProto()->Class == ITEM_CLASS_QUIVER)
-            {
-                hasQuiver = true;
-                continue;
-            }
-            if (bagItem->GetProto()->Class != ITEM_CLASS_CONTAINER)
-                continue;
-            Bag* bag = bagItem->IsBag() ? (Bag*)bagItem : nullptr;
-            if (!bag)
-                continue;
-            uint32 items = 0;
-            for (uint32 i = 0; i < bag->GetBagSize(); ++i)
-                if (bag->GetItemByPos(i))
-                    ++items;
-            if (items < candidateItems)
-            {
-                candidateItems = items;
-                candidateSlot = slot;
-            }
-        }
-        if (!hasQuiver && candidateItems != 0xFFFFFFFF)
-        {
-            Bag* candidate = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, candidateSlot);
-            bool emptied = candidate != nullptr;
-            for (uint32 i = 0; candidate && i < candidate->GetBagSize(); ++i)
-            {
-                Item* inner = candidate->GetItemByPos(i);
-                if (!inner)
-                    continue;
-                ItemPosCountVec dest;
-                if (bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, inner, false) != EQUIP_ERR_OK)
-                {
-                    emptied = false;
-                    break;
-                }
-                candidate->RemoveItem(i, false);
-                bot->StoreItem(dest, inner, true);
-            }
-            if (emptied && candidate && candidate->IsEmpty())
-                bot->DestroyItem(INVENTORY_SLOT_BAG_0, candidateSlot, true);
-        }
-    }
+    // The quiver reservation above stays a reservation: no bag is ever dropped to make room for
+    // one. A Traveler's Backpack holds 16 slots against the 10 of the level-appropriate quiver,
+    // so the swap costs six slots and buys only the quiver's +10% ranged haste aura - and a
+    // hunter shoots fine with the arrows sitting in a bag. InitAmmo therefore equips a quiver
+    // only when a bag slot really is free, and the InitAmmo fallback that used to hand out a
+    // spare copy on every refresh is gone.
 }
 
 // Level-tier vendor bags for the plain container slots. Quiver/ammo-pouch
