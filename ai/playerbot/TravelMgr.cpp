@@ -2710,6 +2710,23 @@ bool TravelMgr::IsLocationLevelValid(const WorldPosition& position, const Player
             grindMinLevel = grindZoneFloor;
         if ((int32)areaLevel <= grindMinLevel)
             return false;
+
+        // The floor above is tested against the point's area level, which is the level of
+        // the sub-area the creature stands in - not the containing zone. A leave-outgrown
+        // request therefore re-picked the very zone it was leaving whenever a high-rated
+        // pocket inside it passed the area test: measured 2026-10-05 00:43, Krukal (level 14,
+        // floor 9) fired "should leave outgrown zone" from Dun Morogh (zone level 7) and the
+        // pick was a Grind point inside Dun Morogh, twice in a row, while the bot sat in the
+        // zone it had outgrown for another 66 minutes that day. When the caller asks for a
+        // zone floor (only the leave rule does), judge the containing zone as well.
+        if (grindZoneFloor > 0 && posArea)
+        {
+            uint32 const posZoneId = posArea->ZoneId ? posArea->ZoneId : posArea->Id;
+            int32 zoneLevel = 0;
+            if (sTravelMgr.TryGetValidatedAreaLevel(posZoneId, zoneLevel) &&
+                zoneLevel > 0 && zoneLevel <= grindMinLevel)
+                return false;
+        }
     }
 
     return true;

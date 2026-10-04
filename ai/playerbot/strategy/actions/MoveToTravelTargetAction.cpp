@@ -307,8 +307,22 @@ bool MoveToTravelTargetAction::Execute(Event& event)
             // the destination point instead (the module already teleports for the login
             // scatter, the stuck-bot rescue and the continent transfer), rate-limited per
             // bot so a genuinely bad point cannot become a teleport loop.
-            if (target->GetDestination() && target->getPosition() &&
-                dynamic_cast<QuestTravelDestination*>(target->GetDestination()) &&
+            // Same fallback for the one Grind request that exists only to get the bot out of a
+            // zone it has outgrown: if the exit cannot be pathed, dropping the target hands the
+            // bot straight back to a local objective inside that zone and the leave rule fires
+            // again a few minutes later. Measured 2026-10-05: Jaezo 88 min, Krukal 66 min,
+            // Ghaemaepor 62 min standing in Dun Morogh (zone level 7) at level 14-18, with
+            // 9-24 leave requests each; the Westfall exit alternative was dropped after 12
+            // retries and the bot walked back into Dun Morogh. Teleporting to the exit point is
+            // the same last-resort move the quest hand-in already uses, and it stays the
+            // fallback: it only runs after the retry budget is spent, and the per-bot stamp
+            // keeps it to one every five minutes.
+            std::string const travelCondition = AI_VALUE2(std::string, "manual string", "future travel condition");
+            TravelDestination* const destination = target->GetDestination();
+            bool const leavesOutgrownZone = destination && travelCondition == "should leave outgrown zone" &&
+                dynamic_cast<GrindTravelDestination*>(destination) != nullptr;
+            if (destination && target->getPosition() &&
+                (dynamic_cast<QuestTravelDestination*>(destination) || leavesOutgrownZone) &&
                 LastMileAllowed(bot) &&
                 sRandomBotFacade.GetValue(bot, "last mile teleport") == 0)
             {
