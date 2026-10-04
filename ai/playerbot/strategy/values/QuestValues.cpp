@@ -81,6 +81,37 @@ EntryQuestRelationMap EntryQuestRelationMapValue::Calculate()
 				for (auto& entry : GAI_VALUE2(std::list<int32>, "item vendor list", quest->ReqItemId[objective]))
 					rMap[entry][questId] |= relationFlag;
 			}
+
+			// Loot objective for the SOURCE item of a "use item on the objective" step.
+			//
+			// These steps carry the item in ReqSourceId, not ReqItemId, so the block above
+			// never attached their drop source and the travel layer had no destination that
+			// would ever produce the item. Measured 2026-10-04: quest 6395 (Marla's Last
+			// Wish) casts spell 20364 on gameobject 178090 and consumes source item 16333
+			// (Samuel's Remains). Eight bots held it incomplete and the trace showed them
+			// reaching the grave (GoTakerProbe entry=178090 dist=0 processed=0) without the
+			// item in hand, while Samuel Fipps (1919, the -100% quest drop of 16333) was
+			// killed only by accident. Same source-check the ReqItemId path uses.
+			if (quest->ReqSourceId[objective] && quest->ReqSourceCount[objective])
+			{
+				uint32 itemId = quest->ReqSourceId[objective];
+				while (itemId)
+				{
+					ItemPrototype const* proto = sObjectMgr.GetItemPrototype(itemId);
+
+					if (proto)
+					{
+						for (auto& entry : GAI_VALUE2(std::list<int32>, "item drop list", itemId))
+						{
+							std::string chanceQualifier = std::to_string(entry) + " " + std::to_string(itemId);
+							if (proto->Class == ITEM_CLASS_QUEST || GAI_VALUE2(float, "loot chance", chanceQualifier) > 5.0f)
+								rMap[entry][questId] |= relationFlag;
+						}
+					}
+
+					itemId = ItemUsageValue::ItemCreatedFrom(itemId);
+				}
+			}
 		}
 
 		//Target entry of source item of quest.
