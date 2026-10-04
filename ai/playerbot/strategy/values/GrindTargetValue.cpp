@@ -111,13 +111,29 @@ Unit* GrindTargetValue::Calculate()
         // "not grey" and wiping the stamp kept the ten minute hatch shut. Measured
         // 2026-10-04 12:00-17:53, Krorpalgres (level 8, Tirisfal): 477 "possible=0" searches
         // against 117 grey-only observations - 5.9 h, 0 xp, 0 rewards, 0 deaths.
+        // A skip reason only proves an xp supply when the mob was killable and the right
+        // level, and was held back by policy (the bot wants quest targets, or someone else
+        // is already pulling it). Every other reason describes a mob this bot cannot use
+        // right now - grey, tapped, cced, out of range, on another height layer, unreachable,
+        // evading, an unkillable elite, a critter - so it must not keep the stamp cleared.
+        // Measured 2026-10-04 18:37-18:38: the level 8 Tirisfal trio sat on the same delivery
+        // point tapping each other's mobs, so every "possible=N skipped=N" carried a
+        // tapped/cced line next to the grey ones and the timer was wiped about once a minute
+        // (greyAge 82 then 30, 109 then 31).
+        auto indicatesSupply = [](std::string const& why)
+        {
+            return why.find("levels above bot)") != std::string::npos ||
+                why.find("not needed for active quest") != std::string::npos ||
+                why.find("increased distance (not needed for quest)") != std::string::npos ||
+                why.find("bots already targeting)") != std::string::npos;
+        };
         bool const examinedCandidates = !g_grindSkipReasons.empty();
         bool greyOnly = false;
         if (!target && examinedCandidates)
         {
             greyOnly = true;
             for (auto const& [why, n] : g_grindSkipReasons)
-                if (why.find("not xp and not needed for quest") == std::string::npos)
+                if (indicatesSupply(why))
                 {
                     greyOnly = false;
                     break;
