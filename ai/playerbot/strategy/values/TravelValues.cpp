@@ -654,8 +654,9 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     // this counts as nothing to do here. Level 8 is kept as the floor: below that the start
     // zone is small and the walk out is what kills bots.
     bool greyOnlyLowbie = false;
+    time_t greySince = 0;
     {
-        time_t const greySince = AI_VALUE2(time_t, "manual time", "grey-only grind since");
+        greySince = AI_VALUE2(time_t, "manual time", "grey-only grind since");
         greyOnlyLowbie = greySince != 0 && time(0) - greySince >= 10 * MINUTE;
     }
 
@@ -678,12 +679,12 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     // anyway. All reads are 2-tick cached AI values plus a bounded quest-log
     // walk - no world scan, no DB.
     bool leaveAnyway = false;
+    int32 areaLevel = 0;
+    bool const areaKnown = sTravelMgr.TryGetValidatedAreaLevel(sServerFacade.GetAreaId(bot), areaLevel) && areaLevel > 0;
+    // areaOutgrown drives the 10-minute escape hatch; nothingToDo is what actually lets
+    // the bot go, so a bot with quests left in an outgrown zone stays and finishes them.
+    bool const areaOutgrown = areaKnown && areaLevel + 5 < (int32)bot->GetLevel();
     {
-        int32 areaLevel = 0;
-        bool const areaKnown = sTravelMgr.TryGetValidatedAreaLevel(sServerFacade.GetAreaId(bot), areaLevel) && areaLevel > 0;
-        // areaOutgrown drives the 10-minute escape hatch; nothingToDo is what actually lets
-        // the bot go, so a bot with quests left in an outgrown zone stays and finishes them.
-        bool const areaOutgrown = areaKnown && areaLevel + 5 < (int32)bot->GetLevel();
         bool const outgrown = areaOutgrown || nothingToDo || greyOnlyLowbie;
         if (outgrown)
         {
@@ -696,6 +697,37 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
         else
             SET_AI_VALUE2(time_t, "manual time", "outgrown since", (time_t)0);
     }
+
+    // TEMP-DIAG(leave-rule): one line per bot per minute with every input of the decision,
+    // so a bot that never leaves can be read straight off the trace instead of being guessed
+    // at. Added 2026-10-04 18:20 for the level 8 Tirisfal trio (Krorpalgres, Turkhal,
+    // Warkryrzith), which held an active parked quest-objective travel target all evening.
+    // Remove once the trio is unstuck.
+    {
+        time_t const now = time(0);
+        time_t const lastDiag = AI_VALUE2(time_t, "manual time", "leavediag logged");
+        if (!lastDiag || now - lastDiag >= 60)
+        {
+            SET_AI_VALUE2(time_t, "manual time", "leavediag logged", now);
+            std::ostringstream out;
+            out << "lvl=" << (uint32)bot->GetLevel()
+                << " area=" << areaLevel
+                << " known=" << (areaKnown ? 1 : 0)
+                << " outgrown=" << (areaOutgrown ? 1 : 0)
+                << " actionable=" << actionableQuests
+                << " supplyEmpty=" << (questSupplyEmpty ? 1 : 0)
+                << " nothingToDo=" << (nothingToDo ? 1 : 0)
+                << " greyAge=" << (greySince ? (long)(now - greySince) : -1)
+                << " greyLowbie=" << (greyOnlyLowbie ? 1 : 0)
+                << " leaveAnyway=" << (leaveAnyway ? 1 : 0)
+                << " handIn=" << (outgrown_yield::HasHandInAbleQuest(ai, bot) ? 1 : 0)
+                << " capital=" << (WorldPosition(bot).HasAreaFlag(AREA_FLAG_CAPITAL) ? 1 : 0)
+                << " travelActive=" << (AI_VALUE(bool, "travel target active") ? 1 : 0)
+                << " moving=" << (bot->IsMoving() ? 1 : 0);
+            sPlayerbotAIConfig.logEvent(ai, "LeaveDiag", out.str(), WorldPosition(bot).GetAreaName(true, true));
+        }
+    }
+
     if (!leaveAnyway)
     {
         // Outside capitals only hand-in-able quests hold the bot; selling and
