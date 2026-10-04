@@ -565,15 +565,23 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
         // takes, so its current area is exempt; the destination itself is still checked
         // against the plain margin separately (SetBestTarget) and every other area keeps the
         // old veto.
+        // Compare zones, not sub-areas: Caelaeth (level 18) stood in Menethil Harbor (area
+        // 150) inside Wetlands and was still refused by a node in Wetlands Menethil Keep,
+        // a different sub-area of the same zone, so the pointer comparison left the deadlock
+        // in place. The bot is somewhere in this zone already; every node of it is a
+        // consequence of that, not a new risk.
         AreaTableEntry const* const startArea = start.GetArea();
+        uint32 const startZone = startArea ? (startArea->ZoneId ? startArea->ZoneId : startArea->Id) : 0;
         for (TravelNode* node : route.getNodes())
         {
             WorldPosition* p = node ? node->getPosition() : nullptr;
             if (!p)
                 continue;
             int32 const level = p->GetAreaLevel();
-            bool const inCurrentArea = startArea && p->GetArea() == startArea;
-            if (level > 0 && level > limit && !inCurrentArea)
+            AreaTableEntry const* const nodeArea = p->GetArea();
+            uint32 const nodeZone = nodeArea ? (nodeArea->ZoneId ? nodeArea->ZoneId : nodeArea->Id) : 0;
+            bool const inCurrentZone = startZone && nodeZone == startZone;
+            if (level > 0 && level > limit && !inCurrentZone)
             {
                 blocker = p->getAreaName(true, true) + " (level " + std::to_string(level) + ")";
                 // A15: the route is only refused because of this waypoint, so try a second
