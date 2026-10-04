@@ -547,6 +547,33 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
         if (level > 0 && level > limit)
         {
             blocker = p->getAreaName(true, true) + " (level " + std::to_string(level) + ")";
+            // TEMP-DIAG(route, A15): a level-14 bot in Dun Morogh had nine of ten quest
+            // destinations refused with "Burning Steppes (level 55)" even though every one of
+            // them sits in Dun Morogh, so the offending node has to be named: its id, position
+            // and area, plus the route's endpoints and length. One line per bot per minute.
+            // Remove once the cause is known.
+            if (routeAi && !routeAi->HasRealPlayerMaster())
+            {
+                static std::map<uint32, time_t> lastRouteDiag;
+                uint32 const botLow = bot->GetGUIDLow();
+                time_t const diagNow = time(nullptr);
+                auto const diagIt = lastRouteDiag.find(botLow);
+                if (diagIt == lastRouteDiag.end() || diagNow - diagIt->second >= 60)
+                {
+                    lastRouteDiag[botLow] = diagNow;
+                    auto const& nodes = route.getNodes();
+                    std::string firstNode = nodes.empty() || !nodes.front() ? "-" : nodes.front()->getName();
+                    std::string lastNode = nodes.empty() || !nodes.back() ? "-" : nodes.back()->getName();
+                    std::ostringstream diag;
+                    diag << "offender=" << (node ? node->getName() : "-") << ":" << p->getAreaName(true, true)
+                         << "(" << (int)std::floor(p->getX()) << "," << (int)std::floor(p->getY()) << ",z" << (int)std::floor(p->getZ()) << ")"
+                         << " limit=" << limit
+                         << " nodes=" << (uint32)nodes.size()
+                         << " first=" << firstNode << " last=" << lastNode
+                         << " dest=" << position->getMapId() << "(" << (int)std::floor(position->getX()) << "," << (int)std::floor(position->getY()) << ")";
+                    sPlayerbotAIConfig.logEvent(routeAi, "RouteDiag", diag.str(), blocker);
+                }
+            }
             ok = false;
             break;
         }
