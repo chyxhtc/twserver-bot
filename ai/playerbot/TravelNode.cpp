@@ -1721,10 +1721,29 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
             TravelNode* linkNode = link.first;
 
             // Caller-supplied exclusions: the re-route must not step on a waypoint it was
-            // asked to avoid (A15). Checked before the cost call so an excluded node is
-            // never expanded, which is what makes the second search find a different path.
-            if (avoid && std::find(avoid->begin(), avoid->end(), linkNode) != avoid->end())
-                continue;
+            // asked to avoid (A15). Matched by name and position, not by pointer: partitioned
+            // maps clone their nodes, so the node the caller saw in one route is a different
+            // object from the clone the next search would step on - measured 2026-10-05,
+            // Tharuputarr's "gave up after 4 exclusions, avoided=Ashenvale The Howling Vale"
+            // repeated the same name four times. Checked before the cost call so an excluded
+            // node is never expanded, which is what makes the next search find another path.
+            if (avoid)
+            {
+                bool excluded = false;
+                for (TravelNode* avoided : *avoid)
+                {
+                    if (!avoided || !linkNode)
+                        continue;
+                    if (avoided == linkNode ||
+                        (avoided->getName() == linkNode->getName() && avoided->getPosition() == linkNode->getPosition()))
+                    {
+                        excluded = true;
+                        break;
+                    }
+                }
+                if (excluded)
+                    continue;
+            }
 
             float linkCost = link.second->GetCost(unit, currentNode->currentGold);
 
