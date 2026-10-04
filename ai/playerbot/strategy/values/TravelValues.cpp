@@ -599,12 +599,6 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     if (!sPlayerbotAIConfig.leaveOutgrownZones)
         return false;
 
-    // A3/A4 coupling: when the leave destination keeps being refused (all candidates rejected
-    // by the route gate or by a routing pocket), requesting again every few seconds only burns
-    // attempts. ChooseTravelTargetAction parks this rule for ten minutes after three failures.
-    if (AI_VALUE2(time_t, "manual time", "leave parked until") > time(0))
-        return false;
-
     if (!sRandomBotFacade.IsRandomBot(bot) || ai->HasRealPlayerMaster())
         return false;
 
