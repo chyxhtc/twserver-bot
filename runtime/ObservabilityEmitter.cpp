@@ -472,6 +472,7 @@ void ObservabilityEmitter::Shutdown()
     m_enabled = false;
     m_snapshotTimerMs = 0;
     m_serverInfoTimerMs = 0;
+    m_serverInfoEmitted = false;
     m_snapshotSeq = 0;
     m_stateBucketIndex = 0;
     m_stateBucketElapsedMs = 0;
@@ -813,10 +814,19 @@ void ObservabilityEmitter::Update(uint32 diff)
     // Server-info cadence runs on every world tick (real time), not inside
     // the 2 s snapshot gate: the snapshot block below returns early 39/40
     // ticks, which previously diluted the 5-min interval to ~200 min.
+    // Startup emission, then every 5 minutes. The old cadence test compared the
+    // post-add value against diff, and that is true on the first tick after every
+    // reset: the timer is zeroed when it fires, so the next tick adds diff and
+    // matches again. Measured 2026-10-04 from the platform side: SERVER_INFO left
+    // the process ~18.8 times per second (world tick ~53 ms), i.e. ~20 KB/s and
+    // 1.7 GB/day of UDP plus an ostringstream and a set of rate getters per tick,
+    // all inside mangosd. A latch keeps the startup emission and the 5-minute
+    // cadence without re-firing on every tick.
     m_serverInfoTimerMs += diff;
-    if (m_serverInfoTimerMs == diff || m_serverInfoTimerMs >= 300000)
+    if (!m_serverInfoEmitted || m_serverInfoTimerMs >= 300000)
     {
         m_serverInfoTimerMs = 0;
+        m_serverInfoEmitted = true;
         EmitServerInfo();
     }
 

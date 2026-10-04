@@ -129,6 +129,11 @@ private:
     // cadence. No strings from config files, no secrets — numbers and on/off.
     void EmitServerInfo();
     uint32 m_serverInfoTimerMs = 0;
+    // Startup emission latch. The cadence test used to compare the post-add value with
+    // diff, which stays true on the first tick after every reset (the timer is zeroed on
+    // emission, so the next tick adds diff and matches again) and fired SERVER_INFO on
+    // every world tick. See EmitSnapshotCycle for the measurement.
+    bool m_serverInfoEmitted = false;
     // Exact server-side stats for the dashboard armory
     // (tortoise_bots_armory_stats); a few bots per snapshot, round-robin.
     void WriteArmoryStats(Player* bot);
