@@ -841,6 +841,9 @@ constexpr time_t STALLED_RESCUE_COOLDOWN_SEC = 30 * 60;
 // even-level kill is about 1.4% of the level, so 2% is roughly one kill per fifteen minutes -
 // below that the bot is not playing, whatever the log says.
 constexpr uint32 STALLED_MIN_LEVEL_PERCENT = 2;
+// A bot that moved its experience but far too little gets this much patience. The fifteen
+// minute bar alone relocated 19 bots in half an hour on 2026-10-04 19:30-19:43.
+constexpr time_t STALLED_TRICKLE_AFTER_SEC = 30 * 60;
 
 void BotManager::SweepStalledBots(uint32_t diff)
 {
@@ -891,7 +894,10 @@ void BotManager::SweepStalledBots(uint32_t diff)
             {
                 st.since = now;
                 st.rescueStreak = 0;
+                st.sawAnyChange = false;
             }
+            else
+                st.sawAnyChange = true;
             continue;
         }
         if (!st.since)
@@ -899,15 +905,17 @@ void BotManager::SweepStalledBots(uint32_t diff)
             st.since = now;
             continue;
         }
-        if (now - st.since < STALLED_AFTER_SEC)
+        time_t const patience = st.sawAnyChange ? STALLED_TRICKLE_AFTER_SEC : STALLED_AFTER_SEC;
+        if (now - st.since < patience)
             continue;
         if (st.lastRescue && now - st.lastRescue < STALLED_RESCUE_COOLDOWN_SEC)
             continue;
 
         st.lastRescue = now;
         st.since = now;
+        st.sawAnyChange = false;
         ++st.rescueStreak;
-        uint32 const stalledMin = (uint32)(STALLED_AFTER_SEC / 60);
+        uint32 const stalledMin = (uint32)(patience / 60);
         // A repeated rescue means the previous landing did not restore output. The level 8
         // Tirisfal trio (Krorpalgres, Turkhal, Warkryrzith) was rescued 39 times between
         // 16:24 and 17:56 and put back into its own starting pocket every time, because the

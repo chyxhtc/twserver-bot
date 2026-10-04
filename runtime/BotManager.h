@@ -268,6 +268,11 @@ private:
         // rescue may legitimately land the bot in the same zone; if that did not help,
         // the next one has to put real distance between it and where it stood.
         uint32_t rescueStreak = 0;
+        // True when the bot moved its experience at all since the timer started, even if not
+        // enough to count as output. A trickle gets thirty minutes of patience instead of
+        // fifteen: measured 2026-10-04 19:30-19:43, a fifteen minute bar relocated 19 bots in
+        // half an hour, roughly a fifth of the pool, most of them simply travelling.
+        bool sawAnyChange = false;
     };
     std::unordered_map<uint32_t, StalledState> m_stalled; // key = guid counter
     // Last successful cross-continent transfer per bot (key = guid counter), used for
