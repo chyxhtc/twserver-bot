@@ -655,6 +655,20 @@ bool UseAction::UseItemInternal(Player* requester, uint32 itemId, Unit* unit, Ga
             }
         }
 
+        // "Use this item on that game object" (quest steps whose objective is a GO, e.g. 6395's
+        // Marla's Grave): the item's spell carries the quest-complete effect and needs the GO as
+        // its explicit target. Every guess above derives from generic implicit targets, none of
+        // which match this shape, so before this the cast fell through to the self-target
+        // fallback and failed. Measured 2026-10-04 13:28-13:31: QuestItemUseTry -178090 with
+        // item 16333 and dist 2-4 yd, always followed by QuestItemUseFailed.
+        if (!validTarget && gameObject && gameObject->isSpawned())
+        {
+            gameObjectTarget = gameObject;
+            targets.setGOTarget(gameObject);
+            targets.m_targetMask = TARGET_FLAG_GAMEOBJECT;
+            validTarget = true;
+        }
+
         if (!validTarget)
         {
             targets.setUnitTarget(bot);
@@ -1445,20 +1459,40 @@ bool UseQuestItemOnObjectiveAction::FindQuestItemUseTarget(Player* bot, uint32& 
         if (!quest)
             continue;
 
-        uint32 const srcItem = quest->GetSrcItemId();
-        if (!srcItem || !bot->GetItemCount(srcItem))
-            continue;
-
         for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
         {
             int32 const reqEntry = quest->ReqCreatureOrGOId[i];
             uint32 const reqCount = quest->ReqCreatureOrGOCount[i];
-            if (reqEntry <= 0 || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)
+            if (!reqEntry || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)
                 continue;
+
+            // Which item does this step consume? The legacy single SrcItemId column, or the
+            // per-slot ReqSourceId when that column is empty. Measured 2026-10-04: quest 6395
+            // has SrcItemId = 0 and ReqSourceId1 = 16333, so the whole use-item path skipped it
+            // while 5441's SrcItemId = 16114 is exactly why the earlier verification passed.
+            uint32 const stepItem = quest->GetSrcItemId() ? quest->GetSrcItemId() : quest->ReqSourceId[i];
+            if (!stepItem || !bot->GetItemCount(stepItem))
+                continue;
+
+            // Gameobject objective (entry stored negated): the highest-value case in the
+            // pool is quest 6395, whose step is "use 16333 on Marla's Grave 178090". The old
+            // test skipped every negative entry, so a bot standing on the grave with the item
+            // in its bag still had nothing to do - measured 2026-10-04 13:12 with Sarkhol
+            // (3 yards from the grave, item 16333 held, 6395 incomplete, no QuestItemUseTry).
+            if (reqEntry < 0)
+            {
+                if (GameObject* go = bot->FindNearestGameObject((uint32)(-reqEntry), kQuestItemUseSearchRange))
+                {
+                    outItemId = stepItem;
+                    outTarget = go->getObjectGuid();
+                    return true;
+                }
+                continue;
+            }
 
             if (Creature* creature = bot->FindNearestCreature((uint32)reqEntry, kQuestItemUseSearchRange))
             {
-                outItemId = srcItem;
+                outItemId = stepItem;
                 outTarget = creature->getObjectGuid();
                 return true;
             }
@@ -1484,14 +1518,16 @@ bool UseQuestItemOnObjectiveAction::Execute(Event& event)
     if (!FindQuestItemUseTarget(bot, itemId, targetGuid))
         return false;
 
-    Unit* target = ai->GetUnit(targetGuid);
-    if (!target)
+    Unit* unitTarget = ai->GetUnit(targetGuid);
+    GameObject* goTarget = unitTarget ? nullptr : ai->GetGameObject(targetGuid);
+    if (!unitTarget && !goTarget)
         return false;
 
-    // The travel layer stops a dozen yards short of the objective creature, so walk the last
-    // stretch first: the item's spell has a normal unit range and using it from outside simply
-    // fails. One direct step is enough; the next tick then uses the item.
-    if (bot->GetDistance(target) > INTERACTION_DISTANCE)
+    // The travel layer stops a dozen yards short of the objective, so walk the last stretch
+    // first: the item's spell has a normal range and using it from outside simply fails. One
+    // direct step is enough; the next tick then uses the item. Covers both target kinds - the
+    // gameobject branch exists for 6395 (Marla's Grave) and its relatives.
+    auto walkLastStretch = [&](auto* target)
     {
         float const dx = bot->GetPositionX() - target->GetPositionX();
         float const dy = bot->GetPositionY() - target->GetPositionY();
@@ -1502,20 +1538,31 @@ bool UseQuestItemOnObjectiveAction::Execute(Event& event)
             target->GetPositionY() + dy / len * near,
             target->GetPositionZ(),
             MOVE_RUN_MODE | MOVE_PATHFINDING);
+    };
+
+    if (unitTarget && bot->GetDistance(unitTarget) > INTERACTION_DISTANCE)
+    {
+        walkLastStretch(unitTarget);
+        return true;
+    }
+    if (goTarget && bot->GetDistance(goTarget) > INTERACTION_DISTANCE)
+    {
+        walkLastStretch(goTarget);
         return true;
     }
 
-    if (!UseItem(requester, itemId, target))
+    bool const used = unitTarget ? UseItem(requester, itemId, unitTarget) : UseItem(requester, itemId, goTarget);
+    if (!used)
     {
         static std::map<uint32, time_t> lastFail;
-        uint32 const lowTarget = target->GetEntry();
+        uint32 const lowTarget = unitTarget ? unitTarget->GetEntry() : goTarget->GetEntry();
         time_t const nowFail = time(nullptr);
         auto itFail = lastFail.find(lowTarget);
         if (itFail == lastFail.end() || nowFail - itFail->second >= 20)
         {
             lastFail[lowTarget] = nowFail;
             sPlayerbotAIConfig.logEvent(ai, "QuestItemUseFailed", std::to_string(lowTarget),
-                "item=" + std::to_string(itemId) + " dist=" + std::to_string((int)bot->GetDistance(target)));
+                "item=" + std::to_string(itemId) + " dist=" + std::to_string((int)bot->GetDistance(unitTarget ? (WorldObject*)unitTarget : (WorldObject*)goTarget)));
         }
         return false;
     }
@@ -1523,7 +1570,7 @@ bool UseQuestItemOnObjectiveAction::Execute(Event& event)
     if (!GetDuration())
         SetDuration(sPlayerbotAIConfig.globalCoolDown);
 
-    sPlayerbotAIConfig.logEvent(ai, "QuestItemUsed", std::to_string(target->GetEntry()),
+    sPlayerbotAIConfig.logEvent(ai, "QuestItemUsed", std::to_string(unitTarget ? unitTarget->GetEntry() : goTarget->GetEntry()),
         "item=" + std::to_string(itemId));
     return true;
 }

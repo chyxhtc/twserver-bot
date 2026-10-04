@@ -1437,16 +1437,42 @@ private:
                 if (!quest)
                     continue;
 
-                uint32 const srcItem = quest->GetSrcItemId();
-                if (!srcItem || !bot->GetItemCount(srcItem))
-                    continue;
-
                 for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
                 {
                     int32 const reqEntry = quest->ReqCreatureOrGOId[i];
                     uint32 const reqCount = quest->ReqCreatureOrGOCount[i];
-                    if (reqEntry <= 0 || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)
+                    if (!reqEntry || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)
                         continue;
+
+                    // Legacy single SrcItemId column, or the per-slot ReqSourceId when it is
+                    // empty (6395: SrcItemId = 0, ReqSourceId1 = 16333).
+                    uint32 const srcItem = quest->GetSrcItemId() ? quest->GetSrcItemId() : quest->ReqSourceId[i];
+                    if (!srcItem || !bot->GetItemCount(srcItem))
+                        continue;
+
+                    // Gameobject objective (entry negated): quest 6395's step is "use 16333 on
+                    // Marla's Grave 178090", and skipping negative entries here meant the whole
+                    // use-item path never armed for it. Same shape as the creature branch.
+                    if (reqEntry < 0)
+                    {
+                        if (GameObject* useTarget = bot->FindNearestGameObject((uint32)(-reqEntry), 25.0f))
+                        {
+                            static std::map<uint32, time_t> lastTryGo;
+                            uint32 const lowGo = bot->GetGUIDLow();
+                            time_t const nowGo = time(nullptr);
+                            auto itGo = lastTryGo.find(lowGo);
+                            if (itGo == lastTryGo.end() || nowGo - itGo->second >= 20)
+                            {
+                                lastTryGo[lowGo] = nowGo;
+                                sPlayerbotAIConfig.logEvent(ai, "QuestItemUseTry", std::to_string(reqEntry),
+                                    "dist=" + std::to_string((int)bot->GetDistance(useTarget)) +
+                                    " item=" + std::to_string(srcItem) + " quest=" + std::to_string(quest->GetQuestId()));
+                            }
+
+                            return true;
+                        }
+                        continue;
+                    }
 
                     // Wider than interaction range on purpose: the travel layer parks the bot
                     // about a dozen yards from the objective creature, and the action walks
