@@ -2203,11 +2203,6 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
 
                 std::vector<uint32> passingIds;
 
-                // TEMP-DIAG(equip, A14): count which filter rejects each candidate so the
-                // throttled EquipDiag line can name the blocker instead of a bare "pass=0".
-                std::map<std::string, uint32> rejCounts;
-                auto rej = [&rejCounts](char const* why) { ++rejCounts[why]; };
-
                 Item* oldItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
                 ItemPrototype const* oldProto = oldItem ? oldItem->GetProto() : nullptr;
                 uint32 oldStatValue = oldItem ? sRandomItemMgr.GetLiveStatWeight(bot, oldProto->ItemId, specId) : 0;
@@ -2224,28 +2219,19 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                     // the window contains only wearable items.
                     uint32 reqLevelGate = sRandomItemMgr.GetMinLevelFromCache(newItemId);
                     if (reqLevelGate > (uint32)bot->GetLevel())
-                    {
-                        rej("req-level");
                         continue;
-                    }
 
                     // Owner-configured exclusion list: applies to every gear
                     // path (seed, hire, upgrade), not just the fresh seed.
                     if (std::find(sPlayerbotAIConfig.randomGearBlacklist.begin(), sPlayerbotAIConfig.randomGearBlacklist.end(), newItemId) != sPlayerbotAIConfig.randomGearBlacklist.end())
-                    {
-                        rej("blacklist");
                         continue;
-                    }
 
                     // Fresh-seed provenance gate: tier cap + REP/PVP flags in
                     // one classification check (see PassesSeedProvenance).
                     // Earned-progression paths (syncWithMaster, explicit
                     // itemQuality, non-incremental Randomize) bypass it.
                     if (seedSpread && !PassesSeedProvenance(bot, newItemId))
-                    {
-                        rej("provenance");
                         continue;
-                    }
 
                     // Paired-slot dupe guard: same entry in FINGER2/TRINKET2.
                     uint32 pairSlot = PairedSlot(slot);
@@ -2253,35 +2239,20 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                     {
                         Item* pairItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, pairSlot);
                         if (pairItem && pairItem->GetEntry() == newItemId)
-                        {
-                            rej("pair-dupe");
                             continue;
-                        }
                     }
                     ItemPrototype const* proto = sObjectMgr.GetItemPrototype(newItemId);
                     if (!proto)
-                    {
-                        rej("no-proto");
                         continue;
-                    }
                     // filter tank weapons
                     if (slot == EQUIPMENT_SLOT_OFFHAND && (specId == 3 || specId == 5) && !(proto->Class == ITEM_CLASS_ARMOR && proto->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD))
-                    {
-                        rej("tank-oh-shield");
                         continue;
-                    }
 
                     if (slot == EQUIPMENT_SLOT_MAINHAND && proto->Class == ITEM_CLASS_ARMOR && proto->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD)
-                    {
-                        rej("mh-shield");
                         continue;
-                    }
 
                     if (slot == EQUIPMENT_SLOT_MAINHAND && proto->InventoryType == INVTYPE_HOLDABLE)
-                    {
-                        rej("mh-holdable");
                         continue;
-                    }
 
                     // Caster off-hand ("held in off-hand") on a melee class:
                     // ShouldEquipArmorForSpec already rejects it, but the
@@ -2289,31 +2260,19 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                     // warriors/rogues/hunters never equip it (Issue #219).
                     if (slot == EQUIPMENT_SLOT_OFFHAND && proto->InventoryType == INVTYPE_HOLDABLE &&
                         (bot->GetClass() == CLASS_WARRIOR || bot->GetClass() == CLASS_ROGUE || bot->GetClass() == CLASS_HUNTER))
-                    {
-                        rej("oh-holdable-melee");
                         continue;
-                    }
 
                     // filter tank weapons
                     if (slot == EQUIPMENT_SLOT_MAINHAND && (specId == 3 || specId == 5) && !(proto->Class == ITEM_CLASS_WEAPON && proto->InventoryType != INVTYPE_HOLDABLE))
-                    {
-                        rej("tank-mh-weapon");
                         continue;
-                    }
 
                     // make fury wear slow weapon as main hand
                     if (slot == EQUIPMENT_SLOT_MAINHAND && specId == 2 && proto->IsWeapon() && proto->Delay < 2000)
-                    {
-                        rej("fury-fast");
                         continue;
-                    }
 
                     // classic enh shaman and retri paladin 60+ use weapon speed >= 3.0
                     if (slot == EQUIPMENT_SLOT_MAINHAND && (specId == 6 || specId == 21) && proto->IsWeapon() && bot->GetLevel() >= 60 && proto->InventoryType == INVTYPE_2HWEAPON && proto->Delay < 3000)
-                    {
-                        rej("ret-speed");
                         continue;
-                    }
 
                     // filter caster weapons
                     if (weaponType)
@@ -2321,81 +2280,45 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                         if (slot == EQUIPMENT_SLOT_MAINHAND)
                         {
                             if (proto->Class == ITEM_CLASS_ARMOR && proto->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD)
-                            {
-                                rej("caster-mh-shield");
                                 continue;
-                            }
                             if (weaponType == INVTYPE_2HWEAPON && proto->Class == ITEM_CLASS_WEAPON && proto->InventoryType != INVTYPE_2HWEAPON)
-                            {
-                                rej("caster-mh-2h");
                                 continue;
-                            }
                             if (weaponType != INVTYPE_2HWEAPON && proto->Class == ITEM_CLASS_WEAPON && proto->InventoryType == INVTYPE_2HWEAPON)
-                            {
-                                rej("caster-mh-1h");
                                 continue;
-                            }
                             if (proto->InventoryType == INVTYPE_HOLDABLE)
-                            {
-                                rej("caster-mh-holdable");
                                 continue;
-                            }
                         }
                         if (slot == EQUIPMENT_SLOT_OFFHAND)
                         {
                             if (weaponType != INVTYPE_2HWEAPON && (bot->GetClass() == CLASS_PRIEST || bot->GetClass() == CLASS_MAGE || bot->GetClass() == CLASS_WARLOCK || (bot->GetClass() == CLASS_DRUID && (specId == 29 || specId == 31))) && proto->InventoryType != INVTYPE_HOLDABLE)
-                            {
-                                rej("caster-oh-not-holdable");
                                 continue;
-                            }
                             if (weaponType == INVTYPE_2HWEAPON && (bot->GetClass() == CLASS_PRIEST || bot->GetClass() == CLASS_MAGE || bot->GetClass() == CLASS_WARLOCK || (bot->GetClass() == CLASS_DRUID && (specId == 29 || specId == 31))))
-                            {
-                                rej("caster-oh-2h");
                                 continue;
-                            }
 
                             if (weaponType != INVTYPE_2HWEAPON && proto->Class == ITEM_CLASS_WEAPON && proto->InventoryType == INVTYPE_2HWEAPON)
-                            {
-                                rej("caster-oh-1h");
                                 continue;
-                            }
                         }
                     }
 
 
                     if (oldItem && oldProto->ItemId == newItemId)
-                    {
-                        rej("same-item");
                         continue;
-                    }
 
                     // chance to get legendary
                     if (proto->Quality == ITEM_QUALITY_LEGENDARY && urand(0, 100) > 20)
-                    {
-                        rej("legendary-roll");
                         continue;
-                    }
 
                     // chance to not replace legendary
                     if (incremental && oldItem && oldProto->Quality == ITEM_QUALITY_LEGENDARY && urand(0, 100) > uint32(100 * 0.5f))
-                    {
-                        rej("legendary-keep");
                         continue;
-                    }
 
                     uint32 newStatValue = sRandomItemMgr.GetLiveStatWeight(bot, newItemId, specId);
                     if (newStatValue <= 0)
-                    {
-                        rej("weight<=0");
                         continue;
-                    }
 
                     // check if already have reward
                     if (sRandomItemMgr.HasSameQuestRewards(bot, newItemId))
-                    {
-                        rej("quest-reward");
                         continue;
-                    }
 
                     // Add random enchant value (the best one)
                     uint32 randomEnchBestId = 0;
@@ -2454,24 +2377,15 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                                     betterDamage = true;
                             }
                             if (betterDps || (betterDamage && betterValue))
-                            {
-                                rej("oh-vs-mh");
                                 continue;
-                            }
                         }
 
                     if (incremental && oldItem && oldStatValue >= newStatValue && oldStatValue > 1)
-                    {
-                        rej("weight-tie");
                         continue;
-                    }
 
                     // replace grey items right away
                     if ((incremental || progressiveGear) && oldItem && oldProto->Quality < ITEM_QUALITY_NORMAL && proto->Quality < ITEM_QUALITY_NORMAL && level > 5)
-                    {
-                        rej("grey-vs-grey");
                         continue;
-                    }
 
                     // Collect every passing candidate; CanEquipUnseenItem
                     // (slot rules, skill, unique-equip) is NOT evaluated here —
@@ -2483,45 +2397,6 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
                     passingIds.push_back(newItemId);
                     if (seedSpread && passingIds.size() >= kSeedCandidateSample)
                         break;
-                }
-
-                // TEMP-DIAG(equip, A14): why does a slot whose item is more than five item levels
-                // below the bot keep that item? One line per bot per slot per ten minutes: the
-                // candidate pool size and the best stat weight in it, against the equipped item's
-                // weight. A zero pool means the query/filters emptied it for this spec; a pool
-                // whose best weight is not above the old one means GetLiveStatWeight is the gate.
-                // Remove once A14 is answered.
-                if (passingIds.empty() && oldItem && oldProto && oldProto->ItemLevel + 5 < (uint32)level)
-                {
-                    static std::map<std::pair<uint32, uint32>, time_t> lastEquipDiag;
-                    auto const diagKey = std::make_pair(bot->GetGUIDLow(), (uint32)slot);
-                    time_t const diagNow = time(nullptr);
-                    auto const diagIt = lastEquipDiag.find(diagKey);
-                    if (diagIt == lastEquipDiag.end() || diagNow - diagIt->second >= 600)
-                    {
-                        lastEquipDiag[diagKey] = diagNow;
-                        uint32 bestWeight = 0;
-                        for (uint32 const id : ids)
-                            bestWeight = std::max(bestWeight, sRandomItemMgr.GetLiveStatWeight(bot, id, specId));
-                        std::string topReasons;
-                        for (int rank = 0; rank < 4 && !rejCounts.empty(); ++rank)
-                        {
-                            auto best = rejCounts.begin();
-                            for (auto it = rejCounts.begin(); it != rejCounts.end(); ++it)
-                                if (it->second > best->second)
-                                    best = it;
-                            if (best->second == 0)
-                                break;
-                            topReasons += (topReasons.empty() ? "" : ",") + best->first + "=" + std::to_string(best->second);
-                            best->second = 0;
-                        }
-                        sPlayerbotAIConfig.logEvent(ai, "EquipDiag",
-                            "slot=" + std::to_string((uint32)slot) +
-                            " old=" + std::to_string(oldProto->ItemId) + "(ilvl" + std::to_string(oldProto->ItemLevel) +
-                            ",w" + std::to_string(oldStatValue) + ")",
-                            "pool=" + std::to_string((uint32)ids.size()) + " bestW=" + std::to_string(bestWeight) +
-                            " spec=" + std::to_string(specId) + " rej[" + topReasons + "]");
-                    }
                 }
 
                 // Retry every passing candidate until one actually equips
