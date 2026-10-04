@@ -402,6 +402,34 @@ bool HasUpgradeValue::Calculate()
 	return false;
 }
 
+namespace
+{
+// Free storage slots: the 16-slot backpack plus every plain container the bot has equipped.
+// Quivers, soul bags and profession bags hold their own item types, so their free slots say
+// nothing about whether a quest item or a piece of gear fits.
+uint32 FreeInventorySlots(Player* bot)
+{
+	uint32 freeSlots = 0;
+
+	for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+		if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+			++freeSlots;
+
+	for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+	{
+		Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot);
+		if (!bag)
+			continue;
+
+		ItemPrototype const* bagProto = bag->GetProto();
+		if (bagProto && bagProto->Class == ITEM_CLASS_CONTAINER && bagProto->SubClass == ITEM_SUBCLASS_CONTAINER)
+			freeSlots += bag->GetFreeSlots();
+	}
+
+	return freeSlots;
+}
+} // namespace
+
 //How many (stack) items can be looted while still having free space.
 uint32 StackSpaceForItem::Calculate()
 {
@@ -424,8 +452,6 @@ uint32 StackSpaceForItem::Calculate()
 		return maxValue;
 
 	uint32 maxStack = proto->GetMaxStackSize();
-	if (maxStack == 1)
-		return 0;
 
 	std::list<Item*> found = AI_VALUE2(std::list < Item*>, "inventory items", chat->formatItem(proto));
 
@@ -434,6 +460,15 @@ uint32 StackSpaceForItem::Calculate()
 	for (auto stack : found)
 		if (maxStack - stack->GetCount() > maxValue)
 			maxValue = maxStack - stack->GetCount();
+
+	// Free slots count too. The old code ignored them completely here and returned a flat 0
+	// for an unstackable item, so a bot whose bags were more than 80% used refused every
+	// unstackable drop - gear and quest items alike - no matter how many slots were still
+	// empty. Measured 2026-10-05: quest item 13850 (Rumbleshot's Ammo, class 12, stackable 1)
+	// sat in the loot window seven times and was skipped for "no space" all seven times, which
+	// is why Krukal and Jaezo each walked the 2800 yards back to the Ammo Crate 41 times and
+	// never finished 5541.
+	maxValue += FreeInventorySlots(bot) * maxStack;
 
 	return maxValue;
 }
