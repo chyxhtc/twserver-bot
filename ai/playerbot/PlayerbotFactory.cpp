@@ -2544,6 +2544,61 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool syncWithMaster, bool
     }
 }
 
+// Destroy the spare quiver/ammo-pouch copies a bot is not using. Two shapes:
+//   * containers sitting in the backpack whose contents are nothing but other containers,
+//   * empty quivers stored inside the four equipped bags - a container inside a bag can hold
+//     nothing at that depth, so they are pure junk.
+// A spare holding ammo, tools or loot is never touched. Measured 2026-10-04 before this:
+// 13 hunters carried 20-64 quivers inside their bags, 9 of their 10 free backpack slots were
+// gone, and the pool skipped 6774 loot items in a day.
+static void PurgeSpareQuivers(Player* bot)
+{
+    if (!bot)
+        return;
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    {
+        Item* spare = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!spare || !spare->GetProto() || spare->GetProto()->Class != ITEM_CLASS_QUIVER)
+            continue;
+        Bag* spareBag = spare->IsBag() ? (Bag*)spare : nullptr;
+        if (!spareBag)
+            continue;
+        std::function<bool(Bag*)> containersOnly = [&](Bag* b) -> bool
+        {
+            for (uint32 i = 0; i < b->GetBagSize(); ++i)
+            {
+                Item* inner = b->GetItemByPos(i);
+                if (!inner || !inner->GetProto())
+                    continue;
+                if (inner->GetProto()->Class != ITEM_CLASS_QUIVER)
+                    return false;
+                if (inner->IsBag() && !containersOnly((Bag*)inner))
+                    return false;
+            }
+            return true;
+        };
+        if (containersOnly(spareBag))
+            bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+    }
+
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+    {
+        Bag* bag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot);
+        if (!bag || !bag->GetProto())
+            continue;
+        for (uint32 i = 0; i < bag->GetBagSize(); ++i)
+        {
+            Item* inner = bag->GetItemByPos(i);
+            if (!inner || !inner->GetProto() || inner->GetProto()->Class != ITEM_CLASS_QUIVER)
+                continue;
+            Bag* innerBag = inner->IsBag() ? (Bag*)inner : nullptr;
+            if (innerBag && innerBag->IsEmpty())
+                bot->DestroyItem(bagSlot, i, true);
+        }
+    }
+}
+
 void PlayerbotFactory::InitBags()
 {
     auto pmo = sPerformanceMonitor.start(PERF_MON_RNDBOT, "PlayerbotFactory_Bags");
@@ -2577,9 +2632,15 @@ void PlayerbotFactory::InitBags()
     // bag; a non-empty bag cannot be relocated, so InitAmmo simply retries next time.
     if (bot->GetClass() == CLASS_HUNTER)
     {
+        PurgeSpareQuivers(bot);
+
+        // Now free one slot so InitAmmo can equip the quiver. Pick the bag with the fewest
+        // items and move those out first: a non-empty bag cannot be moved or destroyed, and the
+        // core refuses to relocate a bag from a specific slot while it holds anything. If the
+        // leftovers do not fit anywhere, nothing is lost - the next refresh retries.
         bool hasQuiver = false;
-        Item* smallestEmpty = nullptr;
-        uint8 smallestSlot = 0;
+        uint8 candidateSlot = 0;
+        uint32 candidateItems = 0xFFFFFFFF;
         for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
         {
             Item* bagItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
@@ -2593,16 +2654,39 @@ void PlayerbotFactory::InitBags()
             if (bagItem->GetProto()->Class != ITEM_CLASS_CONTAINER)
                 continue;
             Bag* bag = bagItem->IsBag() ? (Bag*)bagItem : nullptr;
-            if (!bag || !bag->IsEmpty())
+            if (!bag)
                 continue;
-            if (!smallestEmpty || bagItem->GetProto()->ContainerSlots < smallestEmpty->GetProto()->ContainerSlots)
+            uint32 items = 0;
+            for (uint32 i = 0; i < bag->GetBagSize(); ++i)
+                if (bag->GetItemByPos(i))
+                    ++items;
+            if (items < candidateItems)
             {
-                smallestEmpty = bagItem;
-                smallestSlot = slot;
+                candidateItems = items;
+                candidateSlot = slot;
             }
         }
-        if (!hasQuiver && smallestEmpty)
-            bot->DestroyItem(INVENTORY_SLOT_BAG_0, smallestSlot, true);
+        if (!hasQuiver && candidateItems != 0xFFFFFFFF)
+        {
+            Bag* candidate = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, candidateSlot);
+            bool emptied = candidate != nullptr;
+            for (uint32 i = 0; candidate && i < candidate->GetBagSize(); ++i)
+            {
+                Item* inner = candidate->GetItemByPos(i);
+                if (!inner)
+                    continue;
+                ItemPosCountVec dest;
+                if (bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, inner, false) != EQUIP_ERR_OK)
+                {
+                    emptied = false;
+                    break;
+                }
+                candidate->RemoveItem(i, false);
+                bot->StoreItem(dest, inner, true);
+            }
+            if (emptied && candidate && candidate->IsEmpty())
+                bot->DestroyItem(INVENTORY_SLOT_BAG_0, candidateSlot, true);
+        }
     }
 }
 
@@ -3587,41 +3671,7 @@ void PlayerbotFactory::InitAmmo()
                 }
             }
 
-            // Shed the copies older builds hoarded in the backpack: keep at most one spare, and
-            // only destroy a spare whose contents are nothing but other quivers, so a container
-            // holding ammo, tools or loot the bot might still need is never touched. The four
-            // bag slots hold the equipped quiver and the plain bags, so the hoard is a backpack
-            // problem; each backpack quiver carried four to six more inside it.
-            // Measured 2026-10-04 before this: Valzarustur (14) 11 spares in the backpack plus 45
-            // nested, Garzaryr (21) 14 plus 49, free bag slots down to 9 of 80.
-            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-            {
-                Item* spare = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-                if (!spare || !spare->GetProto() || spare->GetProto()->Class != ITEM_CLASS_QUIVER)
-                    continue;
-                Bag* spareBag = spare->IsBag() ? (Bag*)spare : nullptr;
-                if (!spareBag)
-                    continue;
-                // Recursive: nothing but containers at any depth. An arrow, a tool or a piece of
-                // loot anywhere inside means the whole pile stays (destroying a bag takes its
-                // contents with it).
-                std::function<bool(Bag*)> containersOnly = [&](Bag* b) -> bool
-                {
-                    for (uint32 i = 0; i < b->GetBagSize(); ++i)
-                    {
-                        Item* inner = b->GetItemByPos(i);
-                        if (!inner || !inner->GetProto())
-                            continue;
-                        if (inner->GetProto()->Class != ITEM_CLASS_QUIVER)
-                            return false;
-                        if (inner->IsBag() && !containersOnly((Bag*)inner))
-                            return false;
-                    }
-                    return true;
-                };
-                if (containersOnly(spareBag))
-                    bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
-            }
+            // The junk sweep lives in InitBags (PurgeSpareQuivers), which runs before this.
         }
     }
 
