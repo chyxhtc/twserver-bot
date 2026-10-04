@@ -752,8 +752,24 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     auto const it = unreachable->Get().find((uint32)destination->GetEntry());
                     if (it != unreachable->Get().end() && it->second > WorldTimer::getMSTime())
                     {
-                        reject("entry-blacklisted");
-                        continue;
+                        // Leaving an outgrown zone is the one purpose where standing still is
+                        // worse than retrying: every candidate it has is by definition a place
+                        // the bot failed to reach before, so refusing all blacklisted entries
+                        // froze it outright. Measured 2026-10-04 11:50-12:10, Nyrbraek level 17:
+                        // 27 leave requests in 20 minutes, 20 candidates offered, 13 of them
+                        // blacklisted, none ever picked, zero xp. Clear the stamp and let this
+                        // one through; if it fails again the normal 10-minute cooldown re-arms,
+                        // so the retry cannot turn into a loop on the same spot.
+                        if (AI_VALUE2(std::string, "manual string", "future travel condition") == "should leave outgrown zone")
+                        {
+                            unreachable->Get().erase(it);
+                            reject("entry-blacklist-retried");
+                        }
+                        else
+                        {
+                            reject("entry-blacklisted");
+                            continue;
+                        }
                     }
                 }
             }
