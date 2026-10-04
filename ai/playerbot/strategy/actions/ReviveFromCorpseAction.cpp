@@ -596,25 +596,6 @@ bool SpiritHealerAction::Execute(Event& event)
     uint32 dCount = AI_VALUE(uint32, "death count");
     GuidPosition grave = AI_VALUE(GuidPosition, "best graveyard");
 
-    // GYDIAG: throttled (20 s/bot) trace of the spirit-healer revive decision - where the
-    // chosen graveyard is, how far it is from the ghost, and how old the death is. Added
-    // for the "low-level bot revives in Hillsbrad" report; remove with the picker diag
-    // (search GYDIAG).
-    {
-        time_t const nowDiag = time(nullptr);
-        time_t const lastDiag = AI_VALUE2(time_t, "manual time", "gydiag sh logged");
-        if (!lastDiag || nowDiag - lastDiag >= 20)
-        {
-            SET_AI_VALUE2(time_t, "manual time", "gydiag sh logged", nowDiag);
-            sLog.outString("[GYDIAG-SH] %s lvl=%u deaths=%u grave=%u;%.1f;%.1f;%.1f distToGrave=%.1f botPos=%u;%.1f;%.1f ghostAge=%llds hasCorpse=%d",
-                bot->GetName(), bot->GetLevel(), dCount,
-                grave ? grave.GetMapId() : 0, grave ? grave.getX() : 0.0f, grave ? grave.getY() : 0.0f, grave ? grave.getZ() : 0.0f,
-                grave ? grave.fDist(bot) : -1.0f,
-                bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-                corpse ? (long long)(nowDiag - corpse->GetGhostTime()) : -1LL, corpse ? 1 : 0);
-        }
-    }
-
     //something went wrong
     if (!grave)
     {
