@@ -783,6 +783,95 @@ void BotManager::SweepInstanceDwellers(uint32_t diff)
     }
 }
 
+// Zero-output watchdog.
+//
+// The frozen ends of the level histogram were not one bug but a family: a bot that has
+// outlevelled whatever is around it keeps picking a destination that goes inactive, killing
+// grey mobs for nothing. Measured 2026-10-04 13:45-14:00, Zefeth (level 19, Durotar) looped
+// on creature 3281 and 3143 - pick, inactive, cooldown, replan - for hours at 0 xp while the
+// leave rule waited for a signal that never came. A single, honest signal covers all of those
+// shapes: the bot's own experience total has not moved.
+//
+// Eligibility is the same fail-closed set the other rescues use (random, masterless, no real
+// player in the group, not pinned, not a dungeon crew, alive, in world, not teleporting, not
+// in a battleground). First try a hub that still has quests for its level; when no hub
+// answers, fall back to the level-fitting point the misplaced-bot rescue already uses.
+constexpr uint32_t STALLED_SWEEP_INTERVAL_MS = 60 * 1000;
+constexpr time_t STALLED_AFTER_SEC = 15 * 60;
+constexpr time_t STALLED_RESCUE_COOLDOWN_SEC = 30 * 60;
+
+void BotManager::SweepStalledBots(uint32_t diff)
+{
+    m_stalledSweepElapsedMs += diff;
+    if (m_stalledSweepElapsedMs < STALLED_SWEEP_INTERVAL_MS)
+        return;
+    m_stalledSweepElapsedMs = 0;
+
+    time_t const now = time(nullptr);
+    for (auto& [key, entry] : m_bots)
+    {
+        BotRecord& rec = entry.record;
+        ::Player* p = nullptr;
+        bool const eligible = rec.random && rec.lifecycle == BotLifecycle::InWorld && rec.masterGuid.IsEmpty() &&
+            (p = sObjectAccessor.FindPlayer(rec.characterGuid)) != nullptr &&
+            p->GetSession() && p->GetSession()->IsHeadless() && p->IsInWorld() && p->IsAlive() &&
+            !p->IsBeingTeleported() && !p->InBattleGround() && !GroupHasRealPlayer(p) &&
+            !sRandomBotFacade.IsPinnedBot(key) &&
+            BotActivityLeaseManager::Instance().GetActivity(key) != BotActivity::Dungeon;
+        if (!eligible)
+        {
+            m_stalled.erase(key);
+            continue;
+        }
+
+        uint64_t const progress = ((uint64_t)p->GetLevel() << 32) | p->GetUInt32Value(PLAYER_XP);
+        StalledState& st = m_stalled[key];
+        if (st.progress != progress)
+        {
+            st.progress = progress;
+            st.since = now;
+            continue;
+        }
+        if (!st.since)
+        {
+            st.since = now;
+            continue;
+        }
+        if (now - st.since < STALLED_AFTER_SEC)
+            continue;
+        if (st.lastRescue && now - st.lastRescue < STALLED_RESCUE_COOLDOWN_SEC)
+            continue;
+
+        st.lastRescue = now;
+        st.since = now;
+        uint32 const stalledMin = (uint32)(STALLED_AFTER_SEC / 60);
+        // The hub search only looks at the bot's current map, so for a bot that has outlevelled
+        // that whole map it finds a hub it is already standing in: measured 2026-10-04 14:24,
+        // Zefeth (19, Durotar) was "rescued" from -507,-4120 to -616,-4158 and kept earning 0 xp
+        // among starter NPCs. Require the hub rescue to actually move the bot; otherwise fall
+        // through to the level-fitting point, which is searched across maps and honours the
+        // bot's level window.
+        float const hubFromX = p->GetPositionX();
+        float const hubFromY = p->GetPositionY();
+        if (TeleportBotToNearestHub(p))
+        {
+            float const dx = p->GetPositionX() - hubFromX;
+            float const dy = p->GetPositionY() - hubFromY;
+            if (std::sqrt(dx * dx + dy * dy) >= 200.0f)
+            {
+                TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp) -> nearest hub with work",
+                    p->GetName(), p->GetLevel(), stalledMin);
+                continue;
+            }
+            TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp) -> hub is where it stands, using a level-fitting point",
+                p->GetName(), p->GetLevel(), stalledMin);
+        }
+        TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp) -> level-fitting point",
+            p->GetName(), p->GetLevel(), stalledMin);
+        TeleportMisplacedBot(p, 0, "stalled bot (" + std::to_string(stalledMin) + " min without xp)");
+    }
+}
+
 // A Headless session must never render an owned bot as an account-level GM.
 // Its Network owner retains all account privileges; this only normalizes the
 // separately logged-in bot character after the core restores saved GM flags.
@@ -2029,6 +2118,7 @@ void BotManager::OnWorldUpdate(uint32_t diff)
     UpdateBots(diff);
     SweepStrandedBots(diff);
     SweepInstanceDwellers(diff);
+    SweepStalledBots(diff);
 
     if (m_autoTestEnabled)
         UpdateAutoTest(diff);

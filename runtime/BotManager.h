@@ -253,6 +253,19 @@ private:
     void SweepInstanceDwellers(uint32_t diff);
     uint32_t m_instanceSweepElapsedMs = 0;
     std::unordered_map<uint32_t, time_t> m_instanceSince; // key = guid counter
+    // Zero-output watchdog: a masterless random bot that has not gained a single point of
+    // experience for STALLED_AFTER_SEC has nothing actionable where it stands (measured
+    // 2026-10-04: Zefeth, level 19, spent hours in Durotar re-picking quest targets that went
+    // inactive, killing grey mobs for 0 xp). Move it to a hub that has work for its level.
+    void SweepStalledBots(uint32_t diff);
+    uint32_t m_stalledSweepElapsedMs = 0;
+    struct StalledState
+    {
+        uint64_t progress = 0;
+        time_t since = 0;
+        time_t lastRescue = 0;
+    };
+    std::unordered_map<uint32_t, StalledState> m_stalled; // key = guid counter
     // Last successful cross-continent transfer per bot (key = guid counter), used for
     // the anti-bounce cooldown.
     std::unordered_map<uint32_t, time_t> m_lastTransfer;
