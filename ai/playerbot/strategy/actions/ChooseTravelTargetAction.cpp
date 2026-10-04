@@ -838,6 +838,13 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - enemy home zone", "debug travel");
                         reject("enemy-home-zone");
+                        // A8: static verdicts (enemy home zone, hostile-town guards, isolated customs
+                        // zones) can never change for this bot, so a completed quest whose taker sits
+                        // behind one of them is dead weight. Measured 2026-10-04 17:03-17:13: 5921/5922
+                        // are offered creature 11802 (Dendrite Starblaze, Moonglade) over and over and
+                        // refused with hostile-town every time, while the quest-log strike rule never
+                        // saw a "route" rejection to count.
+                        StrikeUnreachableTaker(ai, bot, destination);
                         continue;
                     }
 
@@ -851,6 +858,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - hostile town guards", "debug travel");
                         reject("hostile-town");
+                        StrikeUnreachableTaker(ai, bot, destination);
                         continue;
                     }
 
