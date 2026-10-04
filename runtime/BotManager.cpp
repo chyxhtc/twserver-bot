@@ -106,8 +106,13 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId
     ai::WorldPosition* chosen = nullptr;
     uint32 destinationAttempts = std::min<uint32>(maxDestinationAttempts, dests.size());
     // Level window rationale (both bounds, no speculative config):
-    //  Upper +5 from local RpgTravelDestination::IsPossible (destAreaLevel > botLevel+5 => reject) and
-    //   quest level gate (questLevel > botLevel+5 => reject).
+    //  Upper +2, tightened from +5 on 2026-10-04: landing a bot in a zone up to five levels above
+    //   its own is how Stunograr (level 17) kept arriving in the Wetlands (area ~20) and dying -
+    //   14 of its 17 evening deaths were there, and 44% of the day's relocations were followed by
+    //   a death within fifteen minutes. The travel layer still allows +5 for destinations the bot
+    //   chooses itself; this window only governs where a teleport drops it.
+    //  (Was: Upper +5 from local RpgTravelDestination::IsPossible (destAreaLevel > botLevel+5 =>
+    //   reject) and quest level gate (questLevel > botLevel+5 => reject).)
     //  Lower -5 from donor AiPlayerbot.RandomBotTeleLevel=5 window where creature avg satisfies
     //   botLevel-5 <= creatureLevel <= botLevel (see RandomPlayerbotMgr::PrepareTeleportCache query delta in [0,5])
     //   and local Grind lower bound approx botLevel-12. Symmetric ±5 is the minimal conservative window
@@ -116,7 +121,7 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId
     int32 botLevel = (int32)bot->GetLevel();
     int32 lower = botLevel - 5;
     if (lower < 1) lower = 1;
-    int32 upper = botLevel + 5;
+    int32 upper = botLevel + 2;
     if (upper > 60) upper = 60;
     ai::WorldPosition const botPos(bot);
     for (uint32 destinationAttempt = 0; destinationAttempt < destinationAttempts && !chosen; ++destinationAttempt)
