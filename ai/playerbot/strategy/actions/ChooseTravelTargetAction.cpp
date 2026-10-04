@@ -94,6 +94,46 @@ bool ChooseTravelTargetAction::Execute(Event& event)
             sRandomBotFacade.SetValue(bot, "quest hand-in parked", 1, {}, 10 * 60);
             sPlayerbotAIConfig.logEvent(ai, "TravelDrainParked", futureTravelPurposeName,
                 std::to_string(destinationList.size()));
+
+            // A7: a finished quest whose hand-in the travel layer cannot plan for is not
+            // pending business, it is a log slot plus a drain loop that keeps the bot in
+            // taker-only searches. Measured 2026-10-04: 27 finished quests sat unhanded
+            // across 17 bots, and every frozen bot held at least one of them - quest 310
+            // (six bots) whose taker is gameobject 270 that never spawns, 5921/5922, and
+            // 1098 whose taker is inside Shadowfang Keep (refused since the A1 gate). With
+            // the latch on, the bot never goes back to givers or objectives: Rolor spent the
+            // morning in a 20 s TravelPark loop in Dun Morogh at level 14 with 0 xp. Strike
+            // every finished quest on a failed drain search and drop it on the third strike,
+            // using the same DropQuest the quest-log upkeep uses. The latch clears itself
+            // once the finished count reaches zero, which is what lets the leave-zone rule
+            // finally see "nothing to do here".
+            std::vector<uint32> unreachable;
+            for (auto& [questId, questStatus] : bot->getQuestStatusMap())
+            {
+                if (questStatus.m_rewarded || questStatus.m_status != QUEST_STATUS_COMPLETE)
+                    continue;
+
+                Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+                if (!quest || quest->GetRequiredClasses())
+                    continue;
+
+                std::string const key = "hand-in fail::" + std::to_string(questId);
+                uint32 const strikes = sRandomBotFacade.GetValue(bot, key) + 1;
+                if (strikes >= 3)
+                {
+                    sRandomBotFacade.SetValue(bot, key, 0);
+                    unreachable.push_back(questId);
+                }
+                else
+                    sRandomBotFacade.SetValue(bot, key, strikes, {}, 30 * 60);
+            }
+            for (uint32 questId : unreachable)
+            {
+                Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+                sPlayerbotAIConfig.logEvent(ai, "QuestDropped", quest ? quest->GetTitle() : std::to_string(questId),
+                    "hand-in-unreachable:" + std::to_string(questId));
+                ai->DropQuest(questId);
+            }
         }
 
         // Why a search came back with nothing to travel to. destinationList is keyed by
@@ -160,6 +200,10 @@ bool ChooseTravelTargetAction::Execute(Event& event)
     // A hand-in journey was actually picked: the drain mode is making progress, so lift
     // any liveness park from an earlier failed attempt.
     sRandomBotFacade.SetValue(bot, "quest hand-in parked", 0);
+    // A picked taker also clears that quest's unreachable strikes (A7).
+    if (auto* taker = dynamic_cast<QuestRelationTravelDestination*>(newTarget.GetDestination()))
+        if (taker->GetRelation() != 0)
+            sRandomBotFacade.SetValue(bot, "hand-in fail::" + std::to_string(taker->GetQuestId()), 0);
 
     return true;
 }
