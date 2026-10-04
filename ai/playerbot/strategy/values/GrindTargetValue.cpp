@@ -105,8 +105,18 @@ Unit* GrindTargetValue::Calculate()
         // level 1-2 zombies (GrindNoTarget possible=9 skipped=9, all "not xp and not needed
         // for quest") while the leave rule refused to run below level 10 and the zone had no
         // acceptable quest left - the clearest form of the two frozen ends.
+        // Only a search that actually examined candidates may change the verdict:
+        // an empty histogram means nothing was in range at all, which is ambiguous
+        // (a bot walking a mobless stretch looks the same as a bot parked in a dead
+        // corner). Treating that as "not grey" and wiping the stamp kept the ten
+        // minute hatch shut forever. Measured 2026-10-04 12:00-17:53, Krorpalgres
+        // (level 8, Tirisfal): 477 "possible=0" searches interleaved with a grey-only
+        // observation about every three minutes; each empty search reset the stamp,
+        // so the hatch never opened and the bot sat 5.9 h with 0 xp, 0 rewards and
+        // 0 deaths. Now an empty search leaves the previous verdict in place.
+        bool const examinedCandidates = !g_grindSkipReasons.empty();
         bool greyOnly = false;
-        if (!target && !g_grindSkipReasons.empty())
+        if (!target && examinedCandidates)
         {
             greyOnly = true;
             for (auto const& [why, n] : g_grindSkipReasons)
@@ -121,7 +131,7 @@ Unit* GrindTargetValue::Calculate()
             if (!AI_VALUE2(time_t, "manual time", "grey-only grind since"))
                 SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", time(nullptr));
         }
-        else
+        else if (examinedCandidates)
             SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", (time_t)0);
     }
 
