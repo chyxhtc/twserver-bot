@@ -1534,28 +1534,51 @@ void TravelMgr::LoadAreaLevels()
     // AreaTable AreaLevel / parent fallback, so an empty ai_playerbot_zone_level
     // on a stock install does not make EnableRandomTeleports permanently no-op
     // while still avoiding creature scans and DB writes.
+    size_t fromMigration = 0;
     if (!WorldDatabase.PQuery("SHOW TABLES LIKE 'ai_playerbot_zone_level'"))
     {
-        sLog.outErrorDb("TortoiseBots: ai_playerbot_zone_level is missing; using uncached area levels");
-        return;
+        sLog.outErrorDb("TortoiseBots: ai_playerbot_zone_level is missing; falling back to the server's area_template levels");
+    }
+    else if (auto result = WorldDatabase.PQuery("SELECT id, level FROM ai_playerbot_zone_level"))
+    {
+        BarGoLink bar(result->GetRowCount());
+        do
+        {
+            Field* fields = result->Fetch();
+            bar.step();
+            areaLevels[fields[0].GetUInt32()] = fields[1].GetInt32();
+            ++fromMigration;
+        } while (result->NextRow());
     }
 
-    auto result = WorldDatabase.PQuery("SELECT id, level FROM ai_playerbot_zone_level");
-    if (!result)
+    // Second source, read-only: the server's own area_template carries a validated level for
+    // every area, including the Turtle custom zones that the module's curated migration list
+    // predates - Moonwhisper Coast (5642) is 55 and Northwind (5581) is 30 there. Without
+    // them TryGetValidatedAreaLevel fails for those areas, and that silently disables the
+    // time-based stranded-bot rescue (BotManager::RelocateStrandedBot needs a validated level
+    // greater than botLevel+5) for every bot that ends up inside one: measured 2026-10-05,
+    // eight bots (16% of the pool) were found in those two zones, Robarn (level 18 in a
+    // level-55 area) for more than four hours. Only ids the first source did not cover are
+    // filled, so the curated list keeps priority.
+    size_t fromAreaTemplate = 0;
+    if (auto areas = WorldDatabase.PQuery("SELECT entry, area_level FROM area_template WHERE area_level > 0"))
     {
-        sLog.outString(">> No cached area levels found; using in-memory calculation.");
-        return;
+        do
+        {
+            Field* fields = areas->Fetch();
+            uint32 id = fields[0].GetUInt32();
+            int32 level = fields[1].GetInt32();
+
+            if (level > 0 && areaLevels.find(id) == areaLevels.end())
+            {
+                areaLevels[id] = level;
+                ++fromAreaTemplate;
+            }
+        } while (areas->NextRow());
     }
 
-    BarGoLink bar(result->GetRowCount());
-    do
-    {
-        Field* fields = result->Fetch();
-        bar.step();
-        areaLevels[fields[0].GetUInt32()] = fields[1].GetInt32();
-    } while (result->NextRow());
-
-    sLog.outString(">> Loaded " SIZEFMTD " area levels.", areaLevels.size());
+    sLog.outString(">> Loaded " SIZEFMTD " area levels (" SIZEFMTD " migration, " SIZEFMTD " area_template).",
+        areaLevels.size(), fromMigration, fromAreaTemplate);
 }
 
 void TravelMgr::LoadQuestTravelTable()
