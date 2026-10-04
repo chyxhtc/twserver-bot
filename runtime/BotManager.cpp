@@ -155,17 +155,20 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId
             if (point->IsEnemyHomeZoneFor(info.GetTeam()))
                 continue;
             // A landing point inside a hostile town drops the bot into a guard patrol, and the
-            // guard that does the killing is often spawned on demand, so it is not even in the
-            // index this predicate reads. Measured 2026-10-05: the stranded-bot rescue (A23 made
-            // it fire for Moonwhisper Coast at last) left Robarn (level 18, Horde) at
-            // (-9234,-2159) - 14 yd from the indexed Guard Adams - and the level-55 Lakeshire
-            // Guard killed it 69 s later; a cross-continent transfer then left Stunograr inside
-            // the same town at (-9171,-2115), 82 yd from the nearest indexed guard, which the
-            // 60 yd radius the travel destination gate uses would have let through. A landing
-            // only has to be inside the town, not on top of a guard, so the refusal radius here
-            // is wider than the gate's. One predicate covers every landing path that goes
-            // through here: login scatter, death-loop rescue, escalated rescue, transfer.
-            if (sPlayerbotAIConfig.avoidHostileTowns && point->IsGuardedHostileTownFor(bot, 100.0f))
+            // guard that does the killing is often spawned on demand or named without a guard
+            // word, so it is not even in the index this predicate reads. Measured 2026-10-05:
+            // the stranded-bot rescue (A23 made it fire for Moonwhisper Coast at last) left
+            // Robarn (level 18, Horde) at (-9234,-2159) - 14 yd from the indexed Guard Adams -
+            // and the level-55 Lakeshire Guard killed it 69 s later; a transfer then left
+            // Stunograr in the same town 82 yd from the nearest indexed guard; and the 100 yd
+            // cut still let a login scatter drop Thaepurth (level 16, Horde) on Marshal Marris
+            // (-9284,-2298), 117 yd from the nearest indexed guard. What matters is the town's
+            // footprint, not a guard's own radius, so the refusal radius is 200 yd: the union
+            // over the town's indexed guards covers Lakeshire (~160x210 yd) and is far wider
+            // than the 60 yd the travel destination gate needs. One predicate covers every
+            // landing path that goes through here: login scatter, death-loop rescue, escalated
+            // rescue, cross-continent transfer.
+            if (sPlayerbotAIConfig.avoidHostileTowns && point->IsGuardedHostileTownFor(bot, 200.0f))
                 continue;
             int32 areaLevel;
             if (!travelMgr.TryGetValidatedAreaLevel(area->Id, areaLevel))
