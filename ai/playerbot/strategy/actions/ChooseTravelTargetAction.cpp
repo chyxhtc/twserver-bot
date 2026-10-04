@@ -81,6 +81,27 @@ bool ChooseTravelTargetAction::Execute(Event& event)
 
     if (!SetBestTarget(requester, &newTarget, destinationList))
     {
+        // A3/A4 coupling: the grey-only escape hatch makes more bots ask to leave their zone,
+        // and the leave destination can sit in one of the routing pockets where every offered
+        // candidate is refused (route gate or pocket). Measured 2026-10-04 14:46-15:46:
+        // Caelaeth, level 14, requested an outgrown-zone Grind 122 times in an hour, was
+        // refused every time, and earned 0 xp - a request/refuse loop that only the zero-output
+        // watchdog interrupts. Three failed leave searches now park the leave rule itself for
+        // ten minutes, so the bot spends the time on other purposes instead of re-asking.
+        if (AI_VALUE2(std::string, "manual string", "future travel condition") == "should leave outgrown zone")
+        {
+            uint32 const leaveFails = sRandomBotFacade.GetValue(bot, "leave zone fails") + 1;
+            if (leaveFails >= 3)
+            {
+                sRandomBotFacade.SetValue(bot, "leave zone fails", 0);
+                SET_AI_VALUE2(time_t, "manual time", "leave parked until", time(0) + 10 * MINUTE);
+                sPlayerbotAIConfig.logEvent(ai, "TravelLeaveParked", futureTravelPurposeName,
+                    std::to_string(destinationList.size()));
+            }
+            else
+                sRandomBotFacade.SetValue(bot, "leave zone fails", leaveFails, {}, 30 * 60);
+        }
+
         // Liveness guard for the hand-in drain mode (BotQuestLogUpkeep). While it is
         // engaged the fetch list is takers only; a failed pick means the mode cannot
         // make progress, and because the mode re-arms on the next evaluation a plain
