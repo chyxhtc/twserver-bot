@@ -79,7 +79,7 @@ bool IsUsableTeleportPoint(ai::WorldPosition const& point)
 // Undercity got teleported from map 1 to (1452,-4180) on map 1 and then walked at an
 // unreachable target. The bug hid behind a self-contradictory log line ("map 1 -> map
 // 1") that used to be blamed on log timing.
-ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId = -1)
+ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId = -1, float minDistanceFromBot = 0.0f)
 {
     if (!bot)
         return nullptr;
@@ -118,6 +118,7 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId
     if (lower < 1) lower = 1;
     int32 upper = botLevel + 5;
     if (upper > 60) upper = 60;
+    ai::WorldPosition const botPos(bot);
     for (uint32 destinationAttempt = 0; destinationAttempt < destinationAttempts && !chosen; ++destinationAttempt)
     {
         ai::TravelDestination* destination = dests[urand(0, static_cast<uint32>(dests.size() - 1))];
@@ -152,6 +153,11 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId
             if (!travelMgr.TryGetValidatedAreaLevel(area->Id, areaLevel))
                 continue;
             if (areaLevel < lower || areaLevel > upper)
+                continue;
+            // Escalated rescues demand real distance: a level 8 bot rescued back into its own
+            // starting pocket is rescued forever. Measured 2026-10-04: 39 stalled rescues for
+            // Krorpalgres / Turkhal / Warkryrzith, all level 8, all landing in Tirisfal again.
+            if (minDistanceFromBot > 0.0f && point->distance(botPos) < minDistanceFromBot)
                 continue;
             if (IsUsableTeleportPoint(*point))
             {
@@ -286,7 +292,7 @@ constexpr time_t STRANDED_GRACE_SEC = 15 * 60;
 // alive, and the home bind may sit in another race's zone). Home bind stays
 // as fallback. Otherwise a validated level-fitting point. Resets the death
 // count on success so the fresh start is not mistaken for a loop.
-bool TeleportMisplacedBot(::Player* bot, int32 areaLevel, const std::string& cause)
+bool TeleportMisplacedBot(::Player* bot, int32 areaLevel, const std::string& cause, bool forceLevelFitting = false)
 {
     // Leave a bot-only group first: the others stay where they are, the moved bot must not
     // be pulled back or keep them as "attackers" context from another zone.
@@ -295,7 +301,10 @@ bool TeleportMisplacedBot(::Player* bot, int32 areaLevel, const std::string& cau
         WorldPacket leave;
         bot->GetSession()->HandleGroupDisbandOpcode(leave);
     }
-    if (bot->GetLevel() < 10)
+    // forced: the caller has already tried the gentle rescue and the bot is still not earning
+    // anything, so the starting-area rule below (which is right for a lost lowbie) would only
+    // put it back where it stands.
+    if (bot->GetLevel() < 10 && !forceLevelFitting)
     {
         // Goblin and High Elf bots are spawned in Durotar/Elwynn with their homebind
         // set accordingly. GetPlayerInfo() returns the DBC island coordinates
@@ -322,7 +331,15 @@ bool TeleportMisplacedBot(::Player* bot, int32 areaLevel, const std::string& cau
         // quest destinations are refused over and over. Measured 2026-10-04 16:30-17:35:
         // Jidretorr, a gnome rescued to Kalimdor three times, re-requested Loch Modan targets 117
         // times with "no route to that continent".
-        ai::WorldPosition const* chosen = PickLevelFittingPoint(bot, (int32)bot->GetMapId());
+        // Escalated rescue: require at least 2000 yards so the bot leaves the pocket it
+        // failed in. Same map first (a cross-continent landing strands its quest log);
+        // fall back to any map, then relax the distance so a landing always exists.
+        float const forcedMinDistance = forceLevelFitting ? 2000.0f : 0.0f;
+        ai::WorldPosition const* chosen = PickLevelFittingPoint(bot, (int32)bot->GetMapId(), forcedMinDistance);
+        if (!chosen && forcedMinDistance > 0.0f)
+            chosen = PickLevelFittingPoint(bot, -1, forcedMinDistance);
+        if (!chosen)
+            chosen = PickLevelFittingPoint(bot, (int32)bot->GetMapId());
         if (!chosen)
             chosen = PickLevelFittingPoint(bot);
         if (!chosen)
@@ -839,6 +856,7 @@ void BotManager::SweepStalledBots(uint32_t diff)
         {
             st.progress = progress;
             st.since = now;
+            st.rescueStreak = 0;
             continue;
         }
         if (!st.since)
@@ -853,7 +871,27 @@ void BotManager::SweepStalledBots(uint32_t diff)
 
         st.lastRescue = now;
         st.since = now;
+        ++st.rescueStreak;
         uint32 const stalledMin = (uint32)(STALLED_AFTER_SEC / 60);
+        // A repeated rescue means the previous landing did not restore output. The level 8
+        // Tirisfal trio (Krorpalgres, Turkhal, Warkryrzith) was rescued 39 times between
+        // 16:24 and 17:56 and put back into its own starting pocket every time, because the
+        // sub-level-10 rule in TeleportMisplacedBot sends the bot to its racial start area.
+        // A level < 10 bot that has stalled inside its own racial starting area escalates on the
+        // first try: the gentle rescue below would send it to that same starting area, which is
+        // exactly the place it is failing in. Other bots escalate only after a rescue that did
+        // not restore output.
+        bool const stalledInStartArea = p->GetLevel() < 10 && [&]() -> bool
+        {
+            PlayerInfo const* info = (p->GetRace() == RACE_GOBLIN || p->GetRace() == RACE_HIGH_ELF)
+                ? nullptr : sObjectMgr.GetPlayerInfo(p->GetRace(), p->GetClass());
+            if (!info)
+                return false;
+            float const dx = p->GetPositionX() - info->positionX;
+            float const dy = p->GetPositionY() - info->positionY;
+            return p->GetMapId() == info->mapId && std::sqrt(dx * dx + dy * dy) < 1000.0f;
+        }();
+        bool const escalate = st.rescueStreak > 1 || stalledInStartArea;
         // The hub search only looks at the bot's current map, so for a bot that has outlevelled
         // that whole map it finds a hub it is already standing in: measured 2026-10-04 14:24,
         // Zefeth (19, Durotar) was "rescued" from -507,-4120 to -616,-4158 and kept earning 0 xp
@@ -862,7 +900,7 @@ void BotManager::SweepStalledBots(uint32_t diff)
         // bot's level window.
         float const hubFromX = p->GetPositionX();
         float const hubFromY = p->GetPositionY();
-        if (TeleportBotToNearestHub(p))
+        if (!escalate && TeleportBotToNearestHub(p))
         {
             float const dx = p->GetPositionX() - hubFromX;
             float const dy = p->GetPositionY() - hubFromY;
@@ -875,9 +913,12 @@ void BotManager::SweepStalledBots(uint32_t diff)
             TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp) -> hub is where it stands, using a level-fitting point",
                 p->GetName(), p->GetLevel(), stalledMin);
         }
+        if (escalate)
+            TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp, rescue #%u) -> a level-fitting point at least 2000 yards away",
+                p->GetName(), p->GetLevel(), stalledMin, st.rescueStreak);
         TB_LOG_BASIC("TortoiseBots: stalled rescue %s level %u (%u min without xp) -> level-fitting point",
             p->GetName(), p->GetLevel(), stalledMin);
-        TeleportMisplacedBot(p, 0, "stalled bot (" + std::to_string(stalledMin) + " min without xp)");
+        TeleportMisplacedBot(p, 0, "stalled bot (" + std::to_string(stalledMin) + " min without xp)", escalate);
     }
 }
 

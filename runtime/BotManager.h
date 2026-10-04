@@ -264,6 +264,10 @@ private:
         uint64_t progress = 0;
         time_t since = 0;
         time_t lastRescue = 0;
+        // Consecutive stall rescues without a single point of xp in between. The first
+        // rescue may legitimately land the bot in the same zone; if that did not help,
+        // the next one has to put real distance between it and where it stood.
+        uint32_t rescueStreak = 0;
     };
     std::unordered_map<uint32_t, StalledState> m_stalled; // key = guid counter
     // Last successful cross-continent transfer per bot (key = guid counter), used for
