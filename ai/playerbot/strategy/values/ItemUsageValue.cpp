@@ -1122,7 +1122,17 @@ bool ItemUsageValue::IsNeededForQuest(Player* player, uint32 itemId, bool ignore
             continue;
 
         QuestStatusData& qData = player->getQuestStatusMap()[quest->GetQuestId()];
-        if (qData.m_status != QUEST_STATUS_INCOMPLETE)
+        // A finished quest that is waiting to be handed in still needs the items the core will
+        // consume at the taker. Leaving COMPLETE out of this test made a held quest item look
+        // like dead weight the moment the quest flipped, and the 90% bag cleanup then destroyed
+        // it: measured 2026-10-05, Jaezo looted 13850 for 5541 (04:48:55 and again 04:51:56),
+        // the quest turned COMPLETE, the item stopped being "needed", it was gone within about
+        // three minutes, and the core reverted the quest to INCOMPLETE (ItemRemovedQuestCheck)
+        // so he walked back to the same crate for another copy.
+        if (qData.m_status != QUEST_STATUS_INCOMPLETE && qData.m_status != QUEST_STATUS_COMPLETE)
+            continue;
+
+        if (qData.m_rewarded) // status stays COMPLETE after the reward; its items are not needed
             continue;
 
         for (int i = 0; i < 4; i++)
