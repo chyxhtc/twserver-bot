@@ -315,7 +315,16 @@ bool TeleportMisplacedBot(::Player* bot, int32 areaLevel, const std::string& cau
     }
     else
     {
-        ai::WorldPosition const* chosen = PickLevelFittingPoint(bot);
+        // Keep rescues on the bot's own continent when one is available. Moving a bot to the
+        // other continent strands every quest it holds there: the travel layer's cross-continent
+        // transfer is a separate switch (AiPlayerbot.TransferToOtherContinent, currently 0 in the
+        // experiment block of aiplayerbot.conf), so the bot cannot walk back and its cross-map
+        // quest destinations are refused over and over. Measured 2026-10-04 16:30-17:35:
+        // Jidretorr, a gnome rescued to Kalimdor three times, re-requested Loch Modan targets 117
+        // times with "no route to that continent".
+        ai::WorldPosition const* chosen = PickLevelFittingPoint(bot, (int32)bot->GetMapId());
+        if (!chosen)
+            chosen = PickLevelFittingPoint(bot);
         if (!chosen)
             return false;
         if (!bot->TeleportTo(chosen->getMapId(), chosen->getX(), chosen->getY(), chosen->getZ(), bot->GetOrientation(), 0))
