@@ -87,6 +87,39 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                         if (quest && quest->ReqItemId[objective] &&
                             npc->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR))
                         {
+                            // A37 probe: the travel map lists vendors whose stock comes from a
+                            // vendor template (creature_template.vendor_id) next to ones with
+                            // their own npc_vendor rows, and the two are not interchangeable at
+                            // the counter. Measured 2026-10-05: quest 116 (Dry Times) never
+                            // bought item 1939 - Rolor loops at 60889, a template-only vendor -
+                            // while all 18 successful purchases of the day were at creatures
+                            // with vendor_id 0. Log what the counter would see, once per bot per
+                            // vendor per five minutes.
+                            static std::unordered_map<std::string, time_t> lastVendorProbe;
+                            std::string const probeKey =
+                                std::to_string(bot->GetGUIDLow()) + ":" + std::to_string(workEntry);
+                            time_t const probeNow = time(nullptr);
+                            auto const probeIt = lastVendorProbe.find(probeKey);
+                            if (probeIt == lastVendorProbe.end() || probeNow - probeIt->second >= 300)
+                            {
+                                lastVendorProbe[probeKey] = probeNow;
+
+                                uint32 ownItems = 0;
+                                bool hasItem = false;
+                                if (VendorItemData const* own = sObjectMgr.GetNpcVendorItemList(workEntry))
+                                {
+                                    ownItems = own->m_items.size();
+                                    for (auto vItem : own->m_items)
+                                        if (vItem && vItem->item == quest->ReqItemId[objective])
+                                            hasItem = true;
+                                }
+
+                                sPlayerbotAIConfig.logEvent(ai, "QuestVendorProbe",
+                                    std::to_string(questDest->GetQuestId()) + "|item=" + std::to_string(quest->ReqItemId[objective]),
+                                    "vendor=" + std::to_string(workEntry) + "|own=" + std::to_string(ownItems) +
+                                    "|has=" + (hasItem ? "1" : "0"));
+                            }
+
                             bot->SetSelectionGuid(npc->getObjectGuid());
 
                             if (ai->DoSpecificAction("buy", Event("travel work", "vendor"), true))
