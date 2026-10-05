@@ -179,7 +179,32 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                         continue;
 
                     bot->SetSelectionGuid(go->getObjectGuid());
-                    return ai->DoSpecificAction("use game object", event, true);
+
+                    // A41: "use game object" is a TRIGGER, not an action - it is registered in
+                    // WorldPacketTriggerContext and its TriggerNode maps to "add loot" and
+                    // "use meeting stone". Engine::ExecuteAction -> CreateActionNode finds no
+                    // action by that name and returns ACTION_RESULT_UNKNOWN, so this call was a
+                    // silent no-op: the bot reached a quest-objective game object, selected it,
+                    // and then did nothing at all.
+                    //
+                    // Measured 2026-10-05 on quest 498 "The Rescue": its two objectives are the
+                    // ball-and-chains 1721/1722, the travel layer picked them 396 times in a day,
+                    // Rigornar stood 1 yard from 1721 with it as his travel target, and the whole
+                    // pool still had exactly one objective tick and zero turn-ins - nobody has
+                    // ever finished 498 on this realm. Send what a player's right-click sends.
+                    // Quest givers keep the menu path; those objects are not stepped on.
+                    if (go->GetGoType() == GAMEOBJECT_TYPE_QUESTGIVER)
+                        return ai->DoSpecificAction("talk to quest giver",
+                            Event("use game object", go->getObjectGuid(), bot), true);
+
+                    std::unique_ptr<WorldPacket> packet(new WorldPacket(CMSG_GAMEOBJ_USE));
+                    *packet << go->getObjectGuid();
+                    bot->GetSession()->QueuePacket(packet.release());
+
+                    sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
+                        "entry=" + std::to_string(go->GetEntry()),
+                        "dist=" + std::to_string((int)bot->GetDistance(go)));
+                    return true;
                 }
             }
         }
