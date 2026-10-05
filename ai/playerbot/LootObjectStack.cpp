@@ -4,6 +4,7 @@
 #include "playerbot/ServerFacade.h"
 #include "playerbot/TraceSwitch.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
+#include "playerbot/strategy/values/ItemUsageValue.h"
 
 using namespace ai;
 
@@ -31,6 +32,59 @@ namespace
 // The old 30s window dropped the corpse of the kill that started a fight before the bot was out of
 // combat again, so those kills were never looted at all.
 #define LOOT_OBJECT_TTL_SECONDS 180
+
+// A38/A41 probe: a corpse that can still hand this bot something one of its open quests needs,
+// but that the loot rule is not queueing. A quest-only drop exists only on the kill that
+// creates it, so a corpse skipped here means the objective waits for the next spawn.
+// Measured 2026-10-06: Jailor Eston (2427) died exactly once all day, its corpse was never
+// opened by any bot (zero LootAttempt / LootResponse rows for 2427), and the Dull Iron Key it
+// carries at ChanceOrQuestChance = -100 never entered the world - which is the last open link
+// in A41 (quest 498 needs that key to credit its ball-and-chain objectives).
+// Opt-in through bot_diag.conf "lootskip=1"; throttled per bot, entry and reason to 20 s.
+void LootSkipProbe(Player* bot, PlayerbotAI* ai, Creature* creature, uint32 reasonCode, char const* reason)
+{
+    if (!bot || !creature || !ai)
+        return;
+    if (trace::VerdictOf("lootskip") != trace::Verdict::On)
+        return;
+
+    uint32 const entry = creature->GetEntry();
+    uint64 const key = ((uint64)bot->GetGUIDLow() << 32) | ((uint64)entry << 8) | reasonCode;
+    static std::map<uint64, time_t> lastSkip;
+    time_t const now = time(nullptr);
+    auto const it = lastSkip.find(key);
+    if (it != lastSkip.end() && now - it->second < 20)
+        return;
+    lastSkip[key] = now;
+
+    uint32 needed = 0;
+    for (uint32 itemId : GAI_VALUE2(std::list<uint32>, "entry loot list", entry))
+    {
+        if (ItemUsageValue::IsNeededForQuest(bot, itemId))
+        {
+            needed = itemId;
+            break;
+        }
+    }
+    if (!needed)
+        return;
+
+    Loot const& loot = creature->loot;
+    Unit* tapper = creature->GetLootRecipient();
+    std::ostringstream out;
+    out << "entry=" << entry
+        << "|reason=" << reason
+        << "|dist=" << (int)sServerFacade.getDistance2d(bot, creature)
+        << "|allowed=" << (bot->IsAllowedToLoot(creature) ? 1 : 0)
+        << "|tap=" << (tapper ? (int)tapper->GetGUIDLow() : -1)
+        << "|rr=" << (uint32)loot.roundRobinPlayer
+        << "|group=" << (bot->GetGroup() ? 1 : 0)
+        << "|hasItemFor=" << (loot.hasItemFor(bot) ? 1 : 0)
+        << "|qitems=" << (uint32)loot.m_questItems.size()
+        << "|playerQ=" << (loot.m_playerQuestItems.count(bot->GetGUIDLow()) ? 1 : 0)
+        << "|want=" << needed;
+    sPlayerbotAIConfig.logEvent(ai, "LootSkipNeed", std::to_string(entry), out.str());
+}
 
 LootTarget::LootTarget(ObjectGuid guid) : guid(guid), asOfTime(time(0))
 {
@@ -156,7 +210,11 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
 
             if (debug)
                 ai->TellDebug(ai->GetMaster(), "Creature lootable but not this bot's to loot.", "debug loot");
+
+            LootSkipProbe(bot, ai, creature, 1, "may-loot-refused");
         }
+        else
+            LootSkipProbe(bot, ai, creature, 2, "no-lootable-flag");
 
         // Skinnable only once the corpse loot is gone (same condition the core applies to the
         // Skinning spell) and only while the core would let this bot skin it.
