@@ -400,6 +400,24 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
     if (!IsPossible(info))
         return false;
 
+    // A36 second round: a quest objective inside a spot where this bot already died twice
+    // without producing anything is refused for half an hour - the bot has to stop feeding
+    // that camp. Objectives it is still progressing on are left alone (DangerousSpot::
+    // blocksQuests is only set on the no-output path).
+    if (WorldPosition* point = GetClosestPoint(info.getPosition()))
+        if (ai->IsDangerousSpotNear(point->GetMapId(), point->GetX(), point->GetY(), true))
+        {
+            time_t const now = time(nullptr);
+            time_t const last = context->GetValue<time_t>("manual time", "quest spot veto logged at")->Get();
+            if (!last || now - last >= 30)
+            {
+                context->GetValue<time_t>("manual time", "quest spot veto logged at")->Set(now);
+                sPlayerbotAIConfig.logEvent(ai, "QuestSpotVeto", std::to_string(GetQuestId()),
+                    std::to_string((int)point->GetX()) + "," + std::to_string((int)point->GetY()));
+            }
+            return false;
+        }
+
     bool forceThisQuest = info.HasFocusQuest();
 
     bool skipKillableCheck = false;

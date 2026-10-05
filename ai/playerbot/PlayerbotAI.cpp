@@ -1213,7 +1213,7 @@ void PlayerbotAI::OnCombatEnded()
 // A36: remember where a kind of creature has already killed this bot twice, and answer
 // "is this place one of those" for the grind-destination gate. Half an hour, 80 yards,
 // at most a dozen live spots - the same shape the entry blacklist uses.
-void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs)
+void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs, bool blocksQuests)
 {
     uint32 const now = WorldTimer::getMSTime();
 
@@ -1229,6 +1229,7 @@ void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durati
             spot.x = x;
             spot.y = y;
             spot.expireMs = now + durationMs;
+            spot.blocksQuests = spot.blocksQuests || blocksQuests;
             return;
         }
     }
@@ -1241,16 +1242,19 @@ void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durati
     spot.x = x;
     spot.y = y;
     spot.expireMs = now + durationMs;
+    spot.blocksQuests = blocksQuests;
     dangerousSpots_.push_back(spot);
 }
 
-bool PlayerbotAI::IsDangerousSpotNear(uint32 mapId, float x, float y) const
+bool PlayerbotAI::IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly) const
 {
     uint32 const now = WorldTimer::getMSTime();
 
     for (auto const& spot : dangerousSpots_)
     {
         if (spot.expireMs <= now || spot.mapId != mapId)
+            continue;
+        if (questsOnly && !spot.blocksQuests)
             continue;
         float const dx = spot.x - x;
         float const dy = spot.y - y;
@@ -1352,7 +1356,23 @@ void PlayerbotAI::OnDeath()
                     // A36: remember where too - the entry blacklist cannot stop a third death
                     // from passive aggro in the same camp, but refusing the grind destinations
                     // inside 80 yards can stop the bot from walking back in.
-                    AddDangerousSpot(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), 30 * MINUTE * IN_MILLISECONDS);
+                    // Second round: only extend that refusal to quest objectives when the bot
+                    // produced nothing between the two deaths (no level gain, and less than 2%
+                    // of the next level in experience - the same bar the zero-output watchdog
+                    // uses). A bot that is still progressing there is dying as part of A11/A13's
+                    // content/gear account and must not be fenced off.
+                    bool noOutput = false;
+                    {
+                        auto const prev = recentKillerProgress_.find(lastKiller_.entry);
+                        uint32 const xpNow = bot->GetUInt32Value(PLAYER_XP);
+                        uint32 const xpNext = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+                        if (prev != recentKillerProgress_.end() && xpNext && prev->second.first == bot->GetLevel())
+                        {
+                            uint32 const gained = xpNow >= prev->second.second ? xpNow - prev->second.second : 0;
+                            noOutput = gained * 100 < xpNext * 2;
+                        }
+                    }
+                    AddDangerousSpot(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), 30 * MINUTE * IN_MILLISECONDS, noOutput);
                     if (sPlayerbotAIConfig.hasLog("unreachable_targets.csv"))
                     {
                         time_t const nowLethal = time(nullptr);
@@ -1382,12 +1402,18 @@ void PlayerbotAI::OnDeath()
                     }
                 }
                 recentKillerMs_[lastKiller_.entry] = nowMs;
+                // A36: remember what the bot had produced at this death, so the next death by
+                // the same kind can tell "died while playing" from "died while feeding".
+                recentKillerProgress_[lastKiller_.entry] = { bot->GetLevel(), bot->GetUInt32Value(PLAYER_XP) };
                 // Keep the map to the kinds seen inside the window; a long session would
                 // otherwise hold one entry per creature kind the bot ever died to.
                 for (auto it = recentKillerMs_.begin(); it != recentKillerMs_.end(); )
                 {
                     if (nowMs - it->second > 15 * MINUTE * IN_MILLISECONDS)
+                    {
+                        recentKillerProgress_.erase(it->first);
                         it = recentKillerMs_.erase(it);
+                    }
                     else
                         ++it;
                 }

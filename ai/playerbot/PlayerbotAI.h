@@ -737,6 +737,9 @@ public:
     // to remember only the immediately previous killer, so Defias/something-else/Defias did not
     // arm the cooldown; a 15-minute sliding window does.
     std::map<uint32, uint32> recentKillerMs_;
+    // A36: (level, xp) of the bot at the previous death by each kind, so "the bot was not
+    // producing anything here" can be judged on the same signal the zero-output watchdog uses.
+    std::map<uint32, std::pair<uint32, uint32>> recentKillerProgress_;
     // A player (usually another random bot) that killed this bot recently: name +
     // expiry. While set, the victim does not proactively engage that killer
     // (EnemyPlayersValue::IsValid refuses it) so a same-spot trade-kill loop
@@ -761,9 +764,14 @@ public:
         float x = 0.0f;
         float y = 0.0f;
         uint32 expireMs = 0;
+        // A36 second round: the bot kept feeding this spot without producing anything (no
+        // quest progress, no experience) between the two kills, so quest *objectives* inside
+        // it are refused too for the same half hour. A bot still progressing there is left
+        // alone: dying while questing is A11/A13's content/gear account, not a loop.
+        bool blocksQuests = false;
     };
-    void AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs);
-    bool IsDangerousSpotNear(uint32 mapId, float x, float y) const;
+    void AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs, bool blocksQuests = false);
+    bool IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly = false) const;
 
     // 10-minute avoidance window after a player kill (matches the lethal-kind
     // 15-min/30-min shape, shorter because the killer is one named player).
