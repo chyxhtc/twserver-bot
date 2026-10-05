@@ -772,7 +772,19 @@ bool GrindTravelDestination::IsActive(Player* bot, const PlayerTravelInfo& info)
     // different destination type, so a required quest is never blocked by this.
     if (WorldPosition* point = GetClosestPoint(info.getPosition()))
         if (ai->IsDangerousSpotNear(point->GetMapId(), point->GetX(), point->GetY()))
+        {
+            // A36 probe: the metric alone cannot tell "the rule never fired" from "it fired
+            // and was not enough". One line per bot per 30 s, only while a spot is refused.
+            time_t const now = time(nullptr);
+            time_t const last = context->GetValue<time_t>("manual time", "grind spot veto logged at")->Get();
+            if (!last || now - last >= 30)
+            {
+                context->GetValue<time_t>("manual time", "grind spot veto logged at")->Set(now);
+                sPlayerbotAIConfig.logEvent(ai, "GrindSpotVeto", std::to_string(GetEntry()),
+                    std::to_string((int)point->GetX()) + "," + std::to_string((int)point->GetY()));
+            }
             return false;
+        }
 
     return GuidPosition(bot).IsHostileTo(GuidPosition(HIGHGUID_UNIT, GetEntry()), bot->GetInstanceId());
 }
