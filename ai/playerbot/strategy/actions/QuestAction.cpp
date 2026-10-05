@@ -7,6 +7,9 @@
 #include "playerbot/TraceSwitch.h"
 #include "playerbot/TravelMgr.h"
 
+#include <algorithm>
+#include <cmath>
+
 using namespace ai;
 
 namespace
@@ -98,8 +101,31 @@ bool QuestAction::Execute(Event& event)
                 if (!go || go->GetEntry() != wantedEntry)
                     continue;
                 ++seen;
+                bool const isObjective = IsUnmetQuestObjectiveGo(bot, go);
                 if (bot->GetDistance(go) > QuestGoRange())
+                {
+                    // The travel leg parks a bot tens of yards short of a quest-objective
+                    // object (measured 2026-10-05 on 498: Rigornar held travel target 1721 for
+                    // minutes at 30-33 yards and only happened to close to 5 yards while
+                    // chasing a mob), and CMSG_GAMEOBJ_USE is dropped server-side beyond
+                    // interaction distance. Walk the last stretch first, exactly as
+                    // UseQuestItemOnObjectiveAction does for the same reason.
+                    if (isObjective)
+                    {
+                        float const dx = bot->GetPositionX() - go->GetPositionX();
+                        float const dy = bot->GetPositionY() - go->GetPositionY();
+                        float const len = std::max(0.001f, std::sqrt(dx * dx + dy * dy));
+                        float const near = 3.0f;
+                        bot->GetMotionMaster()->MovePoint(go->GetMapId(),
+                            go->GetPositionX() + dx / len * near,
+                            go->GetPositionY() + dy / len * near,
+                            go->GetPositionZ(),
+                            MOVE_RUN_MODE | MOVE_PATHFINDING);
+                        SetDuration(500);
+                        return true;
+                    }
                     continue;
+                }
                 ++processed;
                 if (ProcessQuests(go))
                     return true;
@@ -115,7 +141,7 @@ bool QuestAction::Execute(Event& event)
                 // 498: 13 holders, mobcount 1, rewarded 0 - nobody has ever finished it).
                 // Send the same CMSG_GAMEOBJ_USE a player's right-click sends, but only while
                 // the travel target says this very object is where the bot means to be.
-                if (IsUnmetQuestObjectiveGo(bot, go))
+                if (isObjective)
                 {
                     if (QuestTraceDue(ai, "qobjgouse-" + std::to_string(wantedEntry)))
                         sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
