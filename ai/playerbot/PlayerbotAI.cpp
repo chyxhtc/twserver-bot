@@ -67,6 +67,26 @@ using namespace ai;
 
 namespace
 {
+// A35: the core reads the *item target* (m_targets.getItemTarget()) - not the cast item - in
+// SPELL_EFFECT_ENCHANT_ITEM and SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY. This file only ever set
+// the cast item, so every shaman weapon imbue came back SPELL_FAILED_ITEM_GONE and the action
+// stayed permanently "impossible": three shamans, no imbue all day, and the platform recorded
+// it as an ACTION_LOOP every five minutes. Only these two effects need the item target, so
+// everything else (pick lock's spell 1804, item-cast spells aimed at a unit) keeps the old
+// shape.
+bool SpellEnchantsItem(SpellEntry const* info)
+{
+    if (!info)
+        return false;
+
+    for (uint32 i = 0; i < MAX_EFFECT_INDEX; ++i)
+        if (info->Effect[i] == SPELL_EFFECT_ENCHANT_ITEM ||
+            info->Effect[i] == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY)
+            return true;
+
+    return false;
+}
+
 struct DelayedBotPacket
 {
     ObjectGuid botGuid;
@@ -4656,8 +4676,11 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, uint8 effectMask, b
 	Spell *spell = new Spell(bot, spellInfo, false);
 
     spell->m_targets.setUnitTarget(target);
-    spell->SetCastItem(itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get());
-    spell->m_targets.setItemTarget(spell->m_targets.getItemTarget());
+    Item* const checkCastItem = itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get();
+    spell->SetCastItem(checkCastItem);
+    // A35: an enchant effect needs the item *target*; reading it back from m_targets (which
+    // nothing had written) kept it empty and made every weapon imbue SPELL_FAILED_ITEM_GONE.
+    spell->m_targets.setItemTarget(SpellEnchantsItem(spellInfo) ? checkCastItem : spell->m_targets.getItemTarget());
 
     SpellCastResult result = spell->CheckCast(true);
     delete spell;
@@ -5046,10 +5069,13 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget, bool
     Spell *spell = new Spell(bot, pSpellInfo, false);
 
     SpellCastTargets targets;
+    bool const enchantsItem = SpellEnchantsItem(pSpellInfo);
     if ((pSpellInfo->Targets & TARGET_FLAG_ITEM) || spellId == 1804)
     {
-        spell->SetCastItem(itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellId)->Get());
-        targets.setItemTarget(spell->m_targets.getItemTarget());
+        Item* const castItem = itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellId)->Get();
+        spell->SetCastItem(castItem);
+        // A35: same missing item target as in CanCastSpell - see SpellEnchantsItem.
+        targets.setItemTarget(enchantsItem ? castItem : spell->m_targets.getItemTarget());
 
         if (bot->GetTradeData())
         {
@@ -5073,6 +5099,15 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget, bool
     else
     {
         targets.setUnitTarget(target);
+
+        // A35: an imbue whose spell target mask omits TARGET_FLAG_ITEM still needs the item
+        // target - without it the core's enchant branch returns SPELL_FAILED_ITEM_GONE.
+        if (enchantsItem)
+        {
+            Item* const castItem = itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellId)->Get();
+            if (castItem)
+                targets.setItemTarget(castItem);
+        }
     }
 
     if (spellId == 1953) // simulate blink coordinates
