@@ -1447,6 +1447,18 @@ private:
 
                 for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
                 {
+                    // Mirror of the transform branch in
+                    // UseQuestItemOnObjectiveAction::FindQuestItemUseTarget: 1016 hands the bot
+                    // 5456 and asks for 5455, which using 5456 produces (spell 6310 creates it).
+                    uint32 const reqItem = quest->ReqItemId[i];
+                    if (reqItem && quest->ReqItemCount[i] && status.m_itemcount[i] < quest->ReqItemCount[i])
+                    {
+                        uint32 const granted = quest->GetSrcItemId() ? quest->GetSrcItemId() : quest->ReqSourceId[i];
+                        if (granted && bot->GetItemCount(granted, false) &&
+                            questgrey::ItemCreatedByUsing(granted) == reqItem)
+                            return true;
+                    }
+
                     int32 const reqEntry = quest->ReqCreatureOrGOId[i];
                     uint32 const reqCount = quest->ReqCreatureOrGOCount[i];
                     if (!reqEntry || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)

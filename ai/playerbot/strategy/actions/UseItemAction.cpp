@@ -13,6 +13,8 @@
 #include "playerbot/strategy/values/ItemCountValue.h"
 #include "playerbot/TravelMgr.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/QuestGreyRule.h"
+#include "QuestTrace.h"
 
 #include <ctime>
 #include <map>
@@ -1442,6 +1444,24 @@ bool UseQuestItemOnObjectiveAction::FindQuestItemUseTarget(Player* bot, uint32& 
 
         for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
         {
+            // The quest can hand over the material instead of the objective item: 1016
+            // Elemental Bracers gives 5456 Divining Scroll and asks for 5455 Divined Scroll,
+            // and the scroll's on-use spell (6310, SPELL_EFFECT_CREATE_ITEM) is what produces
+            // it. No drop, vendor or use-target names 5455, so the objective had no route at
+            // all - use the given item on the bot itself.
+            uint32 const reqItem = quest->ReqItemId[i];
+            if (reqItem && quest->ReqItemCount[i] && status.m_itemcount[i] < quest->ReqItemCount[i])
+            {
+                uint32 const granted = quest->GetSrcItemId() ? quest->GetSrcItemId() : quest->ReqSourceId[i];
+                if (granted && bot->GetItemCount(granted, false) &&
+                    questgrey::ItemCreatedByUsing(granted) == reqItem)
+                {
+                    outItemId = granted;
+                    outTarget = bot->getObjectGuid();
+                    return true;
+                }
+            }
+
             int32 const reqEntry = quest->ReqCreatureOrGOId[i];
             uint32 const reqCount = quest->ReqCreatureOrGOCount[i];
             if (!reqEntry || !reqCount || status.m_creatureOrGOcount[i] >= reqCount)
@@ -1503,6 +1523,13 @@ bool UseQuestItemOnObjectiveAction::Execute(Event& event)
     GameObject* goTarget = unitTarget ? nullptr : ai->GetGameObject(targetGuid);
     if (!unitTarget && !goTarget)
         return false;
+
+    // A self-targeted use is the "granted item turns into the objective item" path (1016).
+    // Log it once per item per minute so the fix is verifiable from the trace.
+    if (targetGuid == bot->getObjectGuid() && QuestTraceDue(ai, "qtransuse-" + std::to_string(itemId)))
+        sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveTransformUse",
+            "item=" + std::to_string(itemId),
+            "creates=" + std::to_string(questgrey::ItemCreatedByUsing(itemId)));
 
     // The travel layer stops a dozen yards short of the objective, so walk the last stretch
     // first: the item's spell has a normal range and using it from outside simply fails. One

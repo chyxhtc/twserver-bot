@@ -135,6 +135,30 @@ namespace ai { namespace questgrey
     // then drop again).
     bool ItemHasReachableSource(Player* bot, uint32 itemId);
 
+    // Quest ids that pay this item out as a reward, fixed (RewItemId) or as a choice
+    // (RewChoiceItemId). Built once from the quest templates. Measured 2026-10-06: quest 116
+    // Dry Times needs 1262 Keg of Thunderbrew Lager, whose only source in the world is quest
+    // 117 Thunderbrew's fixed reward (RewItemId1 = 1262); the module knew nothing about it, so
+    // 116 was filed as sourceless while also being unsolvable for a bot that never takes 117.
+    std::vector<uint32> const& QuestsRewardingItem(uint32 itemId);
+
+    // The item produced by using this item, or 0. 1016 Elemental Bracers hands the bot 5456
+    // Divining Scroll and asks for 5455 Divined Scroll; the scroll's on-use spell 6310 is
+    // SPELL_EFFECT_CREATE_ITEM with EffectItemType = 5455, so the objective is satisfied by
+    // using the item the quest already gave, not by any drop.
+    uint32 ItemCreatedByUsing(uint32 itemId);
+
+    // The first spell the bot knows that creates this item with CREATE_ITEM, or 0. Used to
+    // tell "this item can be made" (6581's 4369, 55210's 3575) from "this item has no source
+    // at all" - the former must not be dropped or reported as sourceless.
+    uint32 KnownCraftSpellFor(Player* bot, uint32 itemId);
+
+    // True when this quest pays out an item that one of the bot's in-progress quests still
+    // needs. That makes a grey quest a functional prerequisite and keeps the accept gate and
+    // the quest-log upkeep from dropping the only route to 116's 1262 (quest 117 is level 15,
+    // 8 levels grey for the level-23 pool).
+    bool QuestRewardsNeededItem(Player* bot, Quest const* quest);
+
     // True when every item requirement is sourceless and the quest has no kill requirement:
     // nothing in it can be planned against, so it is dead weight in the quest log. Measured
     // 2026-10-04: nine such quests were open, held by 20 of the 50 bots (Lazy Peons 8,

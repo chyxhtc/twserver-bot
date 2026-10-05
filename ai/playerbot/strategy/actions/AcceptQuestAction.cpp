@@ -35,6 +35,14 @@ bool GreyQuestWorthKeeping(Player* bot, AiObjectContext* context, Quest const* q
     if (IsFixedRewardUpgrade(context, quest))
         return true; // a fixed reward would replace gear
 
+    // Functional prerequisite: this quest pays out an item that one of the bot's in-progress
+    // quests still needs, so it has to be taken even though its own level is far below the
+    // bot's. 116 Dry Times needs 1262 Keg of Thunderbrew Lager, which is 117 Thunderbrew's
+    // fixed reward, and 117 is level 15 - eight levels grey for the level-23 pool - so the
+    // grey gate refused the only quest that could ever supply it.
+    if (QuestRewardsNeededItem(bot, quest))
+        return true;
+
     return LeadsToNonGreyQuest(bot, quest->GetQuestId());
 }
 }} // namespace ai::questgrey

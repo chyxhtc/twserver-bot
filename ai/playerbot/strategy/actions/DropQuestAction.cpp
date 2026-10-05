@@ -23,10 +23,161 @@ bool ItemHasKnownSource(uint32 itemId)
     bool const hasSource =
         !GAI_VALUE2(std::list<int32>, "item drop list", itemId).empty() ||
         !GAI_VALUE2(std::list<int32>, "item vendor list", itemId).empty() ||
+        !QuestsRewardingItem(itemId).empty() ||
         bounds.first != bounds.second;
 
     cache[itemId] = hasSource;
     return hasSource;
+}
+
+std::vector<uint32> const& QuestsRewardingItem(uint32 itemId)
+{
+    static std::map<uint32, std::vector<uint32>> const index = []()
+    {
+        std::map<uint32, std::vector<uint32>> out;
+        for (auto const& entry : sObjectMgr.GetQuestTemplates())
+        {
+            Quest const* quest = entry.second.get();
+            if (!quest)
+                continue;
+
+            for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+                if (quest->RewItemId[i])
+                    out[quest->RewItemId[i]].push_back(entry.first);
+
+            for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
+                if (quest->RewChoiceItemId[i])
+                    out[quest->RewChoiceItemId[i]].push_back(entry.first);
+        }
+        return out;
+    }();
+
+    static std::vector<uint32> const none;
+    auto const it = index.find(itemId);
+    return it == index.end() ? none : it->second;
+}
+
+uint32 ItemCreatedByUsing(uint32 itemId)
+{
+    if (!itemId)
+        return 0;
+
+    ItemPrototype const* proto = sObjectMgr.GetItemPrototype(itemId);
+    if (!proto)
+        return 0;
+
+    for (uint8 s = 0; s < MAX_ITEM_PROTO_SPELLS; ++s)
+    {
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(proto->Spells[s].SpellId);
+        if (!spell)
+            continue;
+
+        for (uint8 e = 0; e < MAX_EFFECT_INDEX; ++e)
+            if (spell->Effect[e] == SPELL_EFFECT_CREATE_ITEM && spell->EffectItemType[e])
+                return spell->EffectItemType[e];
+    }
+
+    return 0;
+}
+
+uint32 KnownCraftSpellFor(Player* bot, uint32 itemId)
+{
+    if (!bot || !itemId)
+        return 0;
+
+    for (auto const& known : bot->GetSpellMap())
+    {
+        if (known.second.state == PLAYERSPELL_REMOVED || known.second.disabled)
+            continue;
+
+        SpellEntry const* spell = sSpellMgr.GetSpellEntry(known.first);
+        if (!spell)
+            continue;
+
+        for (uint8 e = 0; e < MAX_EFFECT_INDEX; ++e)
+            if (spell->Effect[e] == SPELL_EFFECT_CREATE_ITEM && spell->EffectItemType[e] == itemId)
+                return known.first;
+    }
+
+    return 0;
+}
+
+// The item a quest hands out on accept, either the legacy single SrcItemId column or the
+// per-slot ReqSourceId list (6395: SrcItemId = 0, ReqSourceId1 = 16333).
+static uint32 QuestGrantedItem(Quest const* quest, uint8 objective)
+{
+    if (!quest)
+        return 0;
+    if (quest->GetSrcItemId())
+        return quest->GetSrcItemId();
+    return objective < QUEST_SOURCE_ITEM_IDS_COUNT ? quest->ReqSourceId[objective] : 0;
+}
+
+// True when the bot carries an item whose use produces itemId, either because the quest in
+// progress handed it over or because the bot still has it from somewhere else. Covers 1016
+// (5456 -> 5455).
+static bool BotCarriesItemCreating(Player* bot, uint32 itemId)
+{
+    if (!bot || !itemId)
+        return false;
+
+    for (auto const& entry : bot->getQuestStatusMap())
+    {
+        if (entry.second.m_rewarded || entry.second.m_status != QUEST_STATUS_INCOMPLETE)
+            continue;
+
+        Quest const* quest = sObjectMgr.GetQuestTemplate(entry.first);
+        if (!quest)
+            continue;
+
+        for (uint8 i = 0; i < QUEST_SOURCE_ITEM_IDS_COUNT; ++i)
+        {
+            uint32 const granted = QuestGrantedItem(quest, i);
+            if (granted && bot->GetItemCount(granted, false) && ItemCreatedByUsing(granted) == itemId)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+static bool ItemNeededByActiveQuest(Player* bot, uint32 itemId)
+{
+    if (!bot || !itemId)
+        return false;
+
+    for (auto const& entry : bot->getQuestStatusMap())
+    {
+        QuestStatusData const& status = entry.second;
+        if (status.m_rewarded || status.m_status != QUEST_STATUS_INCOMPLETE)
+            continue;
+
+        Quest const* quest = sObjectMgr.GetQuestTemplate(entry.first);
+        if (!quest)
+            continue;
+
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            if (quest->ReqItemId[i] == itemId && quest->ReqItemCount[i] && status.m_itemcount[i] < quest->ReqItemCount[i])
+                return true;
+    }
+
+    return false;
+}
+
+bool QuestRewardsNeededItem(Player* bot, Quest const* quest)
+{
+    if (!bot || !quest)
+        return false;
+
+    for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+        if (quest->RewItemId[i] && ItemNeededByActiveQuest(bot, quest->RewItemId[i]))
+            return true;
+
+    for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
+        if (quest->RewChoiceItemId[i] && ItemNeededByActiveQuest(bot, quest->RewChoiceItemId[i]))
+            return true;
+
+    return false;
 }
 
 bool ItemHasReachableSource(Player* bot, uint32 itemId)
@@ -39,6 +190,23 @@ bool ItemHasReachableSource(Player* bot, uint32 itemId)
 
     ItemRequiredTargetMapBounds const bounds = sObjectMgr.GetItemRequiredTargetMapBounds(itemId);
     if (bounds.first != bounds.second)
+        return true;
+
+    // The quest already supplied the raw material and using it is what produces the
+    // objective item (1016: 5456 Divining Scroll -> 5455 Divined Scroll). The item is in the
+    // bot's bag, so the source is in hand even though no drop or vendor exists.
+    if (BotCarriesItemCreating(bot, itemId))
+        return true;
+
+    // A recipe the bot already knows turns this from a dead end into a crafting step
+    // (55210 wants 16x 3575 Iron Bar, produced by Smelt Iron; 6581 wants 4369 Deadly
+    // Blunderbuss). The module does not craft on demand yet, but the quest must not be
+    // dropped and must not be reported as having no source at all.
+    if (KnownCraftSpellFor(bot, itemId))
+        return true;
+
+    // Another quest pays the item out; the travel layer now routes to that quest's giver.
+    if (!QuestsRewardingItem(itemId).empty())
         return true;
 
     // Vendor-only items: the vendor has to stand somewhere this bot is allowed to travel. The
@@ -84,6 +252,12 @@ bool QuestHasNoKnownSource(Quest const* quest)
 
         anyItem = true;
         if (ItemHasKnownSource(quest->ReqItemId[i]))
+            return false;
+
+        // The quest hands over the material and using it makes the objective item, so there
+        // is a route even though no drop, vendor or use-target names it (1016).
+        uint32 const granted = QuestGrantedItem(quest, i);
+        if (granted && ItemCreatedByUsing(granted) == quest->ReqItemId[i])
             return false;
     }
 

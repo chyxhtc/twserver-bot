@@ -17,6 +17,20 @@ EntryQuestRelationMap EntryQuestRelationMapValue::Calculate()
 	//Quest givers takers
 	QuestObjectMgr* questObjectMgr = (QuestObjectMgr*)&sObjectMgr;
 
+	// Every entry that can start a quest, keyed by quest id (creature entries positive, game
+	// object entries negated like everywhere else in this map). Needed to route a bot to the
+	// giver of the quest that pays out the item another quest wants.
+	static std::map<uint32, std::vector<int32>> const questGiverIndex = []()
+	{
+		QuestObjectMgr* mgr = (QuestObjectMgr*)&sObjectMgr;
+		std::map<uint32, std::vector<int32>> out;
+		for (auto [entry, questId] : mgr->GetCreatureQuestRelationsMap())
+			out[questId].push_back((int32)entry);
+		for (auto [entry, questId] : mgr->GetGOQuestRelationsMap())
+			out[questId].push_back(-(int32)entry);
+		return out;
+	}();
+
 	for (auto [entry, questId] : questObjectMgr->GetCreatureQuestRelationsMap())
 	{
 		// Filter out challenge NPCs like Mysterious Stranger (81030) and Echo (62609)
@@ -80,6 +94,26 @@ EntryQuestRelationMap EntryQuestRelationMapValue::Calculate()
 			{
 				for (auto& entry : GAI_VALUE2(std::list<int32>, "item vendor list", quest->ReqItemId[objective]))
 					rMap[entry][questId] |= relationFlag;
+			}
+
+			// Quest-reward objective: the item is paid out by another quest, so the only place
+			// that produces it is that quest's giver. 116 Dry Times needs 1262 Keg of
+			// Thunderbrew Lager, which is 117 Thunderbrew's fixed reward; without this the
+			// objective had no destination at all, and A17 also filed 116 as sourceless.
+			if (quest->ReqItemId[objective])
+			{
+				for (uint32 rewarder : questgrey::QuestsRewardingItem(quest->ReqItemId[objective]))
+				{
+					if (rewarder == questId)
+						continue;
+
+					auto const giverIt = questGiverIndex.find(rewarder);
+					if (giverIt == questGiverIndex.end())
+						continue;
+
+					for (int32 entry : giverIt->second)
+						rMap[entry][questId] |= relationFlag;
+				}
 			}
 
 			// Loot objective for the SOURCE item of a "use item on the objective" step.
