@@ -342,6 +342,16 @@ float LootChanceValue::Calculate()
 	int32 entry = getMultiQualifierInt(getQualifier(), 0, " ");
 	uint32 itemId = getMultiQualifierInt(getQualifier(), 1, " ");
 
+	// A38: creature_loot_template writes a quest-required drop as a negative chance (usually
+	// -100, i.e. "guaranteed while the quest is active"). This value used to be handed out
+	// raw, and every caller compares it against a positive threshold - QuestValues admits a
+	// source only when the item class is ITEM_CLASS_QUEST or the chance is above 5%, so a KEY
+	// class quest item was silently dropped: measured 2026-10-05, quest 498 (The Rescue) needs
+	// Dull Iron Key 3467, class 13, dropped at -100 by 2427 Jailor Eston, and the objective
+	// table never learned about that mob - the quest holder walked to the cage forever.
+	// Report the effective chance instead of the raw marker.
+	auto const effectiveChance = [](float chance) { return chance < 0.0f ? 100.0f : chance; };
+
 	LootTemplateAccess const* lTemplateA;
 
 	if (entry > 0)
@@ -353,19 +363,19 @@ float LootChanceValue::Calculate()
 	{
 		for (auto& item : lTemplateA->Entries)
 			if (item.itemid == itemId)
-				return item.chance;
+				return effectiveChance(item.chance);
 
 		for (LootLootGroupAccess const& group : lTemplateA->Groups)
 		{
 			for (LootStoreItem const& item : group.ExplicitlyChanced)
 				if (item.itemid == itemId)
-					return item.chance;
+					return effectiveChance(item.chance);
 
 			float equalChance = 100.0f / (float)group.EqualChanced.size();
 
 			for (LootStoreItem const& item : group.EqualChanced)
 				if (item.itemid == itemId)
-					return item.chance ? item.chance : equalChance;
+					return item.chance ? effectiveChance(item.chance) : equalChance;
 		}
 	}
 
