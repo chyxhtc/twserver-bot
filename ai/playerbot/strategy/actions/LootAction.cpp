@@ -347,6 +347,29 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
             return MoveNear(go, 3.0f);
         }
 
+        // A chest locked with a key item (Lock.dbc LOCK_KEY_ITEM carrying a real item id) can only
+        // be opened by using that item on it: the core's Spell::CanOpenLock returns SPELL_CAST_OK
+        // only when the cast item's entry equals the lock's Index, so the generic OpenGoSpell below
+        // is answered with SPELL_FAILED_BAD_TARGETS, and the CMSG_GAMEOBJ_USE fallback does nothing
+        // at all (GameObject::Use's chest branch only runs scripts and the linked trap). The
+        // key-item step lived at the tail of this function, after the chest branch had already
+        // returned, so chests never reached it.
+        //
+        // Measured 2026-10-05: Silithid Mound (go 3685, lock 72 -> key item 5059 Digging Claw) held
+        // all ten holders of quest 868 (Egg Hunt) at 0-1 yards for hours - every attempt logged
+        // "go-open-spell-target-spell6477-lock72-dist0-casted0" - and not one Silithid Egg (5058)
+        // was ever looted. The claw is handed out by the quest itself (quest_template 868
+        // SrcItemId=5059) and carries no charges, so using it does not cost the bot its turn-in
+        // requirement. Use it the same way the item use action does.
+        if (lootObject.reqItem && bot->HasItemCount(lootObject.reqItem, 1, false))
+        {
+            LootTrace(bot, ai, lootObject.guid, "go-use-key-item" + std::to_string(lootObject.reqItem));
+            sLog.outDebug("[BOT LOOT] %s: chest guid=%lu lock=%u needs key item %u, using it on the object",
+                bot->GetName(), lootObject.guid.GetRawValue(), lockId, lootObject.reqItem);
+            return ai->DoSpecificAction("use", Event("do loot",
+                chat->formatQItem(lootObject.reqItem) + " " + chat->formatGameobject(go)));
+        }
+
         // Drop any loot window left over from an earlier corpse: a player with an active
         // loot guid is not allowed to start another loot interaction, and the bot opens
         // corpses constantly.

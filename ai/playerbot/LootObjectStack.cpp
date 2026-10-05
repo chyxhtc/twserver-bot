@@ -297,23 +297,19 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
             switch (lockInfo->Type[i])
             {
                 case LOCK_KEY_ITEM:
+                    // Read Lock.dbc carefully: it stores the eight slots as four separate blocks
+                    // (mangos LockEntry::Type[8], Index[8], Skill[8], Action[8]), not as eight
+                    // (type,index) pairs. Taken as pairs, lock 72 - the Silithid Mound's lock -
+                    // looks like "slot1 type=1 index=0", a keyless lock, which is how A39 was
+                    // originally written. Its real Index[0] is 5059, the Digging Claw. No lock in
+                    // Lock.dbc has a LOCK_KEY_ITEM whose index is 0, so this "index > 0" test was
+                    // never what kept the mound shut. What did is that the chest branch of
+                    // LootAction never used the key item; see the key-item step there.
                     if (lockInfo->Index[i] > 0)
                     {
                         if (debug)
                             ai->TellDebug(ai->GetMaster(), "Go has lock with key requirement.", "debug loot");
                         reqItem = lockInfo->Index[i];
-                        this->guid = guid;
-                    }
-                    else
-                    {
-                        // A39: a KEY_ITEM slot with index 0 means "no key is named", not "cannot be
-                        // opened". Lock.dbc 72 - the Silithid Mound's lock (gameobject_template
-                        // 3685, data0=72) - is exactly that: slot1 is type=1 index=0. Requiring
-                        // index > 0 here left this->guid empty, so the mound was never queued and
-                        // never opened; quest 868 (Egg Hunt) therefore never got a single egg, for
-                        // all eight holders, all day (LootAttempt on its 13 spawns: zero).
-                        if (debug)
-                            ai->TellDebug(ai->GetMaster(), "Go has key lock without a named key.", "debug loot");
                         this->guid = guid;
                     }
                     break;
