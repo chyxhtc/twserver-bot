@@ -393,6 +393,30 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
                             if (!relevance)
                             {
                                 LogAction("Multiplier %s made action %s useless", multiplier->getName().c_str(), action->getName().c_str());
+
+                                // A34 probe: a frozen bot re-evaluates its travel/rescue
+                                // actions every tick while some multiplier holds them at zero,
+                                // and the MULT line that names the multiplier only lands in the
+                                // per-bot action log (AiPlayerbot.EnableActionLog), which is far
+                                // too large to leave on. One trace line per bot per 30 s is
+                                // enough to name it; remove once A34 is closed.
+                                {
+                                    uint32 const probeGuid = ai->GetBot() ? ai->GetBot()->GetGUIDLow() : 0u;
+                                    uint32 const probeNow = WorldTimer::getMSTime();
+                                    static thread_local std::map<uint32, uint32> sVetoTraceAt;
+                                    uint32& probeLast = sVetoTraceAt[probeGuid];
+                                    if (!probeLast || probeNow - probeLast >= 30000)
+                                    {
+                                        probeLast = probeNow;
+                                        std::ostringstream veto;
+                                        veto << "veto: " << action->getName()
+                                             << " by " << multiplier->getName()
+                                             << " base=" << std::fixed << std::setprecision(3) << beforeMult
+                                             << " src=" << event.getSource();
+                                        sPlayerbotAIConfig.logTraceTo("bot_engine_try-", ai, "VetoTrace", veto.str(), "");
+                                    }
+                                }
+
                                 vetoedActions.push_back(action);
                                 break;
                             }
