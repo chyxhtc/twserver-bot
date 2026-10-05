@@ -1563,6 +1563,15 @@ bool UseQuestItemOnObjectiveAction::Execute(Event& event)
     if (!used)
         return false;
 
+    // A41: this is the other candidate path that can credit a quest-objective game object with the
+    // item's own spell (quest 498's SrcItemId/ReqSourceId is the Dull Iron Key, whose use spell 3366
+    // is exactly the objective's ReqSpellCast). Nothing logged it before, so a tick on 498 could not
+    // be attributed to either this action or the arrival-branch use.
+    if (QuestTraceDue(ai, "qitemuse-" + std::to_string(itemId)))
+        sPlayerbotAIConfig.logEvent(ai, "QuestItemUseOnObjective",
+            "item=" + std::to_string(itemId),
+            "target=" + std::to_string(targetGuid.GetEntry()) + "|go=" + std::to_string(goTarget ? 1 : 0));
+
     if (!GetDuration())
         SetDuration(sPlayerbotAIConfig.globalCoolDown);
 

@@ -227,11 +227,15 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                                 continue;
 
                             bot->SetSelectionGuid(go->getObjectGuid());
-                            sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
-                                "entry=" + std::to_string(go->GetEntry()),
-                                "key=" + std::to_string(lockInfo->Index[j]));
                             bool const used = ai->DoSpecificAction("use", Event("do loot",
                                 chat->formatQItem(lockInfo->Index[j]) + " " + chat->formatGameobject(go)));
+                            // A41: the action's verdict is the last unknown. Drebon stood 3 yards from
+                            // 1722 twice (06:19:56 and 06:28:02) with the Burnished Gold Key in the bag,
+                            // the branch logged, and quest 498's mobcount2 stayed 0 ten minutes later - so
+                            // either the use action returned false or the cast was refused server-side.
+                            sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
+                                "entry=" + std::to_string(go->GetEntry()),
+                                "key=" + std::to_string(lockInfo->Index[j]) + "|used=" + std::to_string(used ? 1 : 0));
                             SetDuration(sPlayerbotAIConfig.globalCoolDown);
                             return used;
                         }
