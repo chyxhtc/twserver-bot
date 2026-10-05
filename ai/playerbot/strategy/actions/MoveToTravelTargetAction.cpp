@@ -367,6 +367,15 @@ bool MoveToTravelTargetAction::Execute(Event& event)
             // Dun Morogh) 38 times in half an hour. Remember the entry itself in the same
             // per-bot map the creature give-up path uses; the candidate layer skips it while
             // the stamp is in the future.
+            // A34 path branch: the purpose-level blacklist below parks *every* request of the
+            // same kind, so a bot whose quest destination could not be pathed also stops asking
+            // for any other quest and simply stands still until the blacklist expires (measured:
+            // Tharurthyrf failed at 18:07:04 and only re-picked at 18:11:38, 4.6 minutes later,
+            // while Warkryrzith stood 16 minutes waiting for the long-stuck rescue instead).
+            // The destination itself already carries a ten-minute entry cooldown below, so when
+            // that cooldown is in place the purpose only needs a moment; without a destination
+            // entry (city stops, location destinations) the full five minutes stay.
+            uint32 purposeBlockSec = 5 * MINUTE;
             if (target->GetDestination())
             {
                 int32 const destEntry = target->GetDestination()->GetEntry();
@@ -374,6 +383,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 {
                     if (auto* unreachable = context->GetValue<std::map<uint32, uint32>&>("unreachable entries"))
                         unreachable->Get()[(uint32)destEntry] = WorldTimer::getMSTime() + 10 * MINUTE * IN_MILLISECONDS;
+                    purposeBlockSec = 30;
                 }
             }
 
@@ -387,7 +397,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 // after 5 min. Cleared early by any successful pick
                 // (setNewTarget clears all blacklists).
                 SET_AI_VALUE2(bool, "no active travel destinations", purpose, true);
-                SET_AI_VALUE2(time_t, "manual time", "no travel purpose until::" + purpose, time(0) + 5 * MINUTE);
+                SET_AI_VALUE2(time_t, "manual time", "no travel purpose until::" + purpose, time(0) + purposeBlockSec);
             }
         }
     }
