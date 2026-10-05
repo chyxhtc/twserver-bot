@@ -1266,7 +1266,15 @@ void PlayerbotAI::OnDeath()
             if (lastKiller_.entry && context)
             {
                 uint32 const nowMs = WorldTimer::getMSTime();
-                if (lastKiller_.entry == prevKillerEntry_ && nowMs - prevKillerMs_ <= 15 * MINUTE * IN_MILLISECONDS)
+                // A30: the window is over the last 15 minutes, not just the previous death. The
+                // consecutive-only rule missed the shape that actually loops - kind A kills,
+                // something else kills, kind A kills again. Measured 2026-10-05, Subish (level 20,
+                // Westfall): five deaths to Defias Highwayman inside 41 minutes at one spot, of
+                // which only the first pair (07:30/07:35) armed a stamp. AttackersValue then
+                // erased that stamp when a Defias came after the bot in line of sight, which is
+                // the exact situation the rule exists for, so 07:55/08:08/08:11 followed.
+                uint32 const lastKindMs = recentKillerMs_[lastKiller_.entry];
+                if (lastKindMs && nowMs - lastKindMs <= 15 * MINUTE * IN_MILLISECONDS)
                 {
                     context->GetValue<std::map<uint32, uint32>&>("unreachable entries")->Get()[lastKiller_.entry] = nowMs + 30 * MINUTE * IN_MILLISECONDS;
                     TellDebug(GetMaster(), "Leaving " + lastKiller_.name + " alone for a while - it killed me twice", "debug move");
@@ -1280,8 +1288,16 @@ void PlayerbotAI::OnDeath()
                         sPlayerbotAIConfig.log("unreachable_targets.csv", outLethal.str().c_str());
                     }
                 }
-                prevKillerEntry_ = lastKiller_.entry;
-                prevKillerMs_ = nowMs;
+                recentKillerMs_[lastKiller_.entry] = nowMs;
+                // Keep the map to the kinds seen inside the window; a long session would
+                // otherwise hold one entry per creature kind the bot ever died to.
+                for (auto it = recentKillerMs_.begin(); it != recentKillerMs_.end(); )
+                {
+                    if (nowMs - it->second > 15 * MINUTE * IN_MILLISECONDS)
+                        it = recentKillerMs_.erase(it);
+                    else
+                        ++it;
+                }
             }
             // Killed by a player (entry == 0, not the environment): avoid that
             // named killer for a while so two masterless random bots grinding the

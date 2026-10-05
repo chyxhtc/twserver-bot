@@ -9,6 +9,7 @@
 #include "BotState.h"
 #include "PlayerTalentSpec.h"
 #include <stack>
+#include <map>
 #include "strategy/IterateItemsMask.h"
 #include "BotDiagnostics.h"
 #include "../../runtime/BotManager.h"
@@ -732,8 +733,10 @@ public:
         uint32 time = 0;
         uint32 entry = 0;       // creature entry, 0 for players and the environment
     };
-    uint32 prevKillerEntry_ = 0; // the kind that killed the bot before (lethal-kind rule in OnDeath)
-    uint32 prevKillerMs_ = 0;
+    // A30: creature entry -> the last time that kind killed this bot. The lethal-kind rule used
+    // to remember only the immediately previous killer, so Defias/something-else/Defias did not
+    // arm the cooldown; a 15-minute sliding window does.
+    std::map<uint32, uint32> recentKillerMs_;
     // A player (usually another random bot) that killed this bot recently: name +
     // expiry. While set, the victim does not proactively engage that killer
     // (EnemyPlayersValue::IsValid refuses it) so a same-spot trade-kill loop

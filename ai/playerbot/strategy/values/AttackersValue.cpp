@@ -504,10 +504,20 @@ bool AttackersValue::IgnoreTarget(Unit* target, Player* playerToCheckAgainst)
         auto givenUpKind = unreachableKinds.find(target->GetEntry());
         if (givenUpKind != unreachableKinds.end())
         {
-            if (WorldTimer::getMSTime() < givenUpKind->second &&
-                (target->GetVictim() != playerToCheckAgainst || !playerToCheckAgainst->IsWithinLOSInMap(target, true)))
-                return true;
-            unreachableKinds.erase(givenUpKind);
+            // A30: the entry stamp is a cooldown, not a reachability verdict, so a live stamp is
+            // no longer erased just because the creature is coming after the bot in line of
+            // sight. That erased it precisely where it was needed - the lethal-kind rule arms it
+            // because the bot keeps dying to that kind, and a kind that keeps killing the bot is
+            // by definition a kind that keeps attacking it. Fighting back is unaffected: with a
+            // live stamp the caller still treats the creature as valid when it is the bot's
+            // attacker in line of sight. Only expiry clears the stamp now.
+            if (WorldTimer::getMSTime() < givenUpKind->second)
+            {
+                if (target->GetVictim() != playerToCheckAgainst || !playerToCheckAgainst->IsWithinLOSInMap(target, true))
+                    return true;
+            }
+            else
+                unreachableKinds.erase(givenUpKind);
         }
     }
 
