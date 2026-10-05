@@ -437,7 +437,9 @@ namespace ai
         {
             try
             {
-                return ManualSetValue<std::string>::Get();
+                std::string const copy = ManualSetValue<std::string>::Get();
+                CheckCanary();
+                return copy;
             }
             catch (std::exception const& e)
             {
@@ -455,10 +457,30 @@ namespace ai
             if (lastLogged_ && now - lastLogged_ < 300)
                 return;
             lastLogged_ = now;
-            sLog.outError("TortoiseBots: manual string '%s' unreadable (%s) - treated as empty (M11)",
-                this->name.c_str(), what);
+            // M11: the canary above the strings tells the two failure shapes apart. Canary intact
+            // plus a throw means the string's own buffer was freed or reused (use-after-free);
+            // canary clobbered means something overwrote this object's memory (heap overflow).
+            // The name itself is only printed when the object still looks intact: walking a
+            // clobbered std::string here is what we are trying to avoid.
+            if (CanaryOk())
+                sLog.outError("TortoiseBots: manual string '%s' unreadable (%s) canary=ok - treated as empty (M11)",
+                    this->name.c_str(), what);
+            else
+                sLog.outError("TortoiseBots: manual string unreadable (%s) canary=CLOBBERED - treated as empty (M11)",
+                    what);
         }
 
+        static uint64_t const kCanary = 0x4D313143414E4152ull; // "M11CANAR"
+
+        bool CanaryOk() const { return canary_ == kCanary; }
+
+        void CheckCanary()
+        {
+            if (!CanaryOk())
+                throw std::runtime_error("StringManualSetValue canary clobbered (M11)");
+        }
+
+        uint64_t canary_ = kCanary;
         time_t lastLogged_ = 0;
     };
 
