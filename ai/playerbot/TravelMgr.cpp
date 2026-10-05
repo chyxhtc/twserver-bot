@@ -2791,6 +2791,12 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
 {
     sTravelMgr.GetPartitionsLock();
 
+    // A34 probe: the re-pick after a failed move is still 1.5-2.4 minutes, and this search -
+    // synchronous here, but launched through std::async when asyncTravelPartitions is on - is
+    // the prime suspect. Measure it before narrowing the candidate set or caching anything;
+    // the line only appears when a search takes 50 ms or more.
+    uint32 const searchStartMs = WorldTimer::getMSTime();
+
     PartitionedTravelList pointMap;
     DestinationList destinations = GetDestinations(info, purposeFlag, entries, onlyPossible, maxDistance);
 
@@ -2951,6 +2957,11 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     }
 
     sTravelMgr.GetPartitionsLock(false);
+
+    uint32 const searchMs = WorldTimer::getMSTime() - searchStartMs;
+    if (searchMs >= 50)
+        sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u)",
+            searchMs, probeTotal, purposeFlag, (uint32)entries.size(), (uint32)pointMap.size());
 
     return pointMap;
 }
