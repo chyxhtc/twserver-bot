@@ -1210,6 +1210,57 @@ void PlayerbotAI::OnCombatEnded()
     }
 }
 
+// A36: remember where a kind of creature has already killed this bot twice, and answer
+// "is this place one of those" for the grind-destination gate. Half an hour, 80 yards,
+// at most a dozen live spots - the same shape the entry blacklist uses.
+void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs)
+{
+    uint32 const now = WorldTimer::getMSTime();
+
+    dangerousSpots_.erase(std::remove_if(dangerousSpots_.begin(), dangerousSpots_.end(),
+        [now](DangerousSpot const& spot) { return spot.expireMs <= now; }), dangerousSpots_.end());
+
+    for (auto& spot : dangerousSpots_)
+    {
+        float const dx = spot.x - x;
+        float const dy = spot.y - y;
+        if (spot.mapId == mapId && dx * dx + dy * dy <= 80.0f * 80.0f)
+        {
+            spot.x = x;
+            spot.y = y;
+            spot.expireMs = now + durationMs;
+            return;
+        }
+    }
+
+    if (dangerousSpots_.size() >= 12)
+        dangerousSpots_.erase(dangerousSpots_.begin());
+
+    DangerousSpot spot;
+    spot.mapId = mapId;
+    spot.x = x;
+    spot.y = y;
+    spot.expireMs = now + durationMs;
+    dangerousSpots_.push_back(spot);
+}
+
+bool PlayerbotAI::IsDangerousSpotNear(uint32 mapId, float x, float y) const
+{
+    uint32 const now = WorldTimer::getMSTime();
+
+    for (auto const& spot : dangerousSpots_)
+    {
+        if (spot.expireMs <= now || spot.mapId != mapId)
+            continue;
+        float const dx = spot.x - x;
+        float const dy = spot.y - y;
+        if (dx * dx + dy * dy <= 80.0f * 80.0f)
+            return true;
+    }
+
+    return false;
+}
+
 void PlayerbotAI::SetLastKiller(Unit* killer)
 {
     lastKiller_.time = WorldTimer::getMSTime();
@@ -1298,6 +1349,10 @@ void PlayerbotAI::OnDeath()
                 {
                     context->GetValue<std::map<uint32, uint32>&>("unreachable entries")->Get()[lastKiller_.entry] = nowMs + 30 * MINUTE * IN_MILLISECONDS;
                     TellDebug(GetMaster(), "Leaving " + lastKiller_.name + " alone for a while - it killed me twice", "debug move");
+                    // A36: remember where too - the entry blacklist cannot stop a third death
+                    // from passive aggro in the same camp, but refusing the grind destinations
+                    // inside 80 yards can stop the bot from walking back in.
+                    AddDangerousSpot(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), 30 * MINUTE * IN_MILLISECONDS);
                     if (sPlayerbotAIConfig.hasLog("unreachable_targets.csv"))
                     {
                         time_t const nowLethal = time(nullptr);

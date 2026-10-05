@@ -747,6 +747,24 @@ public:
     void SetLastKiller(Unit* killer);
     const LastKillerInfo& GetLastKiller() const { return lastKiller_; }
     void ClearLastKiller() { lastKiller_ = LastKillerInfo(); }
+
+    // A36: where the same kind of creature killed this bot twice. The entry blacklist stops
+    // the bot from *targeting* that kind again, but it does not stop it from standing in the
+    // same camp and being attacked there a third and fourth time - measured 2026-10-05:
+    // 79% of the same-spot death clusters are "one killer, one spot, repeated kills"
+    // (Tharuputarr died eight times to Taskmaster Whipfang inside 52 minutes). Grind
+    // destinations inside the radius are refused for half an hour; quest objectives are
+    // deliberately unaffected, which is what keeps the rule from blocking a required quest.
+    struct DangerousSpot
+    {
+        uint32 mapId = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+        uint32 expireMs = 0;
+    };
+    void AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs);
+    bool IsDangerousSpotNear(uint32 mapId, float x, float y) const;
+
     // 10-minute avoidance window after a player kill (matches the lethal-kind
     // 15-min/30-min shape, shorter because the killer is one named player).
     void SetAvoidPlayerKiller(std::string const& name) { avoidPlayerKiller_ = name; avoidPlayerKillerMs_ = WorldTimer::getMSTime(); }
@@ -860,6 +878,7 @@ protected:
     std::vector<std::string> m_recordedMessages;
     ai::Event lastEvent;
     LastKillerInfo lastKiller_;
+    std::vector<DangerousSpot> dangerousSpots_;
     bool deathHandled_ = false; // this death was logged and counted; cleared when the bot is seen alive again
 
     // Evade probe (diagnostics only): samples the health and evade state of the creature

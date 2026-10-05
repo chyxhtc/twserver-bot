@@ -766,6 +766,14 @@ bool GrindTravelDestination::IsActive(Player* bot, const PlayerTravelInfo& info)
         unreachableKinds.erase(givenUpKind);
     }
 
+    // A36: nor into the camp where this kind already killed the bot twice. The blacklist
+    // above stops the bot from *targeting* the kind again; this stops it from grinding in
+    // the same spot and dying to passive aggro a third time. Quest objectives are a
+    // different destination type, so a required quest is never blocked by this.
+    if (WorldPosition* point = GetClosestPoint(info.getPosition()))
+        if (ai->IsDangerousSpotNear(point->GetMapId(), point->GetX(), point->GetY()))
+            return false;
+
     return GuidPosition(bot).IsHostileTo(GuidPosition(HIGHGUID_UNIT, GetEntry()), bot->GetInstanceId());
 }
 
