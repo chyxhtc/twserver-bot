@@ -39,6 +39,8 @@ static void LogZeroSpeedMountOnce(PlayerbotAI* ai, Player* bot)
 struct MountRetryState
 {
     bool pending = false;       // a cast was started and its duration has since elapsed
+    uint32 spellId = 0;         // the mount the pending cast used
+    time_t castAt = 0;          // when that cast started
     uint32 fails = 0;
     time_t parkedUntil = 0;
     time_t lastDiag = 0;
@@ -464,7 +466,11 @@ bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
     if (retry.pending)
     {
         retry.pending = false;
-        if (bot->IsMounted() || currentSpeed)
+        // Only judge a cast that has just finished. The flag can otherwise sit for minutes while
+        // the bot mounts, travels and dismounts, and a later Mount() call would count that as a
+        // failure - that both inflated the diagnostic and parked bots that mount perfectly well.
+        bool const fresh = retry.castAt != 0 && nowSec - retry.castAt <= 30;
+        if (!fresh || bot->IsMounted() || currentSpeed)
         {
             retry.fails = 0;
         }
@@ -474,7 +480,13 @@ bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
             if (nowSec - retry.lastDiag >= 300)
             {
                 retry.lastDiag = nowSec;
-                sPlayerbotAIConfig.logEvent(ai, "MountDiag", "unmounted-after-cast fails=" + std::to_string(retry.fails), std::to_string(bot->GetGUIDLow()));
+                sPlayerbotAIConfig.logEvent(ai, "MountDiag",
+                    "unmounted-after-cast mounted=0 aura=" + std::to_string(bot->HasAura(retry.spellId) ? 1 : 0) +
+                    " speed=" + std::to_string(currentSpeed) +
+                    " sec=" + std::to_string((long)(nowSec - retry.castAt)) +
+                    " fails=" + std::to_string(retry.fails) +
+                    " spell=" + std::to_string(retry.spellId),
+                    std::to_string(bot->GetGUIDLow()));
             }
             if (retry.fails >= 3)
             {
@@ -624,6 +636,8 @@ bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
         if (didMount)
         {
             retry.pending = true;
+            retry.spellId = mount.GetSpellId();
+            retry.castAt = nowSec;
 
             if (wasMoving)
             {
