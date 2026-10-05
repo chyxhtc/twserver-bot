@@ -452,6 +452,15 @@ bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
         return false;
     }
 
+    // A32 round 4: starting a mount cast while another cast is already running interrupts that
+    // cast. For the 3 s Swift Riding Turtle that shows up as "the cast never lands": compile-level
+    // accepted, aura absent seconds later. Never start a mount while a generic cast is in flight.
+    if (Spell* casting = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+    {
+        if (casting->getState() == SPELL_STATE_CASTING)
+            return false;
+    }
+
     // A32: evaluate the previous attempt and park mounting when it never lands.
     time_t const nowSec = time(nullptr);
     MountRetryState& retry = sMountRetry[bot->GetGUIDLow()];
@@ -483,6 +492,8 @@ bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
                 sPlayerbotAIConfig.logEvent(ai, "MountDiag",
                     "unmounted-after-cast mounted=0 aura=" + std::to_string(bot->HasAura(retry.spellId) ? 1 : 0) +
                     " speed=" + std::to_string(currentSpeed) +
+                    " moving=" + std::to_string(sServerFacade.isMoving(bot) ? 1 : 0) +
+                    " casting=" + std::to_string(bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) ? 1 : 0) +
                     " sec=" + std::to_string((long)(nowSec - retry.castAt)) +
                     " fails=" + std::to_string(retry.fails) +
                     " spell=" + std::to_string(retry.spellId),
