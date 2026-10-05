@@ -21,6 +21,49 @@ namespace
 // the quest was never handed in and the travel layer re-picked the same taker forever.
 // Knob: go_interaction_range (bot_diag.conf, hot reload), default 12 yards.
 inline float QuestGoRange() { return (float)trace::IntValue("go_interaction_range", 12); }
+
+// Does this game object stand for a quest objective the bot still has to do?
+//
+// A quest lists game-object objectives as negative ReqCreatureOrGOId entries, with the
+// progress in the quest status map. Nothing else in the world points at such an object:
+// it is not a quest giver and not a turn-in target, so it never shows up in
+// gameobject_involvedrelation and no quest menu is involved. On this core the only thing
+// that advances the objective is GameObject::Use running the object's event script
+// (gameobject_scripts / event_scripts), i.e. the same CMSG_GAMEOBJ_USE a player's
+// right-click sends.
+bool IsUnmetQuestObjectiveGo(Player* bot, GameObject* go)
+{
+    if (!bot || !go)
+        return false;
+
+    uint32 const entry = go->GetEntry();
+    QuestStatusMap& statuses = bot->getQuestStatusMap();
+    for (auto const& it : statuses)
+    {
+        QuestStatusData const& status = it.second;
+        if (status.m_rewarded || status.m_status != QUEST_STATUS_INCOMPLETE)
+            continue;
+
+        Quest const* quest = sObjectMgr.GetQuestTemplate(it.first);
+        if (!quest)
+            continue;
+
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        {
+            int32 const reqEntry = quest->ReqCreatureOrGOId[i];
+            uint32 const reqCount = quest->ReqCreatureOrGOCount[i];
+            if (reqEntry >= 0 || !reqCount)                 // positive = creature objective
+                continue;
+            if ((uint32)(-reqEntry) != entry)
+                continue;
+            if (status.m_creatureOrGOcount[i] >= reqCount)  // this objective is already done
+                continue;
+            return true;
+        }
+    }
+
+    return false;
+}
 }
 
 bool QuestAction::Execute(Event& event)
@@ -60,6 +103,31 @@ bool QuestAction::Execute(Event& event)
                 ++processed;
                 if (ProcessQuests(go))
                     return true;
+
+                // A quest-objective game object that is not a turn-in target has no handler
+                // anywhere in the module: nothing names it in gameobject_involvedrelation, the
+                // quest only lists its entry among the objectives, and the objective advances
+                // only when GameObject::Use runs the object's event script. Quest 498 "The
+                // Rescue" is the clearest case - its two objectives are the ball-and-chains
+                // 1721/1722, the travel layer routes bots to them all day (396 destination
+                // picks today), the objects exist and respawn every 300 s, and yet the whole
+                // pool has completed exactly one of the two objectives in a day (tw_char quest
+                // 498: 13 holders, mobcount 1, rewarded 0 - nobody has ever finished it).
+                // Send the same CMSG_GAMEOBJ_USE a player's right-click sends, but only while
+                // the travel target says this very object is where the bot means to be.
+                if (IsUnmetQuestObjectiveGo(bot, go))
+                {
+                    if (QuestTraceDue(ai, "qobjgouse-" + std::to_string(wantedEntry)))
+                        sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
+                            "entry=" + std::to_string(wantedEntry),
+                            "dist=" + std::to_string((int)bot->GetDistance(go)));
+
+                    std::unique_ptr<WorldPacket> packet(new WorldPacket(CMSG_GAMEOBJ_USE));
+                    *packet << go->getObjectGuid();
+                    bot->GetSession()->QueuePacket(packet.release());
+                    SetDuration(sPlayerbotAIConfig.globalCoolDown);
+                    return true;
+                }
             }
             // Visibility for the "travel target names a game object" path: without this the
             // block is indistinguishable from never running.
