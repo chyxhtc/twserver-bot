@@ -91,6 +91,27 @@ bool AddAllLootAction::AddLoot(Player* requester, ObjectGuid guid)
         ai->TellDebug(requester, "Add loot from " + ChatHelper::formatWorldobject(wo), "debug loot");
     }
 
+    // A39 probe: a quest chest that the bot is standing on is still not opened (Silithid Mound,
+    // GO 3685: LootGoSeen reports lootState 1 at 0 yards, yet no LootResponse ever fires). The
+    // three checks below already write sLog.outDebug, which is off on this realm, so mirror the
+    // verdict into the trace for game objects - one line per bot per object per 30 s.
+    if (guid.IsGameObject())
+    {
+        GameObject* probeGo = static_cast<GameObject*>(wo);
+        static std::map<std::pair<uint32, uint32>, time_t> lastGoProbe;
+        auto const probeKey = std::make_pair(bot->GetGUIDLow(), (uint32)probeGo->GetEntry());
+        time_t const probeNow = time(nullptr);
+        auto const probeIt = lastGoProbe.find(probeKey);
+        if (probeIt == lastGoProbe.end() || probeNow - probeIt->second >= 30)
+        {
+            lastGoProbe[probeKey] = probeNow;
+            std::string verdict = loot.IsEmpty() ? "loot-object-empty"
+                : (fabs(wo->getPositionZ() - bot->getPositionZ()) > INTERACTION_DISTANCE ? "z-too-far"
+                   : (loot.IsLootPossible(bot) ? "ok" : "is-loot-possible-false"));
+            sPlayerbotAIConfig.logEvent(ai, "AddLootGo", std::to_string(probeGo->GetEntry()), verdict);
+        }
+    }
+
     if (loot.IsEmpty())
     {
         ai->TellDebug(requester, "Loot object is empty.", "debug loot");
