@@ -332,7 +332,32 @@ bool CastMeleeAoeSpellAction::isUseful()
 bool CastEnchantItemAction::isPossible()
 {
     if (!CastSpellAction::isPossible())
+    {
+        // A35: a weapon imbue that never lands is invisible in the trace - the action is
+        // "useful" and its verdict is swallowed as "impossible", and the SpellCastResult
+        // that says why (computed one frame deeper in CanCastSpell) is thrown away.
+        // Ask for it again and log it, one line per bot per 30 s.
+        time_t const now = time(0);
+        time_t const last = AI_VALUE2(time_t, "manual time", "enchant denied at");
+        if (!last || now - last >= 30)
+        {
+            SET_AI_VALUE2(time_t, "manual time", "enchant denied at", now);
+
+            SpellCastResult result = SPELL_CAST_OK;
+            Unit* target = GetTarget();
+            if (target)
+                ai->CanCastSpell(GetSpellName(), target, 0, nullptr, true, false, false, &result);
+
+            Item* item = AI_VALUE2(Item*, "item for spell", GetSpellID());
+            std::string out = "denied: " + GetSpellName() +
+                " result=" + std::to_string((uint32)result) +
+                " item=" + std::to_string(item ? item->GetEntry() : 0) +
+                " inCombat=" + std::to_string(bot->IsInCombat() ? 1 : 0);
+            sPlayerbotAIConfig.logTraceTo("bot_engine_try-", ai, "CastDenied", out, "");
+        }
+
         return false;
+    }
 
     return GetSpellID() && AI_VALUE2(Item*, "item for spell", GetSpellID());
 }
