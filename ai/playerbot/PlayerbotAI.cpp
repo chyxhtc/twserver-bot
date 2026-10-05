@@ -1287,6 +1287,24 @@ void PlayerbotAI::OnDeath()
                         outLethal << stampLethal << "," << bot->GetName() << "," << bot->GetLevel() << ",LETHAL " << lastKiller_.name << "," << lastKiller_.level << ",lethal";
                         sPlayerbotAIConfig.log("unreachable_targets.csv", outLethal.str().c_str());
                     }
+
+                    // A31: arming the stamp is not enough while a travel target that points at
+                    // the same entry is still ACTIVE - the candidate gate only runs when a target
+                    // is chosen, so the bot walks straight back to the spot it just died on.
+                    // Measured 2026-10-05: Subish (level 20, Westfall) kept
+                    // travel_purpose=questobjective "loot item 829 from entry 122" through the
+                    // 08:28-08:40 snapshots although entry 122 had been stamped at 08:11:29 for
+                    // thirty minutes, and died there again at 08:28:10. Retire the target the same
+                    // way the GO blacklist and the full AI reset do.
+                    if (TravelTarget* travel = AI_VALUE(TravelTarget*, "travel target"))
+                    {
+                        if (travel->GetDestination() && (uint32)travel->GetDestination()->GetEntry() == lastKiller_.entry)
+                        {
+                            sTravelMgr.SetNullTravelTarget(travel);
+                            travel->SetStatus(TravelStatus::TRAVEL_STATUS_EXPIRED);
+                            travel->SetExpireIn(1000);
+                        }
+                    }
                 }
                 recentKillerMs_[lastKiller_.entry] = nowMs;
                 // Keep the map to the kinds seen inside the window; a long session would
