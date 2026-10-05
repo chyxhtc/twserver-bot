@@ -417,8 +417,49 @@ namespace ai
 
         virtual std::string Format() override
         {
-            return this->value;
+            return SafeValue();
         }
+
+        // M11: the stored string can be overwritten by a heap bug elsewhere. Measured 2026-10-05:
+        // one bot threw basic_string::_M_create every tick while copying its
+        // "manual string / future travel purpose" value, and the 06:03 core dump pinned the throw
+        // inside ChooseTravelTargetAction::SetBestTarget - exactly this read. ManualSetValue::Get()
+        // returns by value, so a corrupted string throws at every read and M8 then drops that bot's
+        // whole tick. Hand back an empty string instead and leave one trace line per bot per five
+        // minutes, so the field is named without hiding the corruption.
+        virtual std::string Get() override
+        {
+            return SafeValue();
+        }
+
+    private:
+        std::string SafeValue()
+        {
+            try
+            {
+                return ManualSetValue<std::string>::Get();
+            }
+            catch (std::exception const& e)
+            {
+                LogUnreadable(e.what() ? e.what() : "?");
+                return "";
+            }
+        }
+
+        // One line per value object per five minutes. The object belongs to one bot's AI context,
+        // so this rate-limits per bot; M8's "bot <name> tick threw" line in the same window tells
+        // which bot it was.
+        void LogUnreadable(char const* what)
+        {
+            time_t const now = time(nullptr);
+            if (lastLogged_ && now - lastLogged_ < 300)
+                return;
+            lastLogged_ = now;
+            sLog.outError("TortoiseBots: manual string '%s' unreadable (%s) - treated as empty (M11)",
+                this->name.c_str(), what);
+        }
+
+        time_t lastLogged_ = 0;
     };
 
     class StringManualSetSavedValue : public ManualSetValue<std::string>, public Qualified
