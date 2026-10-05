@@ -170,12 +170,22 @@ bool MoveToTravelTargetAction::Execute(Event& event)
             }
             else if (workEntry < 0)
             {
+                // A41 probe: three conditions have to line up for the use below (the object is
+                // in "nearest game objects no los", it is within INTERACTION_DISTANCE, and this
+                // action actually runs while the target sits in WORK). One line per bot per
+                // entry per 30 s says which of them is missing, instead of another blind round.
+                uint32 seen = 0;
+                float bestDist = -1.0f;
                 for (ObjectGuid const& guid : AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los"))
                 {
                     GameObject* go = ai->GetGameObject(guid);
                     if (!go || go->GetEntry() != (uint32)(-workEntry))
                         continue;
-                    if (bot->GetDistance(go) > INTERACTION_DISTANCE)
+                    ++seen;
+                    float const dist = bot->GetDistance(go);
+                    if (bestDist < 0.0f || dist < bestDist)
+                        bestDist = dist;
+                    if (dist > INTERACTION_DISTANCE)
                         continue;
 
                     bot->SetSelectionGuid(go->getObjectGuid());
@@ -205,6 +215,18 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                         "entry=" + std::to_string(go->GetEntry()),
                         "dist=" + std::to_string((int)bot->GetDistance(go)));
                     return true;
+                }
+
+                static std::map<std::pair<uint32, uint32>, time_t> lastWorkProbe;
+                auto const probeKey = std::make_pair(bot->GetGUIDLow(), (uint32)(-workEntry));
+                time_t const probeNow = time(nullptr);
+                auto const probeIt = lastWorkProbe.find(probeKey);
+                if (probeIt == lastWorkProbe.end() || probeNow - probeIt->second >= 30)
+                {
+                    lastWorkProbe[probeKey] = probeNow;
+                    sPlayerbotAIConfig.logEvent(ai, "GoWorkProbe",
+                        "entry=" + std::to_string(-workEntry) + " seen=" + std::to_string(seen),
+                        "best=" + (bestDist < 0.0f ? std::string("none") : std::to_string((int)bestDist)));
                 }
             }
         }
