@@ -404,8 +404,14 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
     // without producing anything is refused for half an hour - the bot has to stop feeding
     // that camp. Objectives it is still progressing on are left alone (DangerousSpot::
     // blocksQuests is only set on the no-output path).
+    // The radius is 200 yards here, not the 80 the grind fence uses: measured 2026-10-05,
+    // of 132 lethal stamps only 39 had any destination within 80 yards in the next 30
+    // minutes, 48% within 160 and about 55% within 200 - a destination is a spawn point,
+    // not the pixel the bot died on, so the 80 yard fence could not reach most of the
+    // walk-backs. This branch keeps the no-output guard, so a bot that is still gaining
+    // here is not fenced off.
     if (WorldPosition* point = GetClosestPoint(info.getPosition()))
-        if (ai->IsDangerousSpotNear(point->GetMapId(), point->GetX(), point->GetY(), true))
+        if (ai->IsDangerousSpotNear(point->GetMapId(), point->GetX(), point->GetY(), true, 200.0f))
         {
             time_t const now = time(nullptr);
             time_t const last = context->GetValue<time_t>("manual time", "quest spot veto logged at")->Get();

@@ -1246,7 +1246,7 @@ void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durati
     dangerousSpots_.push_back(spot);
 }
 
-bool PlayerbotAI::IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly) const
+bool PlayerbotAI::IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly, float radius) const
 {
     uint32 const now = WorldTimer::getMSTime();
 
@@ -1258,7 +1258,7 @@ bool PlayerbotAI::IsDangerousSpotNear(uint32 mapId, float x, float y, bool quest
             continue;
         float const dx = spot.x - x;
         float const dy = spot.y - y;
-        if (dx * dx + dy * dy <= 80.0f * 80.0f)
+        if (dx * dx + dy * dy <= radius * radius)
             return true;
     }
 
@@ -1379,7 +1379,11 @@ void PlayerbotAI::OnDeath()
                         char stampLethal[32];
                         strftime(stampLethal, sizeof(stampLethal), "%Y-%m-%d %H:%M:%S", localtime(&nowLethal));
                         std::ostringstream outLethal;
-                        outLethal << stampLethal << "," << bot->GetName() << "," << bot->GetLevel() << ",LETHAL " << lastKiller_.name << "," << lastKiller_.level << ",lethal";
+                        // A36: the stamp row also carries whether the no-output guard armed and where
+                        // the bot died, so the 200 yard quest fence can be checked against the
+                        // destination the bot actually picks next without another deploy.
+                        outLethal << stampLethal << "," << bot->GetName() << "," << bot->GetLevel() << ",LETHAL " << lastKiller_.name << "," << lastKiller_.level << ",lethal"
+                                  << (noOutput ? ",no-output" : ",progress") << " at " << (int)bot->GetPositionX() << " " << (int)bot->GetPositionY();
                         sPlayerbotAIConfig.log("unreachable_targets.csv", outLethal.str().c_str());
                     }
 

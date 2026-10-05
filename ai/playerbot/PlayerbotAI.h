@@ -771,7 +771,7 @@ public:
         bool blocksQuests = false;
     };
     void AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs, bool blocksQuests = false);
-    bool IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly = false) const;
+    bool IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly = false, float radius = 80.0f) const;
 
     // 10-minute avoidance window after a player kill (matches the lethal-kind
     // 15-min/30-min shape, shorter because the killer is one named player).
