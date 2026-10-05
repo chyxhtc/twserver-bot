@@ -10,9 +10,12 @@
 // whatever handler was there before, so the next occurrence names the frame. Offsets
 // printed as module(+0x...) resolve against the staged .so with addr2line.
 #include <exception>
+#include <cxxabi.h>
 #include <cstdio>
 #include <cstdlib>
 #include <execinfo.h>
+#include <string>
+#include <typeinfo>
 
 namespace
 {
@@ -20,28 +23,25 @@ std::terminate_handler g_previousTerminateHandler = nullptr;
 
 void TortoiseBotsTerminateHandler()
 {
-    char const* what = "unknown";
-    try
-    {
-        if (std::current_exception())
-            std::rethrow_exception(std::current_exception());
-    }
-    catch (std::exception const& e)
-    {
-        what = e.what();
-    }
-    catch (...)
-    {
-    }
+    // M12: this handler used to rethrow the in-flight exception to read its what(), and gave
+    // that text back through a char const* that dangled as soon as the catch block ended. Both
+    // 2026-10-05 crashes faulted inside this handler itself - 19:58 with RIP inside
+    // libstdc++'s std::rethrow_exception (called on the line above), 21:15 inside libc's
+    // abort - so the handler never printed the reason and the server died with a 5 GB dump
+    // instead of a named exception. Name the exception through the C++ ABI instead: no
+    // rethrow, no borrowed pointer, nothing that can fault before the line is out.
+    std::type_info* typeInfo = abi::__cxa_current_exception_type();
+    std::string const typeName = typeInfo && typeInfo->name() ? typeInfo->name() : "unknown";
 
-    std::fprintf(stderr, "TortoiseBots: terminate handler: uncaught exception: %s\n", what);
+    std::fprintf(stderr, "TortoiseBots: terminate handler: uncaught exception of type %s\n", typeName.c_str());
     void* frames[64];
     int const n = backtrace(frames, 64);
     backtrace_symbols_fd(frames, n, fileno(stderr));
     std::fflush(stderr);
 
-    if (g_previousTerminateHandler)
-        g_previousTerminateHandler();
+    // Deliberately do not hand over to the previous handler: the libstdc++ verbose handler
+    // names the exception by rethrowing it, which is the very path that faulted above.
+    // The type name and the backtrace are already out; aborting from here keeps the death clean.
     std::abort();
 }
 } // namespace
