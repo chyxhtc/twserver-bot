@@ -87,37 +87,55 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                         if (quest && quest->ReqItemId[objective] &&
                             npc->HasFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR))
                         {
-                            // A37 probe: the travel map lists vendors whose stock comes from a
-                            // vendor template (creature_template.vendor_id) next to ones with
-                            // their own npc_vendor rows, and the two are not interchangeable at
-                            // the counter. Measured 2026-10-05: quest 116 (Dry Times) never
-                            // bought item 1939 - Rolor loops at 60889, a template-only vendor -
-                            // while all 18 successful purchases of the day were at creatures
-                            // with vendor_id 0. Log what the counter would see, once per bot per
-                            // vendor per five minutes.
-                            static std::unordered_map<std::string, time_t> lastVendorProbe;
+                            // A37 probe, second round. Two facts had to be separated: whether the
+                            // counter can serve the item at all, and whether the bot's buy action
+                            // refuses it. WorldSession::SendListInventory merges the creature's own
+                            // npc_vendor list with the vendor template named by
+                            // creature_template.vendor_id, so own=0 alone only means "this NPC has
+                            // no rows of its own" - measured 2026-10-05, quest 116 (Dry Times)
+                            // never bought item 1939 at a template-only vendor (465, 60889) while
+                            // every successful purchase that day was at a vendor with vendor_id 0.
+                            // Report both lists, and log the attempt when the buy still fails.
+                            uint32 const wantedItem = quest->ReqItemId[objective];
+
+                            uint32 ownItems = 0;
+                            bool ownHas = false;
+                            if (VendorItemData const* own = sObjectMgr.GetNpcVendorItemList(workEntry))
+                            {
+                                ownItems = own->m_items.size();
+                                for (auto vItem : own->m_items)
+                                    if (vItem && vItem->item == wantedItem)
+                                        ownHas = true;
+                            }
+
+                            uint32 templItems = 0;
+                            bool templHas = false;
+                            if (CreatureInfo const* cInfo = sObjectMgr.GetCreatureTemplate(workEntry))
+                                if (cInfo->vendor_id)
+                                    if (VendorItemData const* templ = sObjectMgr.GetNpcVendorTemplateItemList(cInfo->vendor_id))
+                                    {
+                                        templItems = templ->m_items.size();
+                                        for (auto vItem : templ->m_items)
+                                            if (vItem && vItem->item == wantedItem)
+                                                templHas = true;
+                                    }
+
                             std::string const probeKey =
                                 std::to_string(bot->GetGUIDLow()) + ":" + std::to_string(workEntry);
                             time_t const probeNow = time(nullptr);
+                            std::string const lists =
+                                "vendor=" + std::to_string(workEntry) + "|own=" + std::to_string(ownItems) +
+                                "|ownHas=" + (ownHas ? "1" : "0") + "|templ=" + std::to_string(templItems) +
+                                "|templHas=" + (templHas ? "1" : "0");
+
+                            static std::unordered_map<std::string, time_t> lastVendorProbe;
                             auto const probeIt = lastVendorProbe.find(probeKey);
                             if (probeIt == lastVendorProbe.end() || probeNow - probeIt->second >= 300)
                             {
                                 lastVendorProbe[probeKey] = probeNow;
-
-                                uint32 ownItems = 0;
-                                bool hasItem = false;
-                                if (VendorItemData const* own = sObjectMgr.GetNpcVendorItemList(workEntry))
-                                {
-                                    ownItems = own->m_items.size();
-                                    for (auto vItem : own->m_items)
-                                        if (vItem && vItem->item == quest->ReqItemId[objective])
-                                            hasItem = true;
-                                }
-
                                 sPlayerbotAIConfig.logEvent(ai, "QuestVendorProbe",
-                                    std::to_string(questDest->GetQuestId()) + "|item=" + std::to_string(quest->ReqItemId[objective]),
-                                    "vendor=" + std::to_string(workEntry) + "|own=" + std::to_string(ownItems) +
-                                    "|has=" + (hasItem ? "1" : "0"));
+                                    std::to_string(questDest->GetQuestId()) + "|item=" + std::to_string(wantedItem),
+                                    lists);
                             }
 
                             bot->SetSelectionGuid(npc->getObjectGuid());
@@ -126,9 +144,22 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             {
                                 sPlayerbotAIConfig.logEvent(ai, "QuestBuyAtVendor", quest->GetTitle(),
                                     std::to_string(questDest->GetQuestId()) + "|item=" +
-                                    std::to_string(quest->ReqItemId[objective]) + "|vendor=" +
+                                    std::to_string(wantedItem) + "|vendor=" +
                                     std::to_string(workEntry));
                                 return true;
+                            }
+
+                            // A37: the shop was asked for the item and the bot walked away anyway.
+                            // One line per bot per vendor per five minutes, so the next read can tell
+                            // "the counter did not have it" from "the buy decision refused it".
+                            static std::unordered_map<std::string, time_t> lastBuyFailed;
+                            auto const failedIt = lastBuyFailed.find(probeKey);
+                            if (failedIt == lastBuyFailed.end() || probeNow - failedIt->second >= 300)
+                            {
+                                lastBuyFailed[probeKey] = probeNow;
+                                sPlayerbotAIConfig.logEvent(ai, "QuestBuyFailed",
+                                    std::to_string(questDest->GetQuestId()) + "|item=" + std::to_string(wantedItem),
+                                    lists);
                             }
                         }
                     }
