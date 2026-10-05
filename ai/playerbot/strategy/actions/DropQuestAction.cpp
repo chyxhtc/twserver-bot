@@ -172,10 +172,26 @@ bool CleanQuestLogAction::HasRequiredDeliverItems(Quest const* quest)
 
 bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bool upkeep)
 {
-    if (!quest || quest->GetRequiredClasses())
+    if (!quest)
         return false;
+
+    // Class quests keep their log slot against every rule below: their items can come from
+    // class-specific sources the generic item scan cannot see, and a grey class quest is still
+    // worth keeping. The one exception is the completed-quest taker check at the bottom of this
+    // function: a finished quest whose taker the structural gates can never offer cannot be
+    // handed in by anybody, and protecting it there only freezes the bot. Measured 2026-10-05:
+    // quest 42055 (priest, RequiredClasses=16) was completed by Drebon and Stunograr; its taker
+    // creature 63099 has no spawn row in the world at all, so TravelMgr never builds a
+    // destination for it (entry guidps has no entry for the npc), the hand-in drain latch kept
+    // both bots searching takers only, and once the log reached the cap they sat parked in the
+    // Barrens at about 3 xp/h. The A7/A8 strike paths skip class quests on purpose, so this
+    // branch is their only way out.
+    bool const classQuest = quest->GetRequiredClasses() != 0;
+
     if (status == QUEST_STATUS_INCOMPLETE)
     {
+        if (classQuest)
+            return false;
         // A quest whose entire objective is a set of items the module cannot source anywhere
         // is unroutable: it never gets a destination, so the bot can never finish it, and it
         // still costs a quest-log slot and still tells the outgrown-zone rule that there is
@@ -201,6 +217,8 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
     }
     if (status == QUEST_STATUS_COMPLETE && upkeep && !bot->CanRewardQuest(quest, false))
     {
+        if (classQuest)
+            return false;
         if (quest->GetRewOrReqMoney() < 0 &&
             bot->GetMoney() < uint32(-quest->GetRewOrReqMoney()))
             return false;

@@ -1356,12 +1356,15 @@ namespace ai
                 if (!questId || (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE))
                     continue;
                 Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
-                if (!quest || quest->GetRequiredClasses())
+                if (!quest)
                     continue;
+                bool const classQuest = quest->GetRequiredClasses() != 0;
                 bool grey = quest->GetQuestLevel() > 0 &&
                     bot->GetLevel() > questgrey::GreyBelowLevel(bot, quest);
                 if (status == QUEST_STATUS_INCOMPLETE)
                 {
+                    if (classQuest)
+                        continue;
                     if (!grey)
                         continue;
                     if (!quest->HasSpecialFlag(QUEST_SPECIAL_FLAG_DELIVER))
@@ -1370,8 +1373,13 @@ namespace ai
                         if (quest->ReqItemCount[i] && bot->GetItemCount(quest->ReqItemId[i]) < quest->ReqItemCount[i])
                             return true;
                 }
-                else if (!bot->CanRewardQuest(quest, false))
+                else if (classQuest || !bot->CanRewardQuest(quest, false))
                 {
+                    // A completed class quest can now be dropped by the deterministic taker
+                    // check in CleanQuestLogAction::IsDroppable, but that action only runs when
+                    // this pre-scan lets the trigger fire. Reporting it here is only an
+                    // invitation to run: the action re-checks and backs off for five minutes
+                    // when nothing is droppable (NoteCleanNoOp).
                     if (quest->GetRewOrReqMoney() < 0 &&
                         bot->GetMoney() < uint32(-quest->GetRewOrReqMoney()))
                         continue;
