@@ -304,6 +304,18 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
                         reqItem = lockInfo->Index[i];
                         this->guid = guid;
                     }
+                    else
+                    {
+                        // A39: a KEY_ITEM slot with index 0 means "no key is named", not "cannot be
+                        // opened". Lock.dbc 72 - the Silithid Mound's lock (gameobject_template
+                        // 3685, data0=72) - is exactly that: slot1 is type=1 index=0. Requiring
+                        // index > 0 here left this->guid empty, so the mound was never queued and
+                        // never opened; quest 868 (Egg Hunt) therefore never got a single egg, for
+                        // all eight holders, all day (LootAttempt on its 13 spawns: zero).
+                        if (debug)
+                            ai->TellDebug(ai->GetMaster(), "Go has key lock without a named key.", "debug loot");
+                        this->guid = guid;
+                    }
                     break;
                 case LOCK_KEY_SKILL:
                     if (goId == 13891 || goId == 19535) // Serpentbloom
