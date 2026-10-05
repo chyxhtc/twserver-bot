@@ -44,8 +44,15 @@ bool BuyAction::Execute(Event& event)
             //For each item the bot checks again if an item is useful.
             //Bot will buy until no useful items are left.
 
+            // A37: "buy the useful things this vendor has" has to look in both places a vendor's
+            // stock can live - the creature's own npc_vendor rows and the vendor template named
+            // by creature_template.vendor_id. This branch read only the first one and kept the
+            // second as a null constant, so a vendor whose stock comes only from a template was
+            // skipped outright. Measured 2026-10-05 21:34 at 60889 (quest 116 needs item 1939):
+            // QuestVendorProbe reported own=0 templ=18 templHas=1 and QuestBuyFailed landed on
+            // the same visit, i.e. the counter had the item and the bot never asked for it.
             VendorItemData const* tItems = pCreature->GetVendorItems();
-            VendorItemData const* vItems = {};
+            VendorItemData const* vItems = pCreature->GetVendorTemplateItems();
             if (!tItems && !vItems)
                 continue;
 
