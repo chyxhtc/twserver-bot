@@ -8,6 +8,7 @@
 #include "Battlegrounds/BattleGroundWS.h"
 #include "playerbot/TravelMgr.h"
 
+#include <ctime>
 #include <map>
 
 using namespace ai;
@@ -27,6 +28,23 @@ static void LogZeroSpeedMountOnce(PlayerbotAI* ai, Player* bot)
     sZeroSpeedMountLogged[guid] = true;
     sPlayerbotAIConfig.logEvent(ai, "MountDiag", "mounted=1 speed=0", std::to_string(guid));
 }
+
+// A32: a mount cast can be accepted by the core (Spell::prepare returns SPELL_CAST_OK) and still
+// leave the bot unmounted. Measured 2026-10-05 with the Swift Riding Turtle (30174): Robarn,
+// Gradrepaek and Kraenaevor re-cast the same mount about every 4 s for 45+ minutes while standing
+// still with zero xp, and the zero-speed guard above never tripped, so the bot was not mounted at
+// cast time. Three consecutive attempts that end with the bot still unmounted park mounting for
+// 15 minutes so the action stops consuming the AI tick. One trace line per evaluation window
+// records the live values; remove this together with the A32 fix.
+struct MountRetryState
+{
+    bool pending = false;       // a cast was started and its duration has since elapsed
+    uint32 fails = 0;
+    time_t parkedUntil = 0;
+    time_t lastDiag = 0;
+};
+
+static std::map<uint32, MountRetryState> sMountRetry;
 
 bool CheckMountStateAction::Execute(Event& event)
 {
@@ -432,6 +450,42 @@ bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
         return false;
     }
 
+    // A32: evaluate the previous attempt and park mounting when it never lands.
+    time_t const nowSec = time(nullptr);
+    MountRetryState& retry = sMountRetry[bot->GetGUIDLow()];
+
+    if (retry.parkedUntil)
+    {
+        if (nowSec < retry.parkedUntil)
+            return false;
+        retry.parkedUntil = 0;
+    }
+
+    if (retry.pending)
+    {
+        retry.pending = false;
+        if (bot->IsMounted() || currentSpeed)
+        {
+            retry.fails = 0;
+        }
+        else
+        {
+            retry.fails++;
+            if (nowSec - retry.lastDiag >= 300)
+            {
+                retry.lastDiag = nowSec;
+                sPlayerbotAIConfig.logEvent(ai, "MountDiag", "unmounted-after-cast fails=" + std::to_string(retry.fails), std::to_string(bot->GetGUIDLow()));
+            }
+            if (retry.fails >= 3)
+            {
+                retry.fails = 0;
+                retry.parkedUntil = nowSec + 15 * 60;
+                sPlayerbotAIConfig.logEvent(ai, "MountParked", "3 casts, still unmounted", std::to_string(bot->GetGUIDLow()));
+                return false;
+            }
+        }
+    }
+
     uint32 maxSpeed = 9999;
 
     if (limitSpeedToGroup && bot->GetGroup() && ai->IsGroupLeader())
@@ -569,6 +623,8 @@ bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
 
         if (didMount)
         {
+            retry.pending = true;
+
             if (wasMoving)
             {
                 ai->HandleCommand(CHAT_MSG_WHISPER, "queue do check mount state", *bot);
