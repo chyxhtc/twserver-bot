@@ -8,9 +8,25 @@
 #include "Battlegrounds/BattleGroundWS.h"
 #include "playerbot/TravelMgr.h"
 
+#include <map>
+
 using namespace ai;
 
 uint64 extractGuid(WorldPacket& packet);
+
+// A32 temporary diagnostic: a zero-speed mount aura (Swift Riding Turtle, spell 30174) can
+// leave "current mount speed" at 0 while the core still reports the player as mounted. Log
+// the first time each bot is seen in that state; remove together with the guard in Mount().
+static std::map<uint32, bool> sZeroSpeedMountLogged;
+
+static void LogZeroSpeedMountOnce(PlayerbotAI* ai, Player* bot)
+{
+    uint32 const guid = bot->GetGUIDLow();
+    if (sZeroSpeedMountLogged[guid])
+        return;
+    sZeroSpeedMountLogged[guid] = true;
+    sPlayerbotAIConfig.logEvent(ai, "MountDiag", "mounted=1 speed=0", std::to_string(guid));
+}
 
 bool CheckMountStateAction::Execute(Event& event)
 {
@@ -404,6 +420,17 @@ float CheckMountStateAction::MountBreakEvenDistance() const
 bool CheckMountStateAction::Mount(Player* requester, bool limitSpeedToGroup)
 {
     uint32 currentSpeed = AI_VALUE2(uint32, "current mount speed", "self target");
+
+    // A zero-speed mount aura makes the speed value read 0 while the core still reports the
+    // player as mounted (Swift Riding Turtle 30174, whose MOD_INCREASE_MOUNTED_SPEED base is 0).
+    // Without this guard Mount() takes the bot for unmounted and re-casts the same mount every
+    // tick; measured 2026-10-05, Robarn/Gradrepaek/Kraenaevor re-cast the turtle about every
+    // 3 s for 45+ minutes at a frozen position with the aura present (A32).
+    if (!currentSpeed && bot->IsMounted())
+    {
+        LogZeroSpeedMountOnce(ai, bot);
+        return false;
+    }
 
     uint32 maxSpeed = 9999;
 
