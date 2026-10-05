@@ -207,6 +207,36 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                         return ai->DoSpecificAction("talk to quest giver",
                             Event("use game object", go->getObjectGuid(), bot), true);
 
+                    // A41 second half: a plain use is not enough for an objective that asks for
+                    // a SPELL. Quest 498's two objectives both carry ReqSpellCast = 3366 - the
+                    // Dull Iron Key's on-use spell - and Player::CastedCreatureOrGO skips every
+                    // objective whose ReqSpell does not match the cast. GameObject::Use credits
+                    // through RewardPlayerAndGroupAtCast with spell id 0, so the count cannot
+                    // move that way; Spell::DoAllEffectOnTarget(GOTargetInfo) credits with the
+                    // spell that was actually cast. Measured 2026-10-06 00:01: Faecrash sent 34
+                    // uses of 1721 from 1 yard (dist=0) and quest 498 stayed at 1/2 for the whole
+                    // pool. So when the object's lock names a key item the bot is carrying, use
+                    // that item on the object - its spell is the one the quest asks for.
+                    if (LockEntry const* lockInfo = sLockStore.LookupEntry(go->GetGOInfo()->GetLockId()))
+                    {
+                        for (int j = 0; j < 8; ++j)
+                        {
+                            if (lockInfo->Type[j] != LOCK_KEY_ITEM || !lockInfo->Index[j])
+                                continue;
+                            if (!bot->HasItemCount(lockInfo->Index[j], 1, false))
+                                continue;
+
+                            bot->SetSelectionGuid(go->getObjectGuid());
+                            sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
+                                "entry=" + std::to_string(go->GetEntry()),
+                                "key=" + std::to_string(lockInfo->Index[j]));
+                            bool const used = ai->DoSpecificAction("use", Event("do loot",
+                                chat->formatQItem(lockInfo->Index[j]) + " " + chat->formatGameobject(go)));
+                            SetDuration(sPlayerbotAIConfig.globalCoolDown);
+                            return used;
+                        }
+                    }
+
                     std::unique_ptr<WorldPacket> packet(new WorldPacket(CMSG_GAMEOBJ_USE));
                     *packet << go->getObjectGuid();
                     bot->GetSession()->QueuePacket(packet.release());
@@ -214,6 +244,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
                         "entry=" + std::to_string(go->GetEntry()),
                         "dist=" + std::to_string((int)bot->GetDistance(go)));
+                    SetDuration(sPlayerbotAIConfig.globalCoolDown);
                     return true;
                 }
 
