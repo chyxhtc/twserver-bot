@@ -684,6 +684,21 @@ bool UseAction::UseItemInternal(Player* requester, uint32 itemId, Unit* unit, Ga
 
             const SpellCastResult result = spell->ForceSpellStart(&targets);
 
+            // A41 probe, arm "castres" (default off). Quest 498 "The Rescue" credits its two
+            // ball-and-chain objectives only from a real cast of 3366, the on-use spell both keys
+            // carry (Player::CastedCreatureOrGO compares ReqSpell to the cast spell, and the plain
+            // CMSG_GAMEOBJ_USE path passes 0). The travel branch did everything right - Khalku,
+            // 3 yards from 1722 with 3499 in the bag, logged key=3499|used=0 at 18:26:07 on
+            // 2026-10-06 - so the last question is which SpellCastResult the core returned. Keys
+            // used on a game object are rare, so this needs no throttle.
+            if (gameObjectTarget && result != SPELL_CAST_OK && proto->Class == ITEM_CLASS_KEY &&
+                sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "castres", 0) != 0)
+            {
+                sPlayerbotAIConfig.logEvent(ai, "ItemUseCastResult",
+                    "item=" + std::to_string(itemId) + "|go=" + std::to_string(gameObjectTarget->GetEntry()),
+                    "res=" + std::to_string((uint32)result));
+            }
+
             // Check for using item on trade item
             bool successCast = result == SPELL_CAST_OK;
             if (result == SPELL_FAILED_DONT_REPORT && (targets.m_targetMask & TARGET_FLAG_TRADE_ITEM))
