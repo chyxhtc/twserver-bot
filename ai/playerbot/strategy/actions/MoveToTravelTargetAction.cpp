@@ -442,7 +442,20 @@ bool MoveToTravelTargetAction::Execute(Event& event)
             sPlayerbotAIConfig.logEvent(ai, "TravelMoveFailed", AI_VALUE2(std::string, "manual string", "future travel purpose"),
                 std::to_string((int32)botLocation.distance(location)));
 
-        if (target->IsMaxRetry(true))
+        // A49: a long same-continent quest leg that will not path is almost never a short
+        // obstacle the bot can walk around - it is a hole in the route. Measured 2026-10-06:
+        // Drebon's Wetlands -> Hillsbrad leg (4152 yards) returned "clipped-to-one-gap" and then
+        // "collapsed" with pathPoints=0, he burned his whole retry budget shuttling through
+        // hostile ground between Wetlands and Arathi, and died three times in the attempt
+        // (Mosshide Mistweaver, Dark Iron Tunneler x2). The normal threshold is >10 move
+        // retries; for legs of 2000 yards or more let the same last-mile teleport run after 6,
+        // so the retries are not spent walking back and forth. The per-bot 5 minute stamp below
+        // is unchanged, so this cannot become a teleport loop.
+        bool const longQuestLeg = target->GetDestination() &&
+            dynamic_cast<QuestTravelDestination*>(target->GetDestination()) != nullptr &&
+            botLocation.distance(location) >= 2000.0f;
+
+        if (target->IsMaxRetry(true) || (longQuestLeg && target->GetRetryCount(true) >= 6))
         {
             // Last-mile rescue (arm knob "lastmile"): a quest destination can be perfectly
             // valid and still unpathable for the final stretch - measured overnight, the
