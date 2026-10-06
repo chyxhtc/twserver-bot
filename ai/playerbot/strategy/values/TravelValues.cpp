@@ -21,6 +21,24 @@ EntryGuidps EntryGuidpsValue::Calculate()
         {
             aGuidP.FetchArea();
             guidps[aGuidP.GetEntry()].push_back(aGuidP);
+
+            // A48: a spawn point can produce up to four different creature entries - cmangos
+            // stores them in CreatureData::creature_id[] and Creature::ChooseCreatureId() picks
+            // one at random on every respawn. Indexing only creature_id[0] hides every alternate,
+            // and those alternates are real quest targets: 590 Defias Looter (84 spawn points),
+            // 1162 (71), 2241 (23), 2013 Gnarlpine Avenger (25), 4024 Bloodfury Slayer (37),
+            // 4025 Bloodfury Ambusher (42) and 11911 Grimtotem Mercenary (50) all have zero rows
+            // of their own, so quests 13 / 224 / 505 / 1057 / 6548 / 40205 had no destination at
+            // all and their objectives only advanced when a bot happened to grind next to the
+            // partner spawn (measured 2026-10-06: Jartorrn 15/15 on 590 but at 3/15 on the other
+            // objective, Tharurthyrf 6/6 on 11911 - progress exists, it is just accidental).
+            // The stored position keeps the primary entry's guid because that is the entry the
+            // spawn actually creates; every consumer of a destination point uses its
+            // coordinates, and QuestObjectiveTravelDestination::IsActive checks liveness through
+            // "possible targets" by the objective's own entry, not through this guid.
+            for (uint32 altEntry : creatureDataPair->second.creature_id)
+                if (altEntry && altEntry != (uint32)aGuidP.GetEntry())
+                    guidps[altEntry].push_back(aGuidP);
         }
     }
 
