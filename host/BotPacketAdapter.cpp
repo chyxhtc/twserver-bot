@@ -3,6 +3,7 @@
 #include "../runtime/BotManager.h"
 #include "../runtime/PlayerbotAIStorage.h"
 #include "playerbot/PlayerbotAI.h"
+#include "playerbot/PlayerbotAIConfig.h"
 
 #include "Player.h"
 #include "WorldPacket.h"
@@ -66,6 +67,20 @@ void LogPacketHookThrow(char const* hook, Player* who, char const* what)
 
     sLog.outError("TortoiseBots: packet hook %s threw for %s: %s (suppressed %u in the last minute) | %s",
         hook, who ? who->GetName() : "<session>", what ? what : "?", suppressed, backtraceLine.str().c_str());
+
+    // M12 verification path: same reason as the tick-throw mirror in runtime/PlayerbotAIAdapter.cpp
+    // - the sLog.outError above is not in any file under storage/mangosd/logs/, so the stated
+    // criterion could not be checked from files. Mirror it into bot_trace instead.
+    if (PlayerbotAI* packetAi = who ? PlayerbotAIStorage::Instance().GetAI(who) : nullptr)
+    {
+        std::string bt = backtraceLine.str();
+        if (bt.size() > 1500)
+            bt.resize(1500);
+
+        sPlayerbotAIConfig.logEvent(packetAi, "PacketHookThrow",
+            "hook=" + std::string(hook) + "|who=" + (who ? who->GetName() : "<session>"),
+            "what=" + std::string(what ? what : "?") + "|suppressed=" + std::to_string(suppressed) + "|bt=" + bt);
+    }
 }
 
 } // namespace

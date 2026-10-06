@@ -128,6 +128,22 @@ void PlayerbotAIAdapter::LogTickException(char const* what)
 
     sLog.outError("TortoiseBots: bot %s (%u) tick threw: %s (suppressed %u in the last minute) | %s",
         bot_->GetName(), bot_->GetGUIDLow(), what ? what : "?", suppressed, backtraceLine.str().c_str());
+
+    // M11 verification path. The line above goes to the container's stdout, and nothing under
+    // _twserver\tortoise-deploy\storage\mangosd\logs\ ever contains it: measured 2026-10-06, the
+    // whole directory has no "threw" at all and errors.log has no TortoiseBots line, so M11/M12's
+    // stated criterion ("the line shows up in errors.log") could not be checked from files. Mirror
+    // it into bot_trace, which is what every window comparison here actually reads.
+    if (ai_)
+    {
+        std::string bt = backtraceLine.str();
+        if (bt.size() > 1500)
+            bt.resize(1500);
+
+        sPlayerbotAIConfig.logEvent(ai_, "BotTickThrow",
+            "guid=" + std::to_string(bot_ ? bot_->GetGUIDLow() : 0),
+            "what=" + std::string(what ? what : "?") + "|suppressed=" + std::to_string(suppressed) + "|bt=" + bt);
+    }
 }
 
 bool PlayerbotAIAdapter::IsUsable() const
