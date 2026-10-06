@@ -241,6 +241,15 @@ bool RequiresItemToUse(const ItemPrototype* itemProto, PlayerbotAI* ai, Player* 
     if (itemProto->Class == ITEM_CLASS_QUEST)
         return true;
 
+    // Keys are the cast item: Spell::CanOpenLock compares the lock's LOCK_KEY_ITEM index with
+    // m_CastItem, so a key whose item is not attached to the cast can never open anything. With
+    // the random-bot item cheat on (AiPlayerbot.RndBotCheats = ...,item,...) this function used to
+    // return false for class 13, itemUsed stayed null, SetCastItem was skipped and the cast was
+    // refused - measured 2026-10-06 18:26:07, Khalku 3 yards from quest 498's ball-and-chain 1722
+    // with both keys in the bag: key=3499|used=0. Quest items (class 12, e.g. 5059 Digging Claw)
+    // already took the branch above, which is why the same shape worked for A39's chest.
+    if (itemProto->Class == ITEM_CLASS_KEY)
+        return true;
 
     return false;
 }
