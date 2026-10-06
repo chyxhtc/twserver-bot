@@ -49,13 +49,7 @@ void LootSkipProbe(Player* bot, PlayerbotAI* ai, Creature* creature, uint32 reas
         return;
 
     uint32 const entry = creature->GetEntry();
-    uint64 const key = ((uint64)bot->GetGUIDLow() << 32) | ((uint64)entry << 8) | reasonCode;
-    static std::map<uint64, time_t> lastSkip;
     time_t const now = time(nullptr);
-    auto const it = lastSkip.find(key);
-    if (it != lastSkip.end() && now - it->second < 20)
-        return;
-    lastSkip[key] = now;
 
     uint32 needed = 0;
     for (uint32 itemId : GAI_VALUE2(std::list<uint32>, "entry loot list", entry))
@@ -71,18 +65,66 @@ void LootSkipProbe(Player* bot, PlayerbotAI* ai, Creature* creature, uint32 reas
 
     Loot const& loot = creature->loot;
     Unit* tapper = creature->GetLootRecipient();
+
+    // The item ids behind the two counts, so the platform can compare what the corpse holds
+    // with what this bot still wants (2026-10-06 review). An empty pview means no per-player
+    // view was ever built for this bot on this corpse - exactly what a bot that did not have
+    // the quest at kill time looks like, which the counts alone cannot tell apart from "the
+    // item is somebody else's".
+    std::string qids;
+    for (LootItem const& item : loot.m_questItems)
+        qids += (qids.empty() ? "" : ",") + std::to_string(item.itemid);
+
+    std::string pview;
+    auto const view = loot.m_playerQuestItems.find(bot->GetGUIDLow());
+    if (view != loot.m_playerQuestItems.end() && view->second)
+        for (QuestItem const& qi : *view->second)
+            if (qi.index < loot.m_questItems.size())
+                pview += (pview.empty() ? "" : ",") + std::to_string(loot.m_questItems[qi.index].itemid);
+
+    int const tapLow = tapper ? (int)tapper->GetGUIDLow() : -1;
+    bool const allowed = bot->IsAllowedToLoot(creature);
+    std::string const shape = std::to_string(allowed ? 1 : 0) + "|" + std::to_string(tapLow) + "|" + qids + "|" + pview;
+
+    // Re-sample the same corpse (bot + creature guid + reason), not the same entry: the shape
+    // the review asked to catch is "no quest at kill time, quest accepted while the corpse is
+    // still there, then refused forever". Log the first verdict, log again the moment the
+    // shape changes, and log a plain row every 60 s while the corpse is still being probed.
+    struct SkipState
+    {
+        time_t first = 0;
+        time_t last = 0;
+        std::string shape;
+    };
+    static std::map<std::pair<uint32, uint32>, SkipState> lastSkip;
+    auto const key = std::make_pair(bot->GetGUIDLow(), (creature->GetGUIDLow() << 4) | (reasonCode & 0xF));
+    SkipState& state = lastSkip[key];
+    bool const firstSample = state.shape.empty();
+    bool const shapeChanged = !firstSample && state.shape != shape;
+    bool const aged = !firstSample && !shapeChanged && now - state.last >= 60;
+    if (!firstSample && !shapeChanged && !aged)
+        return;
+    if (firstSample)
+        state.first = now;
+    state.last = now;
+    state.shape = shape;
+
     std::ostringstream out;
     out << "entry=" << entry
         << "|reason=" << reason
         << "|dist=" << (int)sServerFacade.getDistance2d(bot, creature)
-        << "|allowed=" << (bot->IsAllowedToLoot(creature) ? 1 : 0)
-        << "|tap=" << (tapper ? (int)tapper->GetGUIDLow() : -1)
+        << "|allowed=" << (allowed ? 1 : 0)
+        << "|tap=" << tapLow
         << "|rr=" << (uint32)loot.roundRobinPlayer
         << "|group=" << (bot->GetGroup() ? 1 : 0)
         << "|hasItemFor=" << (loot.hasItemFor(bot) ? 1 : 0)
         << "|qitems=" << (uint32)loot.m_questItems.size()
+        << "|qids=" << qids
         << "|playerQ=" << (loot.m_playerQuestItems.count(bot->GetGUIDLow()) ? 1 : 0)
-        << "|want=" << needed;
+        << "|pview=" << pview
+        << "|want=" << needed
+        << "|age=" << (uint32)(now - state.first)
+        << (firstSample ? "" : (shapeChanged ? "|recheck=changed" : "|recheck=aged"));
     sPlayerbotAIConfig.logEvent(ai, "LootSkipNeed", std::to_string(entry), out.str());
 }
 
