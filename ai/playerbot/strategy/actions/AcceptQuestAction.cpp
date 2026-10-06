@@ -135,6 +135,16 @@ bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, 
         return false;
     }
 
+    // Craft-gated material (6581 战歌锯条, 55210 倾斜阻振器, 565 雪人毛皮披风, and 6571
+    // through 6581's reward): the pool's best profession skill is 18 and none of the three
+    // recipes is known, so accepting one only pins a quest-log slot until the upkeep drops it
+    // again. Same knob as the drop side, bot_diag.conf "craftblacklist" (default 1).
+    if (questgrey::QuestIsCraftBlacklisted(quest))
+    {
+        traceGate("craft-gated");
+        return false;
+    }
+
     // Quest-log upkeep for masterless random bots (donor IsQuestWorthDoing
     // idea, own code): skip grey quests unless the reward is worth it. Grey is
     // the core's quest colour, fixed at BOT_GREY_QUEST_LEVEL_DIFF levels below the bot.

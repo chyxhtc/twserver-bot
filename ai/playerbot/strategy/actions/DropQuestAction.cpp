@@ -5,6 +5,8 @@
 #include "playerbot/strategy/values/SharedValueContext.h"
 #include "playerbot/TravelMgr.h"
 
+#include <unordered_set>
+
 using namespace ai;
 
 namespace ai { namespace questgrey
@@ -270,6 +272,22 @@ bool QuestHasNoKnownSource(Quest const* quest)
 
     return true;
 }
+
+bool QuestIsCraftBlacklisted(Quest const* quest)
+{
+    if (!quest)
+        return false;
+    if (trace::IntValue("craftblacklist", 1) == 0)
+        return false;                                   // auction house route restored
+
+    static std::unordered_set<uint32> const blacklist = {
+        6581,                                           // 4369 needs engineering 3936
+        55210,                                          // 7191/3575/4375 need engineering and smelting
+        565,                                            // 3719 needs leatherworking 3760
+        6571,                                           // 16742 comes only from 6581 above
+    };
+    return blacklist.count(quest->GetQuestId()) != 0;
+}
 }} // namespace ai::questgrey
 
 bool DropQuestAction::Execute(Event& event)
@@ -376,6 +394,23 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
         // so this only drops quests the module provably cannot plan for.
         if (upkeep && questgrey::QuestHasNoKnownSource(quest))
             return true;
+
+        // Craft-gated material (6581, 55210, 565 and 6571 through 6581): the missing item
+        // needs a profession the pool does not have, so the quest can never be finished
+        // today. Drop it with the reason written down, so the freed log slot is explained;
+        // bot_diag.conf "craftblacklist=0" turns both this and the accept-side refusal off
+        // again once the auction house is usable.
+        if (upkeep && questgrey::QuestIsCraftBlacklisted(quest))
+        {
+            std::string missing;
+            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                if (quest->ReqItemId[i] && quest->ReqItemCount[i] &&
+                    bot->GetItemCount(quest->ReqItemId[i]) < quest->ReqItemCount[i])
+                    missing += (missing.empty() ? "" : ",") + std::to_string(quest->ReqItemId[i]);
+            sPlayerbotAIConfig.logEvent(ai, "CraftGatedQuestDropped", quest->GetTitle(),
+                "id=" + std::to_string(quest->GetQuestId()) + "|missing=" + missing);
+            return true;
+        }
 
         if (IsGreyIncomplete(quest) && !quest->HasSpecialFlag(QUEST_SPECIAL_FLAG_DELIVER))
             return true;

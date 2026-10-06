@@ -166,6 +166,25 @@ namespace ai { namespace questgrey
     // outgrown-zone rule believe a zone the bot has outlevelled still has work in it.
     bool QuestHasNoKnownSource(Quest const* quest);
 
+    // The craft-gated quest blacklist: quests whose material can only come from a profession
+    // craft (or the auction house once that is usable), so a bot that takes one only pins a
+    // quest-log slot. Measured 2026-10-06:
+    //   6581  Warsong Saw Blades - wants 4369 Deadly Blunderbuss, engineering 3936 only
+    //   55210 Tilting Oscilation Inhibitor?! - 7191 Fused Wiring, 3575 Iron Bar and 4375
+    //         Bronze Whirring Gizmo are engineering and smelting products; only 3466 Strong
+    //         Flux is a vendor item
+    //   565   Bartolo's Yeti Fur Cloak - 3719 Hillman's Cloak, leatherworking 3760 only
+    //   6571  Warsong Supplies - its 16742 Warsong Saw Blades come only from 6581, which is
+    //         itself on this list, so the chain is gated even though the other three items
+    //         (16745/16744/16743) drop from game objects
+    // The pool's best profession skill is 18 and character_spell holds none of those
+    // recipes, so none of the four can be finished today. Switched by bot_diag.conf
+    // "craftblacklist" (default 1; set 0 to accept and keep them again once the auction
+    // house is usable, no restart needed). A class-wide "no non-craft source" rule was tried
+    // first and over-refused quests whose items drop only as quest drops (41703 was refused
+    // although 41763/41764 both drop from named mobs), so the list is explicit on purpose.
+    bool QuestIsCraftBlacklisted(Quest const* quest);
+
     // True when a GREY quest is still worth keeping for this bot. The accept gate
     // (AcceptAllQuestsAction::ProcessQuest) keeps one when the bot still wants the reward,
     // when a fixed reward would replace gear, or when the quest opens a non-grey follow-up.
