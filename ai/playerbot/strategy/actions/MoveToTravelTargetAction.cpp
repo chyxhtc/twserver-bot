@@ -8,7 +8,9 @@
 #include "Maps/PathFinder.h"
 #include "playerbot/TravelMgr.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
+#include "playerbot/TraceSwitch.h"
 #include <iomanip>
+#include <map>
 
 using namespace ai;
 
@@ -24,6 +26,70 @@ namespace
         if (arm >= 0)
             return arm != 0;
         return sPlayerbotAIConfig.lastMileTeleport;
+    }
+
+    // A34/C1 diagnostics, hot switch "travelretry" (default off, see TraceSwitch.h).
+    //
+    // A bot can sit on a failed travel leg for hours without the last-mile rescue running.
+    // Two facts decide which of the two it is, and neither is visible in the trace today:
+    // TravelMoveFailed fires only at retry 2, and the drop line only on the drop path, so a
+    // counter that walks back down (or a target that is rebuilt under the bot) looks exactly
+    // like a counter that never climbed. Record the watermark per bot and destination and
+    // log the transition, plus the guard verdicts at the decision point below.
+    struct TravelRetryMark
+    {
+        int32 entry = 0;
+        int32 x = 0;
+        int32 y = 0;
+        uint32 maxRetry = 0;
+        uint32 resets = 0;
+        time_t firstSeen = 0;
+    };
+    std::map<uint32, TravelRetryMark> travelRetryMarks;
+
+    void TravelRetryProbeFail(PlayerbotAI* ai, Player* bot, TravelTarget* target, float dist,
+        std::string const& purpose)
+    {
+        int32 const destEntry = target->GetDestination() ? (int32)target->GetDestination()->GetEntry() : 0;
+        WorldPosition const* const destPos = target->getPosition();
+        int32 const px = destPos ? (int32)destPos->getX() : 0;
+        int32 const py = destPos ? (int32)destPos->getY() : 0;
+        uint32 const retry = target->GetRetryCount(true);
+
+        TravelRetryMark& mark = travelRetryMarks[bot->GetGUIDLow()];
+        time_t const now = time(nullptr);
+        bool const same = mark.entry == destEntry && mark.x == px && mark.y == py;
+        bool const reset = same && mark.maxRetry > 2 && retry <= 2;
+
+        if (!same)
+        {
+            mark.entry = destEntry;
+            mark.x = px;
+            mark.y = py;
+            mark.resets = 0;
+            mark.firstSeen = now;
+        }
+        else if (reset)
+            mark.resets++;
+
+        if (retry > mark.maxRetry)
+            mark.maxRetry = retry;
+
+        // One row per destination pick, one per reset, one per threshold approach: not one
+        // per counted failure, which at the 3 s throttle would flood the trace.
+        if (!same || reset || (retry >= 6 && retry < 8))
+        {
+            std::ostringstream out;
+            out << "retry=" << retry
+                << "|max=" << mark.maxRetry
+                << "|resets=" << mark.resets
+                << "|age=" << (mark.firstSeen ? (uint32)(now - mark.firstSeen) : 0)
+                << "|dist=" << (int32)dist
+                << "|dest=" << destEntry << "|at=" << px << "," << py
+                << "|purpose=" << purpose
+                << (same ? (reset ? "|recheck=reset" : "|recheck=retry") : "|recheck=new");
+            sPlayerbotAIConfig.logEvent(ai, "TravelRetry", std::to_string(bot->GetGUIDLow()), out.str());
+        }
     }
 }
 
@@ -433,6 +499,10 @@ bool MoveToTravelTargetAction::Execute(Event& event)
         // attempts (see TravelTarget::IncMoveRetryThrottled).
         target->IncMoveRetryThrottled();
 
+        if (trace::VerdictOf("travelretry") == trace::Verdict::On)
+            TravelRetryProbeFail(ai, bot, target, botLocation.distance(location),
+                AI_VALUE2(std::string, "manual string", "future travel purpose"));
+
         // One line per travel target rather than per attempt: a wedged bot
         // re-enters this action every tick, and IncRetry steps by 2, so the
         // first failure is exactly 2. The drop below carries the final depth.
@@ -480,6 +550,25 @@ bool MoveToTravelTargetAction::Execute(Event& event)
             TravelDestination* const destination = target->GetDestination();
             bool const leavesOutgrownZone = destination && travelCondition == "should leave outgrown zone" &&
                 dynamic_cast<GrindTravelDestination*>(destination) != nullptr;
+
+            // Which guard reached the decision, and with what counter: this is the row that
+            // separates "the budget was never reached" from "the budget was reached and the
+            // teleport was still refused" (quest cast, arm knob, or the 5 min per-bot stamp).
+            if (trace::VerdictOf("travelretry") == trace::Verdict::On)
+            {
+                std::ostringstream out;
+                out << "retry=" << target->GetRetryCount(true)
+                    << "|isMaxRetry=" << (target->IsMaxRetry(true) ? 1 : 0)
+                    << "|longQuestLeg=" << (longQuestLeg ? 1 : 0)
+                    << "|questDest=" << ((destination && dynamic_cast<QuestTravelDestination*>(destination)) ? 1 : 0)
+                    << "|leavesOutgrown=" << (leavesOutgrownZone ? 1 : 0)
+                    << "|lastMileAllowed=" << (LastMileAllowed(bot) ? 1 : 0)
+                    << "|stamp=" << (int32)sRandomBotFacade.GetValue(bot, "last mile teleport")
+                    << "|dist=" << (int32)botLocation.distance(location)
+                    << "|purpose=" << AI_VALUE2(std::string, "manual string", "future travel purpose");
+                sPlayerbotAIConfig.logEvent(ai, "TravelRetryDecision", std::to_string(bot->GetGUIDLow()), out.str());
+            }
+
             if (destination && target->getPosition() &&
                 (dynamic_cast<QuestTravelDestination*>(destination) || leavesOutgrownZone) &&
                 LastMileAllowed(bot) &&
