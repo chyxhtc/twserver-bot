@@ -13,6 +13,7 @@
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/TraceSwitch.h"
 #include "playerbot/QuestGreyRule.h"
+#include "Database/DBCStore.h"
 #include "runtime/BotManager.h"
 #include "Guild/GuildMgr.h"
 #include <iomanip>
@@ -819,8 +820,39 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
     if (AI_VALUE2(std::string, "manual string", "future travel purpose") == "quest")
     {
         Player* const orderingBot = bot;
+
+        // A41 experiment, arm "keysfirst" (default off): a quest objective this bot can
+        // finish the moment it arrives - a game object whose lock one of the keys in its
+        // bags opens - goes to the front of the queue.
+        // Measured 2026-10-06 10:04-10:12: Drebon (level 28, Horde) was carrying both
+        // Dull Iron Key and Burnished Gold Key for 498's ball-and-chain, but his travel
+        // layer re-planned the same single candidate every 2-3 minutes (TravelRejectSummary
+        // "1|picked||rej=") and kept him on quest 509's Mudsnout Blossom 680 yards away, so
+        // the arrival branch never fired the key and A41 could not be accepted. The arrival
+        // branch reads this same LockEntry list (MoveToTravelTargetAction), so this changes
+        // only which destination wins, not what happens on arrival.
+        std::map<TravelDestination*, bool> keyReadyObjective;
+        if (sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "keysfirst", 0) != 0)
+        {
+            for (auto& candidate : ordered)
+            {
+                bool ready = false;
+                if (auto* objective = dynamic_cast<QuestObjectiveTravelDestination*>(candidate.destination))
+                {
+                    int32 const entry = objective->GetEntry();
+                    if (entry < 0)
+                        if (GameObjectInfo const* goInfo = sObjectMgr.GetGameObjectInfo(-entry))
+                            if (LockEntry const* lockInfo = sLockStore.LookupEntry(goInfo->GetLockId()))
+                                for (int j = 0; j < 8 && !ready; ++j)
+                                    if (lockInfo->Type[j] == LOCK_KEY_ITEM && lockInfo->Index[j] &&
+                                        bot->HasItemCount(lockInfo->Index[j], 1, false))
+                                        ready = true;
+                }
+                keyReadyObjective[candidate.destination] = ready;
+            }
+        }
         std::stable_sort(ordered.begin(), ordered.end(),
-            [orderingBot](OrderedCandidate const& a, OrderedCandidate const& b)
+            [orderingBot, &keyReadyObjective](OrderedCandidate const& a, OrderedCandidate const& b)
             {
                 auto const questOf = [](TravelDestination* destination) -> Quest const*
                 {
@@ -863,6 +895,15 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 bool const outgrownB2 = outgrownB || objectiveOutgrown(b.destination);
                 if (outgrownA2 != outgrownB2)
                     return !outgrownA2; // a quest or objective this bot has not outgrown first
+                auto const keyReady = [&keyReadyObjective](TravelDestination* destination) -> bool
+                {
+                    std::map<TravelDestination*, bool>::const_iterator const it = keyReadyObjective.find(destination);
+                    return it != keyReadyObjective.end() && it->second;
+                };
+                bool const readyA = keyReady(a.destination);
+                bool const readyB = keyReady(b.destination);
+                if (readyA != readyB)
+                    return readyA; // keysfirst: the objective this bot can finish now
                 return a.distance < b.distance; // then the nearest; "on the way" stand-in
             });
     }
