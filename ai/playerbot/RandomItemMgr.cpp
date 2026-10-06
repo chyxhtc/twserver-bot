@@ -3790,20 +3790,31 @@ void RandomItemMgr::BuildAmmoCache()
         }
     }
 	sLog.outBasic("Building quiver cache");
-    // Best vendor-sold quiver/ammo pouch per level bucket (owner spec: the
-    // ammo container must be adequate to the level). The npc_vendor join
-    // makes drop/raid containers impossible by construction, and
-    // required_level DESC picks the highest tier the level allows
-    // (Light Quiver 1 -> Medium 10 -> Heavy 30 -> ...).
+    // Best vendor-sold ammo container per level bucket, split by kind: a bow/crossbow hunter
+    // needs a quiver (subclass 2), a gun hunter needs an ammo pouch (subclass 3). The old
+    // single cache took whatever class 11 row the query returned first, so a bow hunter could
+    // be handed a shot pouch and InitAmmo's upgrade test then refused to replace it. Measured
+    // 2026-10-07: Tharurthyrf, Krukal and Vurzarorkal each carried a Medium Shot Pouch while
+    // shooting a bow, and their arrows sat in a plain backpack.
+    // The npc_vendor join makes drop/raid containers impossible by construction, and
+    // required_level DESC picks the highest tier the level allows.
     for (uint32 level = 1; level <= maxLevel + 1; level += 10)
     {
         auto results = WorldDatabase.PQuery(
                 "SELECT it.entry FROM item_template it JOIN npc_vendor v ON v.item = it.entry"
-                " WHERE it.class = '%u' AND it.required_level <= '%u'"
+                " WHERE it.class = '%u' AND it.subclass <> '%u' AND it.required_level <= '%u'"
                 " ORDER BY it.required_level DESC LIMIT 1",
-                ITEM_CLASS_QUIVER, level);
+                ITEM_CLASS_QUIVER, ITEM_SUBCLASS_AMMO_POUCH, level);
         if (results)
             quiverCache[level / 10] = results->Fetch()[0].GetUInt32();
+
+        auto pouches = WorldDatabase.PQuery(
+                "SELECT it.entry FROM item_template it JOIN npc_vendor v ON v.item = it.entry"
+                " WHERE it.class = '%u' AND it.subclass = '%u' AND it.required_level <= '%u'"
+                " ORDER BY it.required_level DESC LIMIT 1",
+                ITEM_CLASS_QUIVER, ITEM_SUBCLASS_AMMO_POUCH, level);
+        if (pouches)
+            pouchCache[level / 10] = pouches->Fetch()[0].GetUInt32();
     }
 
 	sLog.outString("Cached %d types of ammo", counter1); // TEST
@@ -3819,6 +3830,13 @@ uint32 RandomItemMgr::GetQuiver(uint32 level)
     if (level < 1)
         level = 1;
     return quiverCache[(level - 1) / 10];
+}
+
+uint32 RandomItemMgr::GetAmmoPouch(uint32 level)
+{
+    if (level < 1)
+        level = 1;
+    return pouchCache[(level - 1) / 10];
 }
 
 

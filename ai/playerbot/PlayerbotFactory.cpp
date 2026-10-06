@@ -3542,7 +3542,10 @@ void PlayerbotFactory::InitAmmo()
     // Valzarustur and Zefeth among them).
     if (bot->GetClass() == CLASS_HUNTER && (subClass == ITEM_SUBCLASS_ARROW || subClass == ITEM_SUBCLASS_BULLET))
     {
-        uint32 quiverId = sRandomItemMgr.GetQuiver(level);
+        // Pick the container that matches the ammo the ranged weapon eats: arrows need a
+        // quiver, bullets need an ammo pouch. See RandomItemMgr::GetQuiver/GetAmmoPouch.
+        bool const wantPouch = (subClass == ITEM_SUBCLASS_BULLET);
+        uint32 quiverId = wantPouch ? sRandomItemMgr.GetAmmoPouch(level) : sRandomItemMgr.GetQuiver(level);
         ItemPrototype const* bestQuiver = quiverId ? sObjectMgr.GetItemPrototype(quiverId) : nullptr;
         if (bestQuiver)
         {
@@ -3554,6 +3557,24 @@ void PlayerbotFactory::InitAmmo()
                 Item* bagItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot);
                 if (!bagItem || !bagItem->GetProto() || bagItem->GetProto()->Class != ITEM_CLASS_QUIVER)
                     continue;
+                // Wrong kind for this ammo is never good, whatever its level: a bow cannot
+                // draw arrows from a shot pouch and a gun cannot fire bullets from a quiver.
+                // An empty one is replaced right here; a full one waits for the relocation
+                // path below. Measured 2026-10-07: bow hunters Tharurthyrf, Krukal and
+                // Vurzarorkal each sat on a Medium Shot Pouch because the test underneath
+                // compared entry and required level only.
+                if ((bagItem->GetProto()->SubClass == ITEM_SUBCLASS_AMMO_POUCH) != wantPouch)
+                {
+                    Bag* wrongBag = bagItem->IsBag() ? (Bag*)bagItem : nullptr;
+                    if (wrongBag && !wrongBag->IsEmpty())
+                    {
+                        upgradeTarget = bagItem;
+                        upgradeSlot = bagSlot;
+                        continue;
+                    }
+                    bot->DestroyItem(INVENTORY_SLOT_BAG_0, bagSlot, true);
+                    continue;
+                }
                 if (bagItem->GetEntry() == quiverId || bagItem->GetProto()->RequiredLevel >= bestQuiver->RequiredLevel)
                 {
                     haveGood = true;
