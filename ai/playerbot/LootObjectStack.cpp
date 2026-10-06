@@ -41,6 +41,32 @@ namespace
 // carries at ChanceOrQuestChance = -100 never entered the world - which is the last open link
 // in A41 (quest 498 needs that key to credit its ball-and-chain objectives).
 // Opt-in through bot_diag.conf "lootskip=1"; throttled per bot, entry and reason to 20 s.
+//
+// A44 follow-up (user's instruction, 2026-10-06): this probe's shape - the corpse still holds
+// quest items for this bot, but the bot has no per-player view for it - can never be looted, and
+// waiting for the view to appear is pointless (the core builds it once, at kill time). The corpse
+// is not queued anyway and the bot goes off to kill something else, so the only thing repeating is
+// this probe. Park the corpse for its own decay time instead: after that it is gone and the next
+// kill is a fresh chance. The numbers mirror Corpse.Decay.* in mangosd.conf.
+static std::map<std::pair<uint32, uint32>, time_t> a44CorpseUntil;
+
+static uint32 A44CorpseDecaySeconds(Creature* creature)
+{
+    uint32 decay = 300;
+    if (CreatureInfo const* info = creature ? creature->GetCreatureInfo() : nullptr)
+    {
+        switch (info->rank)
+        {
+            case CREATURE_ELITE_ELITE:     decay = 600;  break;
+            case CREATURE_ELITE_RAREELITE: decay = 1200; break;
+            case CREATURE_ELITE_RARE:      decay = 900;  break;
+            case CREATURE_ELITE_WORLDBOSS: decay = 3600; break;
+            default:                       decay = 300;  break;
+        }
+    }
+    return decay;
+}
+
 void LootSkipProbe(Player* bot, PlayerbotAI* ai, Creature* creature, uint32 reasonCode, char const* reason)
 {
     if (!bot || !creature || !ai)
@@ -50,6 +76,10 @@ void LootSkipProbe(Player* bot, PlayerbotAI* ai, Creature* creature, uint32 reas
 
     uint32 const entry = creature->GetEntry();
     time_t const now = time(nullptr);
+
+    auto const a44Key = std::make_pair(bot->GetGUIDLow(), creature->GetGUIDLow());
+    if (a44CorpseUntil[a44Key] > now)
+        return;   // parked for its decay: nothing here will change, the bot has other work
 
     uint32 needed = 0;
     for (uint32 itemId : GAI_VALUE2(std::list<uint32>, "entry loot list", entry))
@@ -126,6 +156,12 @@ void LootSkipProbe(Player* bot, PlayerbotAI* ai, Creature* creature, uint32 reas
         << "|age=" << (uint32)(now - state.first)
         << (firstSample ? "" : (shapeChanged ? "|recheck=changed" : "|recheck=aged"));
     sPlayerbotAIConfig.logEvent(ai, "LootSkipNeed", std::to_string(entry), out.str());
+
+    // Park the exact shape from here on: the corpse holds quest items for this bot and there is no
+    // per-player view for it, so it can never be opened. Waiting is already implicit (the corpse is
+    // not queued); this stops the queue from re-evaluating it until it decays away.
+    if (!allowed && !qids.empty() && pview.empty())
+        a44CorpseUntil[a44Key] = now + A44CorpseDecaySeconds(creature);
 }
 
 LootTarget::LootTarget(ObjectGuid guid) : guid(guid), asOfTime(time(0))
