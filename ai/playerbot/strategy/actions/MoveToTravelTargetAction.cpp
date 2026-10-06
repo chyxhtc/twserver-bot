@@ -42,10 +42,18 @@ namespace
         int32 x = 0;
         int32 y = 0;
         uint32 maxRetry = 0;
+        // Threshold rows must fire once per retry value, not once per tick: the fail branch
+        // re-enters every tick while MoveTo keeps returning false, and IncMoveRetryThrottled
+        // only advances the counter every 3 s, so a bot parked at retry 6 logged ~20 rows a
+        // second (measured 2026-10-07 00:14, Hanar, 60 rows in 3 s) before this watermark.
+        uint32 lastLoggedRetry = 0;
         uint32 resets = 0;
         time_t firstSeen = 0;
     };
     std::map<uint32, TravelRetryMark> travelRetryMarks;
+    // Decision rows have the same re-entry problem: remember the last (destination, retry)
+    // pair logged per bot so one stuck leg produces one row per retry value.
+    std::map<uint32, std::pair<int32, uint32>> travelDecisionMarks;
 
     void TravelRetryProbeFail(PlayerbotAI* ai, Player* bot, TravelTarget* target, float dist,
         std::string const& purpose)
@@ -68,6 +76,7 @@ namespace
             mark.y = py;
             mark.resets = 0;
             mark.firstSeen = now;
+            mark.lastLoggedRetry = 0;
         }
         else if (reset)
             mark.resets++;
@@ -76,9 +85,11 @@ namespace
             mark.maxRetry = retry;
 
         // One row per destination pick, one per reset, one per threshold approach: not one
-        // per counted failure, which at the 3 s throttle would flood the trace.
-        if (!same || reset || (retry >= 6 && retry < 8))
+        // per tick, which would flood the trace (see lastLoggedRetry above).
+        bool const thresholdRow = retry >= 6 && retry != mark.lastLoggedRetry;
+        if (!same || reset || thresholdRow)
         {
+            mark.lastLoggedRetry = retry;
             std::ostringstream out;
             out << "retry=" << retry
                 << "|max=" << mark.maxRetry
@@ -556,17 +567,24 @@ bool MoveToTravelTargetAction::Execute(Event& event)
             // teleport was still refused" (quest cast, arm knob, or the 5 min per-bot stamp).
             if (trace::VerdictOf("travelretry") == trace::Verdict::On)
             {
-                std::ostringstream out;
-                out << "retry=" << target->GetRetryCount(true)
-                    << "|isMaxRetry=" << (target->IsMaxRetry(true) ? 1 : 0)
-                    << "|longQuestLeg=" << (longQuestLeg ? 1 : 0)
-                    << "|questDest=" << ((destination && dynamic_cast<QuestTravelDestination*>(destination)) ? 1 : 0)
-                    << "|leavesOutgrown=" << (leavesOutgrownZone ? 1 : 0)
-                    << "|lastMileAllowed=" << (LastMileAllowed(bot) ? 1 : 0)
-                    << "|stamp=" << (int32)sRandomBotFacade.GetValue(bot, "last mile teleport")
-                    << "|dist=" << (int32)botLocation.distance(location)
-                    << "|purpose=" << AI_VALUE2(std::string, "manual string", "future travel purpose");
-                sPlayerbotAIConfig.logEvent(ai, "TravelRetryDecision", std::to_string(bot->GetGUIDLow()), out.str());
+                int32 const decisionEntry = destination ? (int32)destination->GetEntry() : 0;
+                uint32 const decisionRetry = target->GetRetryCount(true);
+                auto const decisionKey = std::make_pair(decisionEntry, decisionRetry);
+                if (travelDecisionMarks[bot->GetGUIDLow()] != decisionKey)
+                {
+                    travelDecisionMarks[bot->GetGUIDLow()] = decisionKey;
+                    std::ostringstream out;
+                    out << "retry=" << decisionRetry
+                        << "|isMaxRetry=" << (target->IsMaxRetry(true) ? 1 : 0)
+                        << "|longQuestLeg=" << (longQuestLeg ? 1 : 0)
+                        << "|questDest=" << ((destination && dynamic_cast<QuestTravelDestination*>(destination)) ? 1 : 0)
+                        << "|leavesOutgrown=" << (leavesOutgrownZone ? 1 : 0)
+                        << "|lastMileAllowed=" << (LastMileAllowed(bot) ? 1 : 0)
+                        << "|stamp=" << (int32)sRandomBotFacade.GetValue(bot, "last mile teleport")
+                        << "|dist=" << (int32)botLocation.distance(location)
+                        << "|purpose=" << AI_VALUE2(std::string, "manual string", "future travel purpose");
+                    sPlayerbotAIConfig.logEvent(ai, "TravelRetryDecision", std::to_string(bot->GetGUIDLow()), out.str());
+                }
             }
 
             if (destination && target->getPosition() &&
