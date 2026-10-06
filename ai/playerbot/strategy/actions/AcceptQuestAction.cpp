@@ -135,13 +135,14 @@ bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, 
         return false;
     }
 
-    // Craft-gated material (6581 战歌锯条, 55210 倾斜阻振器, 565 雪人毛皮披风, and 6571
-    // through 6581's reward): the pool's best profession skill is 18 and none of the three
-    // recipes is known, so accepting one only pins a quest-log slot until the upkeep drops it
-    // again. Same knob as the drop side, bot_diag.conf "craftblacklist" (default 1).
-    if (questgrey::QuestIsCraftBlacklisted(quest))
+    // Quest blacklist (craft-gated material, the 1195 two-hop chain, the five script-token
+    // quests): the module cannot finish them today, so accepting one only pins a quest-log slot
+    // until the upkeep drops it again. Same table and knob as the drop side, bot_diag.conf
+    // "questblacklist" (default 1); the reason travels with the trace line so the platform can
+    // show why, and single entries can be released later by dropping them from the table.
+    if (char const* reason = questgrey::QuestBlacklistReason(quest))
     {
-        traceGate("craft-gated");
+        traceGate("blacklist", std::string("|why=") + reason);
         return false;
     }
 

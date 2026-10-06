@@ -273,20 +273,42 @@ bool QuestHasNoKnownSource(Quest const* quest)
     return true;
 }
 
-bool QuestIsCraftBlacklisted(Quest const* quest)
+namespace
+{
+    struct BlacklistEntry
+    {
+        uint32 questId;
+        char const* reason;
+    };
+
+    // One line per quest the module cannot finish today. Keep this table and the published copy
+    // at _twserver/任务黑名单.md in step; that file is what the platform displays.
+    BlacklistEntry const questBlacklist[] =
+    {
+        { 6581,  "craft: 4369 Deadly Blunderbuss is engineering 3936 only, no bot has it" },
+        { 55210, "craft: 7191/3575/4375 are engineering and smelting products, no bot has them" },
+        { 565,   "craft: 3719 Hillman's Cloak is leatherworking 3760 only, no bot has it" },
+        { 6571,  "craft: its 16742 comes only from quest 6581, which is itself craft-gated" },
+        { 1195,  "two-hop: empty phial drops from 4054, use it to fill; no plan and no fill spot in DB" },
+        { 40536, "script token 60382: credit is a scripted NPC beaten to half health (issue A47)" },
+        { 40567, "script token 60391: credit is gossip option 1 on Bert Mano (issue A47)" },
+        { 40691, "script token 60399: credit is gossip option 1 on Grumnir Battlebeard (issue A47)" },
+        { 80395, "script token 80007: credit is using game object 3000284 south of Ratchet (issue A47)" },
+        { 55048, "script token 91296: credit is gossip on Hizzle while carrying aura 50060 (issue A47)" },
+    };
+}
+
+char const* QuestBlacklistReason(Quest const* quest)
 {
     if (!quest)
-        return false;
-    if (trace::IntValue("craftblacklist", 1) == 0)
-        return false;                                   // auction house route restored
+        return nullptr;
+    if (trace::IntValue("questblacklist", 1) == 0)
+        return nullptr;                                 // released: accept and keep them again
 
-    static std::unordered_set<uint32> const blacklist = {
-        6581,                                           // 4369 needs engineering 3936
-        55210,                                          // 7191/3575/4375 need engineering and smelting
-        565,                                            // 3719 needs leatherworking 3760
-        6571,                                           // 16742 comes only from 6581 above
-    };
-    return blacklist.count(quest->GetQuestId()) != 0;
+    for (BlacklistEntry const& entry : questBlacklist)
+        if (entry.questId == quest->GetQuestId())
+            return entry.reason;
+    return nullptr;
 }
 }} // namespace ai::questgrey
 
@@ -395,21 +417,24 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
         if (upkeep && questgrey::QuestHasNoKnownSource(quest))
             return true;
 
-        // Craft-gated material (6581, 55210, 565 and 6571 through 6581): the missing item
-        // needs a profession the pool does not have, so the quest can never be finished
-        // today. Drop it with the reason written down, so the freed log slot is explained;
-        // bot_diag.conf "craftblacklist=0" turns both this and the accept-side refusal off
-        // again once the auction house is usable.
-        if (upkeep && questgrey::QuestIsCraftBlacklisted(quest))
+        // Blacklisted quest: the module provably cannot finish it today (craft-gated material,
+        // a two-hop source chain, or a script-token objective). Drop it with the reason written
+        // down, so the freed log slot is explained; bot_diag.conf "questblacklist=0" turns both
+        // this and the accept-side refusal off again.
+        if (upkeep)
         {
-            std::string missing;
-            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
-                if (quest->ReqItemId[i] && quest->ReqItemCount[i] &&
-                    bot->GetItemCount(quest->ReqItemId[i]) < quest->ReqItemCount[i])
-                    missing += (missing.empty() ? "" : ",") + std::to_string(quest->ReqItemId[i]);
-            sPlayerbotAIConfig.logEvent(ai, "CraftGatedQuestDropped", quest->GetTitle(),
-                "id=" + std::to_string(quest->GetQuestId()) + "|missing=" + missing);
-            return true;
+            if (char const* reason = questgrey::QuestBlacklistReason(quest))
+            {
+                std::string missing;
+                for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (quest->ReqItemId[i] && quest->ReqItemCount[i] &&
+                        bot->GetItemCount(quest->ReqItemId[i]) < quest->ReqItemCount[i])
+                        missing += (missing.empty() ? "" : ",") + std::to_string(quest->ReqItemId[i]);
+                sPlayerbotAIConfig.logEvent(ai, "QuestBlacklistDropped", quest->GetTitle(),
+                    "id=" + std::to_string(quest->GetQuestId()) + "|reason=" + reason +
+                    "|missing=" + missing);
+                return true;
+            }
         }
 
         if (IsGreyIncomplete(quest) && !quest->HasSpecialFlag(QUEST_SPECIAL_FLAG_DELIVER))
