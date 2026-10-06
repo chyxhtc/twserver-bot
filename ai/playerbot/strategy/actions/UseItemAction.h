@@ -116,7 +116,13 @@ namespace ai
         // Radius note: the travel layer parks the bot ~12 yards from the objective creature
         // (measured on the Lazy Peons), so the search must look wider than interaction range;
         // Execute walks the last stretch before using the item.
-        static constexpr float kQuestItemUseSearchRange = 25.0f;
+        //
+        // Raised 25 -> 40 on 2026-10-06 for A41: on quest 498 the travel leg parks the bot at
+        // 30-33 yards from the ball-and-chain game objects, and at 25 the search simply did not
+        // see them, so the "use the key on the objective" step never had a target to walk to.
+        // Measured: Rigornar held travel target 1721 for minutes at 30-33 yards; a 25 yard
+        // search finds nothing and the action returns false every tick.
+        static constexpr float kQuestItemUseSearchRange = 40.0f;
         static bool FindQuestItemUseTarget(Player* bot, uint32& outItemId, ObjectGuid& outTarget);
     };
 

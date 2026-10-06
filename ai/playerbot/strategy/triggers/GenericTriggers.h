@@ -1475,15 +1475,18 @@ private:
                     // use-item path never armed for it. Same shape as the creature branch.
                     if (reqEntry < 0)
                     {
-                        if (bot->FindNearestGameObject((uint32)(-reqEntry), 25.0f))
+                        if (bot->FindNearestGameObject((uint32)(-reqEntry), 40.0f))
                             return true;
                         continue;
                     }
 
                     // Wider than interaction range on purpose: the travel layer parks the bot
                     // about a dozen yards from the objective creature, and the action walks
-                    // the last stretch before using the item.
-                    if (bot->FindNearestCreature((uint32)reqEntry, 25.0f))
+                    // the last stretch before using the item. 25 -> 40 on 2026-10-06 for A41:
+                    // quest 498's ball-and-chain objects sit 30-33 yards from where the travel
+                    // leg parks, so the trigger never armed. Kept numerically in sync with
+                    // UseQuestItemOnObjectiveAction::kQuestItemUseSearchRange (both are 40).
+                    if (bot->FindNearestCreature((uint32)reqEntry, 40.0f))
                     {
                         return true;
                     }
