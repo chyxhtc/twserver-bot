@@ -230,6 +230,38 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
     Creature* creature = ai->GetCreature(guid);
     if (creature && sServerFacade.GetDeathState(creature) == CORPSE)
     {
+        // A44, arm "lootrefill" (default off): a corpse that still carries this bot's quest item
+        // can look empty to the core. Loot::isLooted() is gold == 0 && unlootedCount == 0, and a
+        // quest row only raises unlootedCount for a player that AllowedForPlayer() accepts at the
+        // moment the per-player list is built. The core builds that list exactly once, inside
+        // Loot::FillLoot at kill time (LootMgr.cpp:551 for group members, :563 for the personal
+        // owner, both through FillNotNormalLootFor -> FillQuestLoot). A bot that accepts the quest
+        // afterwards therefore never gets a view, the corpse stays "looted" for it forever and the
+        // item rots with the corpse. Loot::FillNotNormalLootFor is public and a no-op once the
+        // player has an entry, so re-running it for the original looter rebuilds that list; when
+        // it makes the corpse non-empty, the entitlement test below passes again.
+        if (sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "lootrefill", 0) != 0 &&
+            creature->loot.isLooted() && !creature->loot.m_questItems.empty() &&
+            creature->loot.IsOriginalLooter(bot->GetObjectGuid()) &&
+            creature->loot.m_playerQuestItems.count(bot->GetGUIDLow()) == 0)
+        {
+            static std::map<std::pair<uint32, uint32>, time_t> lastRefillTry;
+            auto const refillKey = std::make_pair(bot->GetGUIDLow(), creature->GetGUIDLow());
+            time_t const refillNow = time(nullptr);
+            auto const refillIt = lastRefillTry.find(refillKey);
+            if (refillIt == lastRefillTry.end() || refillNow - refillIt->second >= 60)
+            {
+                lastRefillTry[refillKey] = refillNow;
+                creature->loot.FillNotNormalLootFor(bot);
+                if (ai)
+                    sPlayerbotAIConfig.logEvent(ai, "LootRefill",
+                        "entry=" + std::to_string(creature->GetEntry()),
+                        "unlooted=" + std::to_string((uint32)creature->loot.unlootedCount) +
+                        "|qview=" + (creature->loot.m_playerQuestItems.count(bot->GetGUIDLow()) ? "1" : "0") +
+                        "|looted=" + (creature->loot.isLooted() ? "1" : "0"));
+            }
+        }
+
         // Corpse items come first: while loot is left, "open loot" must use the regular
         // CMSG_LOOT path, also on a corpse the core already flagged skinnable. Skinning such a
         // corpse is refused (Spell::CheckCast -> SPELL_FAILED_TARGET_NOT_LOOTED while
@@ -275,6 +307,18 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
             else if (debug)
                 ai->TellDebug(ai->GetMaster(), "Creature flag skinnable not enough skill.", "debug loot");
 
+            return;
+        }
+
+        // A44 arm-gated fallback for the same refill above: UNIT_DYNAMIC_FLAGS is a per-viewer
+        // value the core rebuilds on the next values update, so right after the refill the cached
+        // field can still say "no loot" while the core already allows this bot in. When this bot
+        // now has a per-player list for the corpse and the core's own test passes, queue it.
+        if (sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "lootrefill", 0) != 0 &&
+            creature->loot.m_playerQuestItems.count(bot->GetGUIDLow()) != 0 &&
+            MayLootCorpse(bot, creature))
+        {
+            this->guid = guid;
             return;
         }
 
