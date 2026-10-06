@@ -229,13 +229,30 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             bot->SetSelectionGuid(go->getObjectGuid());
                             bool const used = ai->DoSpecificAction("use", Event("do loot",
                                 chat->formatQItem(lockInfo->Index[j]) + " " + chat->formatGameobject(go)));
+                            // A41, arm "keyfallback" (default off). The plain CMSG_GAMEOBJ_USE is the
+                            // path that has actually moved quest 498: pool-wide there are exactly two
+                            // credited objectives and neither has a key= row - the first predates the
+                            // key branch (deploy-20261006-0006), and Drebon fired the plain path on 1721
+                            // 25 times early on 2026-10-06 at 1-3 yards, before he held the key at 05:23.
+                            // This branch returns before the plain packet is ever sent, so a bot that
+                            // carries the key can only ever take the key path. When that path reports
+                            // failure, fall back to the plain use the rest of the pool credits with.
+                            bool fallback = false;
+                            if (!used && sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "keyfallback", 0) != 0)
+                            {
+                                std::unique_ptr<WorldPacket> plainPacket(new WorldPacket(CMSG_GAMEOBJ_USE));
+                                *plainPacket << go->getObjectGuid();
+                                bot->GetSession()->QueuePacket(plainPacket.release());
+                                fallback = true;
+                            }
                             // A41: the action's verdict is the last unknown. Drebon stood 3 yards from
                             // 1722 twice (06:19:56 and 06:28:02) with the Burnished Gold Key in the bag,
                             // the branch logged, and quest 498's mobcount2 stayed 0 ten minutes later - so
                             // either the use action returned false or the cast was refused server-side.
                             sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
                                 "entry=" + std::to_string(go->GetEntry()),
-                                "key=" + std::to_string(lockInfo->Index[j]) + "|used=" + std::to_string(used ? 1 : 0));
+                                "key=" + std::to_string(lockInfo->Index[j]) + "|used=" + std::to_string(used ? 1 : 0) +
+                                "|fallback=" + (fallback ? "1" : "0"));
                             SetDuration(sPlayerbotAIConfig.globalCoolDown);
                             return used;
                         }
