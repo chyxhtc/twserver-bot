@@ -481,6 +481,25 @@ namespace ai
 			IncRetry(true);
 		}
 
+		// Rate-limited decay, mirroring IncMoveRetryThrottled above.
+		//
+		// MoveToTravelTargetAction runs every tick, counts a *failure* at most once per 3 s, and
+		// used to decrement on every *successful* tick. A leg where the bot even occasionally
+		// moves therefore had its retry budget erased as fast as it was earned: the counter stayed
+		// in the 0-2 range and never reached the last-mile thresholds (>10, or 6 for a 2000+ yard
+		// quest leg). Measured 2026-10-07 with the travelretry probe: 49 counter resets in about
+		// 40 minutes, 31 of them on 2000+ yard legs - i.e. exactly the legs A49's last-mile
+		// teleport exists for. Same 3 s window on both sides makes the counter a fail/success
+		// ratio over elapsed time instead of a tick-count race.
+		void DecMoveRetryThrottled()
+		{
+			uint32 const now = WorldTimer::getMSTime();
+			if (moveDecayMs != 0 && now - moveDecayMs < MOVE_RETRY_MIN_INTERVAL_MS)
+				return;
+			moveDecayMs = now;
+			DecRetry(true);
+		}
+
 		void CopyTarget(TravelTarget* const target);
 	private:
 		uint32 GetMaxTravelTime() const { return (1000.0 * Distance(bot)) / bot->GetSpeed(MOVE_RUN); }
@@ -496,6 +515,7 @@ namespace ai
 		uint32 extendRetryCount = 0;
 		uint32 moveRetryCount = 0;
 		uint32 moveRetryMs = 0; // last time a move failure was counted (see IncMoveRetryThrottled)
+		uint32 moveDecayMs = 0; // last time a successful move decremented the budget (see DecMoveRetryThrottled)
 
 		TravelDestination* tDestination = nullptr;
 		std::vector<std::string> travelConditions = {};

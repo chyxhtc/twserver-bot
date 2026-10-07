@@ -668,7 +668,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
         }
     }
     else
-        target->DecRetry(true);
+        target->DecMoveRetryThrottled();
 
     if (ai->HasStrategy("debug move", BotState::BOT_STATE_NON_COMBAT))
     {
