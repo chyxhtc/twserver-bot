@@ -574,7 +574,17 @@ namespace ai
 		WorldPosition* GetFishSpot(WorldPosition start, bool onlyNearestGrid = false);
 
 		EntryDestinationMap GetExploreLocs() const { return destinationMap.at(TravelDestinationPurpose::Explore); };
-		DestinationList GetDestinations(const PlayerTravelInfo& info, uint32 purposeFlag = (uint32)TravelDestinationPurpose::None, const std::vector<int32>& entries = {}, bool onlyPossible = true, float maxDistance = 10000.0f) const;
+		// A58 probe (temporary): how much work one destination-list build did. The build is what
+		// holds the world thread for 25-43 s (BOTSEARCH, 2026-10-07), and this says whether the
+		// cost is many destinations or one pathological DistanceTo.
+		struct TravelBuildStats
+		{
+			uint64 buckets = 0;    // (purpose, entry) buckets the outer loop walked
+			uint64 examined = 0;   // destinations that survived IsPossible and were distance-checked
+			uint64 distUs = 0;     // total time inside those DistanceTo calls
+			uint64 worstUs = 0;    // the worst single DistanceTo
+		};
+		DestinationList GetDestinations(const PlayerTravelInfo& info, uint32 purposeFlag = (uint32)TravelDestinationPurpose::None, const std::vector<int32>& entries = {}, bool onlyPossible = true, float maxDistance = 10000.0f, TravelBuildStats* stats = nullptr) const;
 		void GetPartitionsLock(bool getLock = true);
 		static bool IsLocationLevelValid(const WorldPosition& position, const PlayerTravelInfo& info, uint32 purposeFlag = (uint32)TravelDestinationPurpose::None, int32 grindZoneFloor = 0);
 		PartitionedTravelList GetPartitions(const WorldPosition& center, const std::vector<uint32>& distancePartitions, const PlayerTravelInfo& info, uint32 purposeFlag = (uint32)TravelDestinationPurpose::None, const std::vector<int32>& entries = {}, bool onlyPossible = true, float maxDistance = 10000.0f, int32 grindZoneFloor = 0) const;

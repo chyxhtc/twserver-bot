@@ -2594,7 +2594,7 @@ WorldPosition* TravelMgr::GetFishSpot(WorldPosition start, bool onlyNearestGrid)
     return fishMap.GetNextPoint(start, chances);
 }
 
-DestinationList TravelMgr::GetDestinations(const PlayerTravelInfo& info, uint32 purposeFlag, const std::vector<int32>& entries, bool onlyPossible, float maxDistance) const
+DestinationList TravelMgr::GetDestinations(const PlayerTravelInfo& info, uint32 purposeFlag, const std::vector<int32>& entries, bool onlyPossible, float maxDistance, TravelBuildStats* stats) const
 {
     WorldPosition center = info.getPosition();
     DestinationList retDests;
@@ -2610,15 +2610,39 @@ DestinationList TravelMgr::GetDestinations(const PlayerTravelInfo& info, uint32 
             if (entries.size() && std::find(entries.begin(), entries.end(), destEntry) == entries.end())
                 continue;
 
+            if (stats)
+                ++stats->buckets;
+
             for (auto& dest : dests)
             {
                 if (onlyPossible && !dest->IsPossible(info))
                     continue;
 
-                if (maxDistance > 0 && dest->DistanceTo(center) > maxDistance)
+                // A58: one DistanceTo instead of two. The second call (== FLT_MAX, "no route to
+                // that map") could only ever fire when maxDistance <= 0, because FLT_MAX is
+                // larger than any positive range; every caller here passes a positive range, so
+                // the value is identical and the build halves its distance bill.
+                float destDistance;
+                if (stats)
+                {
+                    auto const destStart = std::chrono::steady_clock::now();
+                    destDistance = dest->DistanceTo(center);
+                    int64_t const oneUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - destStart).count();
+                    ++stats->examined;
+                    stats->distUs += (uint64)(oneUs < 0 ? 0 : oneUs);
+                    if ((uint64)oneUs > stats->worstUs)
+                        stats->worstUs = (uint64)(oneUs < 0 ? 0 : oneUs);
+                }
+                else
+                {
+                    destDistance = dest->DistanceTo(center);
+                }
+
+                if (maxDistance > 0 && destDistance > maxDistance)
                     continue;
 
-                if (dest->DistanceTo(center) == FLT_MAX) //Do not return destinations on maps you can't path to.
+                if (maxDistance <= 0 && destDistance == FLT_MAX) //Do not return destinations on maps you can't path to.
                     continue;
 
                 retDests.push_back(dest);
@@ -2798,7 +2822,8 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     uint32 const searchStartMs = WorldTimer::getMSTime();
 
     PartitionedTravelList pointMap;
-    DestinationList destinations = GetDestinations(info, purposeFlag, entries, onlyPossible, maxDistance);
+    TravelBuildStats buildStats;
+    DestinationList destinations = GetDestinations(info, purposeFlag, entries, onlyPossible, maxDistance, &buildStats);
     // A58: the 29-42 s world stalls are this search and nothing else (22 BOTSEARCH lines over
     // 5 s on 2026-10-07, each matching a trace gap and a BOTPERF maxUs of the same size), and
     // it runs on the world thread because AiPlayerbot.AsyncTravelPartitions is 0 - the future
@@ -2972,9 +2997,11 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     uint32 const searchMs = WorldTimer::getMSTime() - searchStartMs;
     uint32 const loopMs = searchMs > buildMs ? searchMs - buildMs : 0;
     if (searchMs >= 50)
-        sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u, buildMs=%u, loopMs=%u, points=%llu)",
+        sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u, buildMs=%u, loopMs=%u, points=%llu, buckets=%llu, examined=%llu, distMs=%llu, worstDestMs=%llu)",
             searchMs, probeTotal, purposeFlag, (uint32)entries.size(), (uint32)pointMap.size(),
-            buildMs, loopMs, (unsigned long long)probePoints);
+            buildMs, loopMs, (unsigned long long)probePoints,
+            (unsigned long long)buildStats.buckets, (unsigned long long)buildStats.examined,
+            (unsigned long long)(buildStats.distUs / 1000), (unsigned long long)(buildStats.worstUs / 1000));
 
     return pointMap;
 }
