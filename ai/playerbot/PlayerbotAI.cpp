@@ -1589,6 +1589,18 @@ void PlayerbotAI::OnResurrected()
     if (sServerFacade.IsAlive(bot))
     {
         deathHandled_ = false; // alive again: the next death is a new one
+        // A57: the corpse-run progress tracker is per run, but it lives in the ai
+        // context for the bot's whole life. Left behind, the next run starts with
+        // the previous run's best distance (a few yards, reached on arrival) and
+        // its old timestamp, so the very first MoveTo tick already reads as
+        // kCorpseRunNoProgressSec without progress and every run would fall
+        // straight through to the spirit healer. Alive again means that run is
+        // over, so clear it here alongside the corpse run flag.
+        if (aiObjectContext)
+        {
+            aiObjectContext->GetValue<int32>("manual int", "corpse run best dist")->Set(0);
+            aiObjectContext->GetValue<time_t>("manual time", "corpse run last gain")->Set((time_t)0);
+        }
         // 60 s full-rate scan grace after revive (spawn-camp guard): the revive
         // lands at 50% HP on the death spot and re-dies fast live, so the first
         // minute runs the full scan. Teleport grace stays 15 s (HandleTeleportAck).
