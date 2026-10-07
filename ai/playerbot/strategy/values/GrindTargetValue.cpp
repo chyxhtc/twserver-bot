@@ -170,14 +170,42 @@ Unit* GrindTargetValue::Calculate()
                 SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", time(nullptr));
         }
         else if (examinedCandidates)
+        {
+            // A52 probe, hot switch "greyclear" (default off): the hatch needs ten uninterrupted
+            // minutes of grey-only/empty candidates, and the stamp keeps vanishing with no other
+            // log line to say who cleared it. Name the clearing path, the area and the sibling
+            // outgrown stamp (a context rebuild would zero every manual timer at once, which
+            // looks identical in the trace otherwise).
+            if (AI_VALUE2(time_t, "manual time", "grey-only grind since") &&
+                trace::VerdictOf("greyclear") == trace::Verdict::On)
+            {
+                std::ostringstream clear;
+                clear << "reason=supply|area=" << sServerFacade.GetAreaId(bot)
+                      << "|outgrownSince=" << (uint32)AI_VALUE2(time_t, "manual time", "outgrown since")
+                      << "|possible=" << g_grindPossibleTargets;
+                sPlayerbotAIConfig.logEvent(ai, "GreyClear", std::to_string(bot->GetGUIDLow()), clear.str());
+            }
             SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", (time_t)0);
+        }
     }
     else if (target)
     {
         // A real grind target is the one unambiguous proof of an xp source in range, so it
         // clears the stamp instead of leaving a stale one armed for the next idle stop.
         if (AI_VALUE2(time_t, "manual time", "grey-only grind since"))
+        {
+            if (trace::VerdictOf("greyclear") == trace::Verdict::On)
+            {
+                std::ostringstream clear;
+                clear << "reason=target|area=" << sServerFacade.GetAreaId(bot)
+                      << "|outgrownSince=" << (uint32)AI_VALUE2(time_t, "manual time", "outgrown since")
+                      << "|entry=" << target->GetEntry() << "|level=" << target->GetLevel()
+                      << "|botLevel=" << bot->GetLevel()
+                      << "|xpWorthy=" << ((target->GetLevel() + trace::IntValue("grey_level_diff", 8) < (int)bot->GetLevel()) ? 0 : 1);
+                sPlayerbotAIConfig.logEvent(ai, "GreyClear", std::to_string(bot->GetGUIDLow()), clear.str());
+            }
             SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", (time_t)0);
+        }
     }
 
     return target;
