@@ -587,6 +587,12 @@ namespace ai
 			uint64 examined = 0;        // destinations that survived IsPossible and were distance-checked
 			uint64 distUs = 0;          // total time inside those DistanceTo calls
 			uint64 worstUs = 0;         // the worst single DistanceTo
+			// A58: what the worst IsPossible call actually did, from SquareProbe.
+			int32 worstEntry = 0;
+			uint64 worstSubSquareSteps = 0;
+			uint64 worstPointSteps = 0;
+			uint64 worstPortalLists = 0;
+			uint64 worstPortals = 0;
 		};
 		DestinationList GetDestinations(const PlayerTravelInfo& info, uint32 purposeFlag = (uint32)TravelDestinationPurpose::None, const std::vector<int32>& entries = {}, bool onlyPossible = true, float maxDistance = 10000.0f, TravelBuildStats* stats = nullptr) const;
 		void GetPartitionsLock(bool getLock = true);

@@ -8,6 +8,19 @@
 
 namespace ai
 {
+    // A58 probe (temporary): how much work the point-square hierarchy actually does. TravelMgr
+    // resets these around every IsPossible call and keeps the numbers of the slowest one, so a
+    // single 11-26 s IsPossible can say whether it walked points, sub-squares or map-transfer
+    // portals - the three candidates the code reading left open.
+    struct SquareProbe
+    {
+        static uint64 subSquareSteps;  // sq.sqDistance() calls made inside container loops
+        static uint64 pointSteps;      // individual point distance computations
+        static uint64 portalLists;     // CollectMapTransferPortals calls
+        static uint64 portals;         // portals iterated per call in MapWpSquare::sqOutDistance
+        static void Reset();
+    };
+
     //A square defined by two points min/max which are calculated when adding points to the child container.
     //Distance calculations are aproximated outside the min/max range by calculating against the closest point on the square instead of any specific point contained inside of it.
     class WorldPointSquare
@@ -37,6 +50,7 @@ namespace ai
 
         virtual float sqDistance(const WorldPosition& point) const
         {
+            ++SquareProbe::subSquareSteps;
             if (IsIn(point))
                 return sqInDistance(point);
             else
@@ -118,6 +132,7 @@ namespace ai
             float minDistSq = FLT_MAX;
             for (auto& p : points)
             {
+                ++SquareProbe::pointSteps;
                 float distSq = p->sqDistance(point);
                 if (distSq < minDistSq)
                     minDistSq = distSq;
@@ -193,6 +208,7 @@ namespace ai
             WorldPosition* minPoint = nullptr;
             for (auto& p : points) //Check all points.
             {
+                ++SquareProbe::pointSteps;
                 float distance = p->sqDistance2d(point);
 
                 if (distance >= minDist && minPoint)

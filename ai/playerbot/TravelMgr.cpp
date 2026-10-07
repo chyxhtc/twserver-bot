@@ -2625,6 +2625,7 @@ DestinationList TravelMgr::GetDestinations(const PlayerTravelInfo& info, uint32 
                     // calls or one very slow one. Both are counted now.
                     if (stats)
                     {
+                        SquareProbe::Reset();
                         auto const possibleStart = std::chrono::steady_clock::now();
                         bool const possible = dest->IsPossible(info);
                         int64_t const possibleUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -2632,7 +2633,14 @@ DestinationList TravelMgr::GetDestinations(const PlayerTravelInfo& info, uint32 
                         ++stats->possibleCalls;
                         stats->possibleUs += (uint64)(possibleUs < 0 ? 0 : possibleUs);
                         if ((uint64)possibleUs > stats->worstPossibleUs)
+                        {
                             stats->worstPossibleUs = (uint64)(possibleUs < 0 ? 0 : possibleUs);
+                            stats->worstEntry = dest->GetEntry();
+                            stats->worstSubSquareSteps = SquareProbe::subSquareSteps;
+                            stats->worstPointSteps = SquareProbe::pointSteps;
+                            stats->worstPortalLists = SquareProbe::portalLists;
+                            stats->worstPortals = SquareProbe::portals;
+                        }
                         if (!possible)
                             continue;
                     }
@@ -3019,13 +3027,18 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     uint32 const searchMs = WorldTimer::getMSTime() - searchStartMs;
     uint32 const loopMs = searchMs > buildMs ? searchMs - buildMs : 0;
     if (searchMs >= 50)
-        sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u, buildMs=%u, loopMs=%u, points=%llu, bucketsSeen=%llu, buckets=%llu, possibleCalls=%llu, possibleMs=%llu, worstPossibleMs=%llu, examined=%llu, distMs=%llu, worstDestMs=%llu)",
+        sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u, buildMs=%u, loopMs=%u, points=%llu, bucketsSeen=%llu, buckets=%llu, possibleCalls=%llu, possibleMs=%llu, worstPossibleMs=%llu, worstEntry=%d, worstSS=%llu, worstPts=%llu, worstPortalLists=%llu, worstPortals=%llu, examined=%llu, distMs=%llu, worstDestMs=%llu)",
             searchMs, probeTotal, purposeFlag, (uint32)entries.size(), (uint32)pointMap.size(),
             buildMs, loopMs, (unsigned long long)probePoints,
             (unsigned long long)buildStats.bucketsSeen, (unsigned long long)buildStats.buckets,
             (unsigned long long)buildStats.possibleCalls,
             (unsigned long long)(buildStats.possibleUs / 1000),
             (unsigned long long)(buildStats.worstPossibleUs / 1000),
+            buildStats.worstEntry,
+            (unsigned long long)buildStats.worstSubSquareSteps,
+            (unsigned long long)buildStats.worstPointSteps,
+            (unsigned long long)buildStats.worstPortalLists,
+            (unsigned long long)buildStats.worstPortals,
             (unsigned long long)buildStats.examined,
             (unsigned long long)(buildStats.distUs / 1000), (unsigned long long)(buildStats.worstUs / 1000));
 
