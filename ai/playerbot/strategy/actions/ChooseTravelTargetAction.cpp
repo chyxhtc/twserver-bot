@@ -18,6 +18,7 @@
 #include "Guild/GuildMgr.h"
 #include <iomanip>
 #include <mutex>
+#include <chrono>
 
 using namespace ai;
 
@@ -515,6 +516,42 @@ inline std::string PrintPartion(uint32 sqPartition)
 static int const kRouteAvoidAttempts = 4;
 static int32 const kHandInWaypointMarginBonus = 5;
 
+// A58: one bot's travel re-plan has held the whole world thread for 29-42 s (BOTPERF's
+// maxUs, matched by an equally long bot_trace gap; measured 2026-10-07, 25 such windows
+// across the day). The candidate loop only ever examines 1-9 destinations, so the cost is
+// somewhere else - the travel-node route search is the prime suspect. Both phases are
+// timed here and written to bot_trace only when they exceed the thresholds, under the hot
+// switch "routeslow" (bot_diag.conf), so the cost while it is off is one clock read.
+static int64_t const kRouteSlowUs = 1000 * 1000;
+static int64_t const kScanSlowUs = 2 * 1000 * 1000;
+
+// Times one SetBestTarget scan (candidate flattening, ordering and the check loop) and
+// reports it on destruction, whatever path the loop leaves by.
+struct TravelScanTimer
+{
+    PlayerbotAI* ai;
+    std::string purpose;
+    uint32 const& considered;
+    uint32 candidates = 0;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+
+    ~TravelScanTimer()
+    {
+        if (!ai || trace::VerdictOf("routeslow") != trace::Verdict::On)
+            return;
+
+        int64_t const us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if (us < kScanSlowUs)
+            return;
+
+        sPlayerbotAIConfig.logEvent(ai, "TravelSlowScan",
+            purpose + "|candidates=" + std::to_string(candidates) +
+            "|considered=" + std::to_string(considered) +
+            "|ms=" + std::to_string(us / 1000));
+    }
+};
+
 static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, WorldPosition* position, std::string& blocker, bool allowTransfer, bool handInReserve)
 {
     int32 const limit = (int32)bot->GetLevel() + AreaLevelMargin() + (handInReserve ? kHandInWaypointMarginBonus : 0);
@@ -719,7 +756,22 @@ static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string&
         }
     }
 
+    auto const routeStart = std::chrono::steady_clock::now();
     bool const ok = RouteIsSurvivableUncached(bot, start, position, blocker, allowTransfer, handInReserve);
+
+    // A58: a single uncached route search is the prime suspect for the 30 s world stall.
+    if (botAi && trace::VerdictOf("routeslow") == trace::Verdict::On)
+    {
+        int64_t const routeUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - routeStart).count();
+        if (routeUs >= kRouteSlowUs)
+            sPlayerbotAIConfig.logEvent(botAi, "RouteSlowProbe",
+                "ms=" + std::to_string(routeUs / 1000) +
+                "|sameMap=" + std::to_string(start.getMapId() == position->getMapId() ? 1 : 0) +
+                "|yards=" + std::to_string((int)round(start.distance(*position))) +
+                "|transfer=" + std::to_string(allowTransfer ? 1 : 0) +
+                "|reserve=" + std::to_string(handInReserve ? 1 : 0));
+    }
 
     std::lock_guard<std::mutex> lock(cacheMutex);
     if (cache.size() > 50000)
@@ -762,6 +814,8 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
     std::map<std::string, std::vector<int32>> rejectionEntries;
     TravelDestination* currentDestination = nullptr;
     uint32 considered = 0;
+    // A58 probe: reports the scan on exit only if it was slow (see TravelScanTimer).
+    TravelScanTimer scanTimer{ai, travelPurposeName, considered};
     auto reject = [&](std::string const& why)
     {
         if (!logReasons)
@@ -909,6 +963,8 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
     }
 
     uint32 const lastPartition = partitionedList.empty() ? 0 : std::prev(partitionedList.end())->first;
+
+    scanTimer.candidates = (uint32)ordered.size();
 
     for (auto& candidate : ordered)
     {
