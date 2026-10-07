@@ -602,7 +602,10 @@ bool FindCorpseAction::Execute(Event& event)
                         sLog.outDetail("[BOT CORPSE] %s: find corpse - no displacement for %llds, repop instead of walking", bot->GetName(), (long long)kCorpseRunNoProgressSec);
                     moved = ai->DoSpecificAction("repop", Event(), true);
 
-                    if (logMoveTo && trace::VerdictOf("corpserun") == trace::Verdict::On)
+                    // Not behind the 60 s MoveTo throttle: the no-displacement row above is not
+                    // either, and this is the line that proves the repop ran (it was missing on
+                    // the first three live samples, 2026-10-07 22:53/22:57/23:11).
+                    if (trace::VerdictOf("corpserun") == trace::Verdict::On)
                         sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
                             "reason=repop|result=" + std::to_string(moved ? 1 : 0) +
                             "|dist=" + std::to_string((int)ghostDistAfter) +
