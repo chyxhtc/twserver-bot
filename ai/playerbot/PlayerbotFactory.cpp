@@ -3710,6 +3710,10 @@ void PlayerbotFactory::InitAmmo()
     {
         for (uint32 i = 0; i < maxCount - count; i++)
         {
+            // Ammo may live anywhere in the bags: the platform shows the quiver/pouch as empty
+            // when the stack sits in a Traveler's Backpack (measured on Faecrash and Jaezo,
+            // 2026-10-07), but the user confirmed that is fine - only the ammo being absent
+            // would be a problem. Keep the original placement.
             Item* newItem = bot->StoreNewItemInInventorySlot(entry, 200);
         }
     }

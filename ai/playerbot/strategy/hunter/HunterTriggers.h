@@ -10,6 +10,34 @@ namespace ai
     // and traps - is not there yet).
     uint32 const HUNTER_KITING_LEVEL = 10;
 
+    // Shared dwell guard for the two hunter combat-strategy switches.
+    //
+    // The two triggers are exact complements inside the 8 yard dead zone, and a mob's victim
+    // can alternate between the hunter and its pet (taunt, fear, pet pull) from tick to tick.
+    // Every switch rebuilds that engine's combat strategy, which cancels the ranged
+    // auto-attack that had only just started. Measured 2026-10-07 (nine hunters, 10.5 hours):
+    // 34 auto shots in total against 917-939 melee<->ranged flips, and the flips happened
+    // overwhelmingly inside the dead zone - the ranged kit was rebuilt far more often than it
+    // was ever used, which is also why the ammo stacks never moved. Allow at most one switch
+    // per 3 s: whichever condition survives the window wins, and a mob that really is glued
+    // inside the dead zone still switches on the next evaluation.
+    inline bool HunterSwitchDwellElapsed(PlayerbotAI* ai)
+    {
+        if (!ai)
+            return true;
+        AiObjectContext* context = ai->GetAiObjectContext();
+        if (!context)
+            return true;
+        Value<time_t>* last = context->GetValue<time_t>("manual time", "hunter strategy switch");
+        if (!last)
+            return true;
+        time_t const now = time(nullptr);
+        if (last->Get() && now - last->Get() < 3)
+            return false;
+        last->Set(now);
+        return true;
+    }
+
     HAS_AURA_TRIGGER_TIME(FeignDeathTrigger, "feign death", 2);
 
     BEGIN_TRIGGER(HunterNoStingsActiveTrigger, Trigger)
@@ -241,7 +269,8 @@ private:
                 (target->GetVictim() != bot ||
                 IsImmobilizedStateCompat(target) ||
                 (target->GetSpeed(MOVE_RUN) <= (bot->GetSpeed(MOVE_RUN) / 2) && !((!bot->GetPet() || bot->GetPet()->IsDead()) && target->IsCreature() && target->GetHealthPercent() < 50.f && target->GetHealth() < bot->GetHealth())) ||
-                distance > 8.0f);
+                distance > 8.0f) &&
+                HunterSwitchDwellElapsed(ai);
         }
     };
 
@@ -300,7 +329,8 @@ private:
                 !IsImmobilizedStateCompat(target) &&
                 ai->HasStrategy("ranged", BotState::BOT_STATE_COMBAT) &&
                 target->GetVictim() == bot &&
-                sServerFacade.IsDistanceLessOrEqualThan(AI_VALUE2(float, "distance", "current target"), 8.0f);
+                sServerFacade.IsDistanceLessOrEqualThan(AI_VALUE2(float, "distance", "current target"), 8.0f) &&
+                HunterSwitchDwellElapsed(ai);
         }
     };
 
