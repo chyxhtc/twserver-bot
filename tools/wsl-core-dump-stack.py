@@ -46,6 +46,15 @@ def main() -> int:
         return ["docker", "run", "--rm", "-v", "%s:/art:ro" % folder, addr2line_image,
                 "addr2line", "-f", "-C", "-e", "/art/%s" % name, "0x%x" % offset]
 
+    def addr2line_cmd_multi(offsets):
+        tail = ["0x%x" % offset for offset in offsets]
+        if not addr2line_image:
+            return ["addr2line", "-f", "-C", "-e", module_path] + tail
+        folder = os.path.dirname(os.path.abspath(module_path))
+        name = os.path.basename(module_path)
+        return ["docker", "run", "--rm", "-v", "%s:/art:ro" % folder, addr2line_image,
+                "addr2line", "-f", "-C", "-e", "/art/%s" % name] + tail
+
     with open(core_path, "rb") as fh:
         header = fh.read(64)
         if header[:4] != b"\x7fELF":
@@ -160,6 +169,31 @@ def main() -> int:
                 return out.stdout.strip().replace("\n", " ")
         return None
 
+    def resolve_many(addrs):
+        """addr2line in one shot: with ADDR2LINE_IMAGE each call is a container start, so the
+        per-address loop that used to live here cost tens of seconds per dump."""
+        offsets = []
+        for addr in addrs:
+            hit = None
+            for start, end, file_off in module_ranges:
+                if start <= addr < end:
+                    hit = addr - start + file_off
+                    break
+            offsets.append(hit)
+        unique = []
+        for offset in offsets:
+            if offset is not None and offset not in unique:
+                unique.append(offset)
+        resolved = {}
+        if unique:
+            out = subprocess.run(addr2line_cmd_multi(unique), capture_output=True, text=True)
+            lines = out.stdout.splitlines()
+            for i, offset in enumerate(unique):
+                fn = lines[2 * i] if 2 * i < len(lines) else "?"
+                loc = lines[2 * i + 1] if 2 * i + 1 < len(lines) else "?"
+                resolved[offset] = (fn + " " + loc).strip()
+        return [resolved.get(offset, "??") if offset is not None else None for offset in offsets]
+
     print("threads: %d  crashing candidates: %s"
           % (len(threads), [t[0] for t in threads if t[4] not in (0, 5)]))
     for idx, comm, rip, rsp, signo in threads:
@@ -176,9 +210,10 @@ def main() -> int:
             continue
         print("\nthread %d (%s) rip=0x%x rsp=0x%x  module frames: %d"
               % (idx, comm or "?", rip, rsp, len(frames)))
+        shown = frames[:40]
+        resolved = resolve_many([value for _offset, value in shown])
         seen = set()
-        for offset, value in frames[:40]:
-            where = resolve(value)
+        for (offset, value), where in zip(shown, resolved):
             if where in seen:
                 continue
             seen.add(where)
