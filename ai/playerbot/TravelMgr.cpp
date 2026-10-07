@@ -1458,6 +1458,48 @@ namespace
     }
 }
 
+void TravelMgr::EnsureCreatureLevelIndex()
+{
+    if (creatureLevelsBuilt)
+        return;
+
+    creatureLevelsBuilt = true;
+    uint32 const startMs = WorldTimer::getMSTime();
+    uint64 rows = 0;
+
+    FactionTemplateEntry const* humanFaction = sFactionTemplateStore.LookupEntry(1);
+    FactionTemplateEntry const* orcFaction = sFactionTemplateStore.LookupEntry(2);
+
+    for (auto& creaturePair : WorldPosition().GetCreaturesNear())
+    {
+        ++rows;
+        ++g_areaLevelProbe.creatures;
+        AreaTableEntry const* creatureArea = WorldPosition(creaturePair).GetArea();
+        if (!creatureArea)
+            continue;
+
+        CreatureData const& cData = creaturePair->second;
+        CreatureInfo const* cInfo = sObjectMgr.GetCreatureTemplate(cData.creature_id[0]);
+
+        if (!cInfo)
+            continue;
+
+        FactionTemplateEntry const* factionEntry = sFactionTemplateStore.LookupEntry(cInfo->faction);
+        ReputationRank reactionHum = PlayerbotAI::GetFactionReaction(humanFaction, factionEntry);
+        ReputationRank reactionOrc = PlayerbotAI::GetFactionReaction(orcFaction, factionEntry);
+
+        if (reactionHum > REP_NEUTRAL || reactionOrc > REP_NEUTRAL)
+            continue;
+
+        auto& index = creatureLevels[creatureArea->Id];
+        index.first += cInfo->level_max;
+        index.second++;
+    }
+
+    sLog.outString(">> TortoiseBots: creature level index built once (%llu spawn rows, %" SIZEFMTD " areas, %u ms)",
+        (unsigned long long)rows, creatureLevels.size(), WorldTimer::getMSTime() - startMs);
+}
+
 int32 TravelMgr::GetAreaLevel(uint32 area_id)
 {
     bool const outermost = (g_areaLevelDepth++ == 0);
@@ -1541,37 +1583,7 @@ int32 TravelMgr::GetAreaLevelInner(uint32 area_id)
     // area lookup and two faction reactions per row - 25-27 s on the world thread per area, which
     // is what stalled the world tick during the first half hour of every session. Build the
     // per-area sums once and answer from the index; the arithmetic and the filters are unchanged.
-    if (!creatureLevelsBuilt)
-    {
-        creatureLevelsBuilt = true;
-        FactionTemplateEntry const* humanFaction = sFactionTemplateStore.LookupEntry(1);
-        FactionTemplateEntry const* orcFaction = sFactionTemplateStore.LookupEntry(2);
-
-        for (auto& creaturePair : WorldPosition().GetCreaturesNear())
-        {
-            ++g_areaLevelProbe.creatures;
-            AreaTableEntry const* creatureArea = WorldPosition(creaturePair).GetArea();
-            if (!creatureArea)
-                continue;
-
-            CreatureData const& cData = creaturePair->second;
-            CreatureInfo const* cInfo = sObjectMgr.GetCreatureTemplate(cData.creature_id[0]);
-
-            if (!cInfo)
-                continue;
-
-            FactionTemplateEntry const* factionEntry = sFactionTemplateStore.LookupEntry(cInfo->faction);
-            ReputationRank reactionHum = PlayerbotAI::GetFactionReaction(humanFaction, factionEntry);
-            ReputationRank reactionOrc = PlayerbotAI::GetFactionReaction(orcFaction, factionEntry);
-
-            if (reactionHum > REP_NEUTRAL || reactionOrc > REP_NEUTRAL)
-                continue;
-
-            auto& index = creatureLevels[creatureArea->Id];
-            index.first += cInfo->level_max;
-            index.second++;
-        }
-    }
+    EnsureCreatureLevelIndex();
 
     auto const indexed = creatureLevels.find(area_id);
     if (indexed != creatureLevels.end() && indexed->second.second)
@@ -1695,6 +1707,12 @@ void TravelMgr::LoadAreaLevels()
 
     sLog.outString(">> Loaded " SIZEFMTD " area levels (" SIZEFMTD " migration, " SIZEFMTD " area_template).",
         areaLevels.size(), fromMigration, fromAreaTemplate);
+
+    // A58: fill the creature level index here, once, while the server is still starting. Left to
+    // the first travel search that needs it, the same walk runs on the world thread and each spawn
+    // row's area lookup pulls a terrain tile: measured 25-27 s on 2026-10-07, blocking a whole
+    // world tick - every session, in its first half hour, once per uncovered area.
+    EnsureCreatureLevelIndex();
 }
 
 void TravelMgr::LoadQuestTravelTable()

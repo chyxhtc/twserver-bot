@@ -616,6 +616,9 @@ namespace ai
 
 		int32 GetAreaLevel(uint32 area_id);
 		int32 GetAreaLevelInner(uint32 area_id);
+		// A58: fills the per-area creature level index in one pass. Called once at startup (after
+		// the two area-level sources are loaded) and lazily as a fallback.
+		void EnsureCreatureLevelIndex();
 		void LoadAreaLevels();
 		// Bounded validated level for login scatter: cached table first (with parent-zone
 		// cached fallback), then immutable DBC AreaTable AreaLevel / parent AreaLevel.
