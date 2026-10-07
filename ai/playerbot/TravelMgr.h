@@ -622,6 +622,11 @@ namespace ai
 		// No creature scan, no DB write, no lazy GetAreaLevel mutation.
 		bool TryGetValidatedAreaLevel(uint32 areaId, int32& outLevel) const;
 	private:
+		// A58: per-area creature levels, built in one pass over the spawn table. The old code
+		// repeated that whole scan (88,874 rows on 2026-10-07) for every area whose level had to
+		// be derived this way, which cost 25-27 s on the world thread per area.
+		bool creatureLevelsBuilt = false;
+		std::map<uint32, std::pair<int64, uint32>> creatureLevels;
 		void Clear();
 		void SetNullTravelTarget(Player* player) const;
 		std::vector<QuestHub> questHubs;

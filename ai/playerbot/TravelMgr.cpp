@@ -1536,30 +1536,48 @@ int32 TravelMgr::GetAreaLevelInner(uint32 area_id)
     }
 
     //Get units avarage
-    FactionTemplateEntry const* humanFaction = sFactionTemplateStore.LookupEntry(1);
-    FactionTemplateEntry const* orcFaction = sFactionTemplateStore.LookupEntry(2);
-
-    for (auto& creaturePair : WorldPosition().GetCreaturesNear())
+    // A58 fix: the scan below used to run for every single area that had to be derived this way,
+    // and it walks the whole spawn table (88,874 rows measured 2026-10-07) doing a WorldPosition
+    // area lookup and two faction reactions per row - 25-27 s on the world thread per area, which
+    // is what stalled the world tick during the first half hour of every session. Build the
+    // per-area sums once and answer from the index; the arithmetic and the filters are unchanged.
+    if (!creatureLevelsBuilt)
     {
-        ++g_areaLevelProbe.creatures;
-        if (WorldPosition(creaturePair).GetArea() != area)
-            continue;
+        creatureLevelsBuilt = true;
+        FactionTemplateEntry const* humanFaction = sFactionTemplateStore.LookupEntry(1);
+        FactionTemplateEntry const* orcFaction = sFactionTemplateStore.LookupEntry(2);
 
-        CreatureData const cData = creaturePair->second;
-        CreatureInfo const* cInfo = sObjectMgr.GetCreatureTemplate(cData.creature_id[0]);
+        for (auto& creaturePair : WorldPosition().GetCreaturesNear())
+        {
+            ++g_areaLevelProbe.creatures;
+            AreaTableEntry const* creatureArea = WorldPosition(creaturePair).GetArea();
+            if (!creatureArea)
+                continue;
 
-        if (!cInfo)
-            continue;
+            CreatureData const& cData = creaturePair->second;
+            CreatureInfo const* cInfo = sObjectMgr.GetCreatureTemplate(cData.creature_id[0]);
 
-        FactionTemplateEntry const* factionEntry = sFactionTemplateStore.LookupEntry(cInfo->faction);
-        ReputationRank reactionHum = PlayerbotAI::GetFactionReaction(humanFaction, factionEntry);
-        ReputationRank reactionOrc = PlayerbotAI::GetFactionReaction(orcFaction, factionEntry);
+            if (!cInfo)
+                continue;
 
-        if (reactionHum > REP_NEUTRAL || reactionOrc > REP_NEUTRAL)
-            continue;
+            FactionTemplateEntry const* factionEntry = sFactionTemplateStore.LookupEntry(cInfo->faction);
+            ReputationRank reactionHum = PlayerbotAI::GetFactionReaction(humanFaction, factionEntry);
+            ReputationRank reactionOrc = PlayerbotAI::GetFactionReaction(orcFaction, factionEntry);
 
-        level += cInfo->level_max;
-        cnt++;
+            if (reactionHum > REP_NEUTRAL || reactionOrc > REP_NEUTRAL)
+                continue;
+
+            auto& index = creatureLevels[creatureArea->Id];
+            index.first += cInfo->level_max;
+            index.second++;
+        }
+    }
+
+    auto const indexed = creatureLevels.find(area_id);
+    if (indexed != creatureLevels.end() && indexed->second.second)
+    {
+        level = (int32)indexed->second.first;
+        cnt = indexed->second.second;
     }
 
     if (cnt)
