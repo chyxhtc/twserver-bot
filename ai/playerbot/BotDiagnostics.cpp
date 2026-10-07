@@ -4,6 +4,7 @@
 #include "BotDiagnostics.h"
 #include "playerbot/playerbot.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/TraceSwitch.h"
 #include <ctime>
 #include <sstream>
 
@@ -11,10 +12,18 @@ namespace ai { namespace botdiag {
     thread_local const char* gLastPhaseTag     = nullptr;
     thread_local const char* gLastPhaseBotName = nullptr;
 
-    bool IsActionLogEnabled()
-    {
-        return sPlayerbotAIConfig.enableActionLog;
-    }
+bool IsActionLogEnabled()
+{
+    // AiPlayerbot.EnableActionLog is read once at startup, so turning the per-bot action log on
+    // used to cost a restart to enable and another to turn off. An M11-style corruption needs the
+    // action sequence from just before the crash, which means switching the log on for a short
+    // window and off again - so the hot switch (bot_diag.conf "actionlog") can force it on
+    // without touching the startup default. It can only turn the log ON: the config stays the
+    // authority when the switch is absent or set to 0.
+    if (sPlayerbotAIConfig.enableActionLog)
+        return true;
+    return trace::VerdictOf("actionlog") == trace::Verdict::On;
+}
 }}
 
 namespace
