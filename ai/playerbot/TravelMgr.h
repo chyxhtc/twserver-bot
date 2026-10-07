@@ -579,10 +579,14 @@ namespace ai
 		// cost is many destinations or one pathological DistanceTo.
 		struct TravelBuildStats
 		{
-			uint64 buckets = 0;    // (purpose, entry) buckets the outer loop walked
-			uint64 examined = 0;   // destinations that survived IsPossible and were distance-checked
-			uint64 distUs = 0;     // total time inside those DistanceTo calls
-			uint64 worstUs = 0;    // the worst single DistanceTo
+			uint64 buckets = 0;         // (purpose, entry) buckets that passed the entries filter
+			uint64 bucketsSeen = 0;     // every (purpose, entry) pair the outer loop looked at
+			uint64 possibleCalls = 0;   // IsPossible calls (passed and refused)
+			uint64 possibleUs = 0;      // total time inside them
+			uint64 worstPossibleUs = 0; // the worst single IsPossible
+			uint64 examined = 0;        // destinations that survived IsPossible and were distance-checked
+			uint64 distUs = 0;          // total time inside those DistanceTo calls
+			uint64 worstUs = 0;         // the worst single DistanceTo
 		};
 		DestinationList GetDestinations(const PlayerTravelInfo& info, uint32 purposeFlag = (uint32)TravelDestinationPurpose::None, const std::vector<int32>& entries = {}, bool onlyPossible = true, float maxDistance = 10000.0f, TravelBuildStats* stats = nullptr) const;
 		void GetPartitionsLock(bool getLock = true);
