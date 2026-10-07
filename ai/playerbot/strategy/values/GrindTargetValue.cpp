@@ -90,13 +90,33 @@ Unit* GrindTargetValue::Calculate()
                 out << why << "=" << n << ";";
                 total += n;
             }
-            if (out.str().empty())
+            bool const noCandidates = out.str().empty();
+            if (noCandidates)
                 out << "(no candidate examination)";
             sPlayerbotAIConfig.logEvent(ai, "GrindNoTarget",
                 "attackers=" + std::to_string(g_grindAttackTargets) +
                 " possible=" + std::to_string(g_grindPossibleTargets) +
                 " skipped=" + std::to_string(total),
                 out.str());
+
+            // A52 probe, hot switch "grindgate" (default off, see TraceSwitch.h). An empty
+            // histogram has several different causes and the line above names none of them:
+            // the spatial scan was skipped (idle = on a taxi, or RESTING in a sanctuary /
+            // standing still), all activity was denied, or the scan ran and found nothing
+            // unfriendly in range. Only the last one is a real "no mobs here"; the others mean
+            // the caller never looked. Kept as a separate event so the platform's
+            // no_grind_target parser sees the same GrindNoTarget line as before.
+            if (noCandidates && trace::VerdictOf("grindgate") == trace::Verdict::On)
+            {
+                sPlayerbotAIConfig.logEvent(ai, "GrindGate",
+                    std::string("idle=") + (ai->IsSpatialScanIdle() ? "1" : "0") +
+                    "|allowAct=" + (ai->AllowActivity(ALL_ACTIVITY) ? "1" : "0") +
+                    "|moving=" + (bot->IsMoving() ? "1" : "0") +
+                    "|area=" + std::to_string(sServerFacade.GetAreaId(bot)),
+                    "attackers=" + std::to_string(g_grindAttackTargets) +
+                    "|possible=" + std::to_string(g_grindPossibleTargets) +
+                    "|greySince=" + std::to_string((uint32)AI_VALUE2(time_t, "manual time", "grey-only grind since")));
+            }
         }
 
         // A bot whose only nearby mobs are grey gives no xp. Record since when that has been
