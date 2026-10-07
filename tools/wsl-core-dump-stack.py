@@ -31,6 +31,20 @@ def main() -> int:
         print(__doc__)
         return 2
     core_path, module_path = sys.argv[1], sys.argv[2]
+    # The local TDM-GCC addr2line cannot read the DWARF5 the build image emits
+    # ("invalid abstract instance DIE ref", and every answer comes back as ??:?), so the
+    # same toolchain that produced the .so has to do the lookup. Set ADDR2LINE_IMAGE to a
+    # docker image (e.g. tortoise-build-env:latest) and the module file's folder is bind
+    # mounted read-only at /art for the lookup.
+    addr2line_image = os.environ.get("ADDR2LINE_IMAGE", "").strip()
+
+    def addr2line_cmd(offset: int):
+        if not addr2line_image:
+            return ["addr2line", "-f", "-C", "-e", module_path, "0x%x" % offset]
+        folder = os.path.dirname(os.path.abspath(module_path))
+        name = os.path.basename(module_path)
+        return ["docker", "run", "--rm", "-v", "%s:/art:ro" % folder, addr2line_image,
+                "addr2line", "-f", "-C", "-e", "/art/%s" % name, "0x%x" % offset]
 
     with open(core_path, "rb") as fh:
         header = fh.read(64)
@@ -142,9 +156,7 @@ def main() -> int:
         for start, end, file_off in module_ranges:
             if start <= addr < end:
                 offset = addr - start + file_off
-                out = subprocess.run(
-                    ["addr2line", "-f", "-C", "-e", module_path, "0x%x" % offset],
-                    capture_output=True, text=True)
+                out = subprocess.run(addr2line_cmd(offset), capture_output=True, text=True)
                 return out.stdout.strip().replace("\n", " ")
         return None
 
