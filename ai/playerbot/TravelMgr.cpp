@@ -1496,7 +1496,7 @@ void TravelMgr::EnsureCreatureLevelIndex()
         index.second++;
     }
 
-    sLog.outString(">> TortoiseBots: creature level index built once (%llu spawn rows, %" SIZEFMTD " areas, %u ms)",
+    sLog.outString(">> TortoiseBots: creature level index built once (%llu spawn rows, " SIZEFMTD " areas, %u ms)",
         (unsigned long long)rows, creatureLevels.size(), WorldTimer::getMSTime() - startMs);
 }
 
