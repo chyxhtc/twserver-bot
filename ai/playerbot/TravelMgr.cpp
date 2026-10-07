@@ -2799,6 +2799,15 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
 
     PartitionedTravelList pointMap;
     DestinationList destinations = GetDestinations(info, purposeFlag, entries, onlyPossible, maxDistance);
+    // A58: the 29-42 s world stalls are this search and nothing else (22 BOTSEARCH lines over
+    // 5 s on 2026-10-07, each matching a trace gap and a BOTPERF maxUs of the same size), and
+    // it runs on the world thread because AiPlayerbot.AsyncTravelPartitions is 0 - the future
+    // is std::launch::deferred, so wait_for(0) reports deferred rather than timeout and get()
+    // runs the whole thing inline. Which half is slow is still open: 23 destinations took
+    // 28 s while 2156 took 31 s, so it is per-point work, not the destination count. Split the
+    // existing line instead of adding another one - build is the destination list, loop is the
+    // per-point pass, points counts the points that pass walked.
+    uint32 const buildMs = WorldTimer::getMSTime() - searchStartMs;
 
     // The hub the bot is standing in, if any: used for the "finish this town before
     // moving on" preference (see the partition step below).
@@ -2817,6 +2826,7 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     uint32 probeTotal = destinations.size(), probeNoPartition = 0, probeNoPoint = 0;
     uint32 probeRejectLevel = 0, probeRejectDistance = 0, probeFarthest = 0;
     uint32 probeRejectContinent = 0;
+    uint64 probePoints = 0;
 
     for (auto& dest : destinations)
     {
@@ -2842,6 +2852,7 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
         float minDistance = FLT_MAX;
         for (auto& position : points)
         {
+            ++probePoints;
             // Grind / gather / RPG work on the other continent is never worth the trip
             // and the travel graph cannot route it anyway: cross-continent candidates
             // were the largest single source of rejected routes in the 2026-10-02 logs
@@ -2959,9 +2970,11 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     sTravelMgr.GetPartitionsLock(false);
 
     uint32 const searchMs = WorldTimer::getMSTime() - searchStartMs;
+    uint32 const loopMs = searchMs > buildMs ? searchMs - buildMs : 0;
     if (searchMs >= 50)
-        sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u)",
-            searchMs, probeTotal, purposeFlag, (uint32)entries.size(), (uint32)pointMap.size());
+        sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u, buildMs=%u, loopMs=%u, points=%llu)",
+            searchMs, probeTotal, purposeFlag, (uint32)entries.size(), (uint32)pointMap.size(),
+            buildMs, loopMs, (unsigned long long)probePoints);
 
     return pointMap;
 }
