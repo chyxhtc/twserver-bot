@@ -190,21 +190,30 @@ Unit* GrindTargetValue::Calculate()
     }
     else if (target)
     {
-        // A real grind target is the one unambiguous proof of an xp source in range, so it
-        // clears the stamp instead of leaving a stale one armed for the next idle stop.
+        // A real grind target is proof of an xp source in range - but only when it actually
+        // pays xp. A grey mob that an active quest still sources from stays a legitimate target
+        // (see the needForQuest branch above, which is where the grey/no-XP filter is skipped
+        // on purpose), yet killing it earns nothing and it must not cancel the ten minute leave
+        // hatch. Measured 2026-10-07 (A52): Suvalsarth, level 26, kept clearing the stamp on
+        // level 8-17 mobs that an old collect quest sourced from, so the stamp never stayed
+        // armed for ten minutes and he never left the outgrown zone.
+        bool const xpWorthy =
+            !(target->GetLevel() + trace::IntValue("grey_level_diff", 8) < (int)bot->GetLevel());
         if (AI_VALUE2(time_t, "manual time", "grey-only grind since"))
         {
             if (trace::VerdictOf("greyclear") == trace::Verdict::On)
             {
                 std::ostringstream clear;
-                clear << "reason=target|area=" << sServerFacade.GetAreaId(bot)
+                clear << (xpWorthy ? "reason=target" : "reason=target-grey-kept")
+                      << "|area=" << sServerFacade.GetAreaId(bot)
                       << "|outgrownSince=" << (uint32)AI_VALUE2(time_t, "manual time", "outgrown since")
                       << "|entry=" << target->GetEntry() << "|level=" << target->GetLevel()
                       << "|botLevel=" << bot->GetLevel()
-                      << "|xpWorthy=" << ((target->GetLevel() + trace::IntValue("grey_level_diff", 8) < (int)bot->GetLevel()) ? 0 : 1);
+                      << "|xpWorthy=" << (xpWorthy ? 1 : 0);
                 sPlayerbotAIConfig.logEvent(ai, "GreyClear", std::to_string(bot->GetGUIDLow()), clear.str());
             }
-            SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", (time_t)0);
+            if (xpWorthy)
+                SET_AI_VALUE2(time_t, "manual time", "grey-only grind since", (time_t)0);
         }
     }
 
