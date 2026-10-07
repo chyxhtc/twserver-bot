@@ -6,6 +6,7 @@
 #include "playerbot/FleeManager.h"
 #include "playerbot/TravelMgr.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/TraceSwitch.h"
 #include "playerbot/strategy/values/DeadValues.h"
 #include "Database/DBCStructure.h"
 // pi-lens-ignore: clang:pp_file_not_found
@@ -56,6 +57,12 @@ static void LogGhostMoveDiag(PlayerbotAI* ai, Player* bot, WorldPosition const& 
 // ReviveFromCorpseAction.cpp:85-90); 90 s keeps the polite wait without the
 // infinite stall.
 static constexpr int64 kWaitForMasterTimeoutSec = 90;
+
+// A57: how long a ghost may keep reporting a live corpse-run dispatch without actually
+// closing in on its corpse before the run counts as failed and the spirit-healer path
+// (the one the !moved branch already uses) gets a chance. Measured 2026-10-07: one bot
+// sat at a single coordinate for 583 s with moved=1 and its corpse 260.7 yd away.
+static constexpr int64 kCorpseRunNoProgressSec = 90;
 
 
 static bool FindInstanceEntranceTrigger(uint32 corpseMapId, uint32 botMapId, WorldPosition const& botPos,
@@ -542,6 +549,39 @@ bool FindCorpseAction::Execute(Event& event)
             if (moved)
                 LogGhostMoveDiag(ai, bot, ghostBefore, moveToPos, ghostDistBefore, movegenBefore, movegenAfter,
                     started, moved, ghostDistAfter, posUnchangedSec);
+
+            // A57: MoveTo can report success while the ghost never displaces. Measured
+            // 2026-10-07: Suvalsarth sat at one coordinate for 583 s with moved=1,
+            // started=1 and his corpse still 260.7 yd away, and because only the
+            // !moved branch below has a fallback the same dispatch was repeated
+            // forever. Track the best distance reached during this run and treat
+            // kCorpseRunNoProgressSec without closing in as a failure, so the
+            // existing handling below (spirit healer / wait for master) takes over.
+            if (moved)
+            {
+                int32 const closeYards = (int32)ghostDistAfter;
+                int32 const bestYards = AI_VALUE2(int32, "manual int", "corpse run best dist");
+                time_t const lastGain = AI_VALUE2(time_t, "manual time", "corpse run last gain");
+                time_t const nowGain = time(nullptr);
+                if (!lastGain || closeYards < bestYards)
+                {
+                    SET_AI_VALUE2(int32, "manual int", "corpse run best dist", closeYards);
+                    SET_AI_VALUE2(time_t, "manual time", "corpse run last gain", nowGain);
+                }
+                else if (nowGain - lastGain >= kCorpseRunNoProgressSec)
+                {
+                    SET_AI_VALUE2(int32, "manual int", "corpse run best dist", 0);
+                    SET_AI_VALUE2(time_t, "manual time", "corpse run last gain", (time_t)0);
+                    if (trace::VerdictOf("corpserun") == trace::Verdict::On)
+                        sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
+                            "reason=no-displacement|dist=" + std::to_string(closeYards) +
+                            "|best=" + std::to_string(bestYards) +
+                            "|stale=" + std::to_string(nowGain - lastGain) +
+                            "|posUnchanged=" + std::to_string(posUnchangedSec) +
+                            "|master=" + std::to_string(ai->HasActivePlayerMaster() ? 1 : 0));
+                    moved = false;
+                }
+            }
 
             if (!moved && !ai->HasActivePlayerMaster()) //We could not move to coprse. Try spirithealer instead.
             {
