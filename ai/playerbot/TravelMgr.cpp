@@ -1432,8 +1432,59 @@ bool TravelMgr::FindNearestQuestHubWithWork(uint32 mapId, float x, float y, uint
     return true;
 }
 
+namespace
+{
+    // A58 probe: the 26-27 s IsPossible calls did almost no point-square work (25 sub-square
+    // steps, 1 point, 23 portals), so the time is a block, and the prime suspect is the first
+    // GetAreaLevel for an area: it walks the whole area DBC for sub-areas, recurses into each of
+    // them, and if that finds nothing it scans the creatures near a default-constructed
+    // WorldPosition. Only the first call per area is expensive (the result is cached), which
+    // matches one 26 s stall per server session.
+    struct AreaLevelProbe
+    {
+        uint64 calls = 0;
+        uint64 dbcScans = 0;
+        uint64 subAreaRecursions = 0;
+        uint64 creatures = 0;
+    };
+    AreaLevelProbe g_areaLevelProbe;
+    int g_areaLevelDepth = 0;
+    std::chrono::steady_clock::time_point g_areaLevelStart;
+
+    void ResetAreaLevelProbe()
+    {
+        g_areaLevelProbe = AreaLevelProbe();
+        g_areaLevelStart = std::chrono::steady_clock::now();
+    }
+}
+
 int32 TravelMgr::GetAreaLevel(uint32 area_id)
 {
+    bool const outermost = (g_areaLevelDepth++ == 0);
+    if (outermost)
+        ResetAreaLevelProbe();
+
+    int32 const level = GetAreaLevelInner(area_id);
+
+    if (--g_areaLevelDepth == 0)
+    {
+        int64_t const us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - g_areaLevelStart).count();
+        if (us >= 500 * 1000)
+            sLog.outBasic("AREALEVEL: area=%u level=%d took %lld ms (calls=%llu dbcScans=%llu subRecursions=%llu creatures=%llu)",
+                area_id, level, (long long)(us / 1000),
+                (unsigned long long)g_areaLevelProbe.calls,
+                (unsigned long long)g_areaLevelProbe.dbcScans,
+                (unsigned long long)g_areaLevelProbe.subAreaRecursions,
+                (unsigned long long)g_areaLevelProbe.creatures);
+    }
+
+    return level;
+}
+
+int32 TravelMgr::GetAreaLevelInner(uint32 area_id)
+{
+    ++g_areaLevelProbe.calls;
     auto lev = areaLevels.find(area_id);
 
     if (lev != areaLevels.end())
@@ -1461,11 +1512,13 @@ int32 TravelMgr::GetAreaLevel(uint32 area_id)
     //Get sub-area's
     for (uint32 i = 0; i < sAreaStore.GetMaxEntry(); i++)
     {
+        ++g_areaLevelProbe.dbcScans;
         AreaTableEntry const* subArea = GetAreaEntryByAreaID(i);
 
         if (!subArea || subArea->ZoneId != area->Id)
             continue;
 
+        ++g_areaLevelProbe.subAreaRecursions;
         int32 subLevel = GetAreaLevel(subArea->Id);
 
         if (!subLevel)
@@ -1488,6 +1541,7 @@ int32 TravelMgr::GetAreaLevel(uint32 area_id)
 
     for (auto& creaturePair : WorldPosition().GetCreaturesNear())
     {
+        ++g_areaLevelProbe.creatures;
         if (WorldPosition(creaturePair).GetArea() != area)
             continue;
 

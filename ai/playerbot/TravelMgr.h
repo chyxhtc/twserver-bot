@@ -615,6 +615,7 @@ namespace ai
 		bool IsBadMmap(uint32 mapId, int x, int y) const { return std::find(badMmap.begin(), badMmap.end(), std::make_tuple(mapId, x, y)) != badMmap.end(); }
 
 		int32 GetAreaLevel(uint32 area_id);
+		int32 GetAreaLevelInner(uint32 area_id);
 		void LoadAreaLevels();
 		// Bounded validated level for login scatter: cached table first (with parent-zone
 		// cached fallback), then immutable DBC AreaTable AreaLevel / parent AreaLevel.
