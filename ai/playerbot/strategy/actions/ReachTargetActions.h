@@ -70,7 +70,15 @@ namespace ai
                     // stops bots from walking all the way out to the range limit before
                     // they cast. The 0.75 factor keeps a buffer for target movement
                     // while still being well within casting distance.
-                    const float preferredDist = range * 0.75f;
+                    // A hunter is the exception (A53 follow-up, measured 2026-10-07): its reach
+                    // distance is its weapon range (35, 41 with Hawk Eye) and a player opens from
+                    // the edge of it. At 75% (~26 yd) the bot is already inside a same-level mob's
+                    // aggro radius, so the mob charges while it is still closing and it never gets
+                    // the two or three shots a player gets before contact - the action log shows
+                    // Hunter's Mark followed by Raptor Strike 1.6 s later. Keep the fidget buffer
+                    // for everyone else.
+                    const bool hunterRanged = (bot->GetClass() == CLASS_HUNTER) && ai->IsRanged(bot);
+                    const float preferredDist = range * (hunterRanged ? 0.95f : 0.75f);
                     chaseDist = inLos ? preferredDist : (isFriend ? std::min(distanceToTarget * 0.9f, preferredDist) : preferredDist);
                     chaseDist = std::max(chaseDist - sPlayerbotAIConfig.contactDistance, 0.0f);
                 }
