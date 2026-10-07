@@ -483,6 +483,13 @@ bool FindCorpseAction::Execute(Event& event)
             }
         }
     }
+    // A57: set when the no-displacement fallback below fires, i.e. this ghost has proved it
+    // cannot close in on its corpse. The spirit-healer action would only MoveTo again - the very
+    // path that is broken - so that case takes the repop the ten-minute timeout would reach
+    // anyway, ninety seconds in. Measured 2026-10-07: eleven bots froze in four hours, nine of
+    // them for 7.6-10.6 minutes each, every one of them ending at the ten-minute repop.
+    bool stalledNoDisplacement = false;
+
     //Actual mobing part.
     bool moved = false;
 
@@ -580,26 +587,46 @@ bool FindCorpseAction::Execute(Event& event)
                             "|posUnchanged=" + std::to_string(posUnchangedSec) +
                             "|master=" + std::to_string(ai->HasActivePlayerMaster() ? 1 : 0));
                     moved = false;
+                    stalledNoDisplacement = true;
                 }
             }
 
             if (!moved && !ai->HasActivePlayerMaster()) //We could not move to coprse. Try spirithealer instead.
             {
-                if (logMoveTo)
-                    sLog.outDetail("[BOT CORPSE] %s: find corpse - MoveTo failed & no active player master, trying spirit healer", bot->GetName());
-                moved = ai->DoSpecificAction("spirit healer", Event(), true);
+                if (stalledNoDisplacement)
+                {
+                    // A57: the ghost proved it cannot move, and the spirit-healer action reaches
+                    // its graveyard with another MoveTo, so skip straight to the repop the
+                    // ten-minute path uses (no corpse run of its own to waste).
+                    if (logMoveTo)
+                        sLog.outDetail("[BOT CORPSE] %s: find corpse - no displacement for %llds, repop instead of walking", bot->GetName(), (long long)kCorpseRunNoProgressSec);
+                    moved = ai->DoSpecificAction("repop", Event(), true);
 
-                // A57 follow-up: the no-displacement fallback above now fires every ~90 s,
-                // but the bot it fired for (Krorpalgres, 2026-10-07 14:54-15:04) still spent a
-                // full ten minutes dead, so this call is not producing a revive. Say whether it
-                // reported success and what state the ghost was in, at the same 60 s throttle the
-                // MoveTo line uses.
-                if (logMoveTo && trace::VerdictOf("corpserun") == trace::Verdict::On)
-                    sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
-                        "reason=spirit-healer|result=" + std::to_string(moved ? 1 : 0) +
-                        "|dist=" + std::to_string((int)ghostDistAfter) +
-                        "|posUnchanged=" + std::to_string(posUnchangedSec) +
-                        "|deadTime=" + std::to_string((long long)deadTime));
+                    if (logMoveTo && trace::VerdictOf("corpserun") == trace::Verdict::On)
+                        sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
+                            "reason=repop|result=" + std::to_string(moved ? 1 : 0) +
+                            "|dist=" + std::to_string((int)ghostDistAfter) +
+                            "|posUnchanged=" + std::to_string(posUnchangedSec) +
+                            "|deadTime=" + std::to_string((long long)deadTime));
+                }
+                else
+                {
+                    if (logMoveTo)
+                        sLog.outDetail("[BOT CORPSE] %s: find corpse - MoveTo failed & no active player master, trying spirit healer", bot->GetName());
+                    moved = ai->DoSpecificAction("spirit healer", Event(), true);
+
+                    // A57 follow-up: the no-displacement fallback above now fires every ~90 s,
+                    // but the bot it fired for (Krorpalgres, 2026-10-07 14:54-15:04) still spent a
+                    // full ten minutes dead, so this call is not producing a revive. Say whether it
+                    // reported success and what state the ghost was in, at the same 60 s throttle the
+                    // MoveTo line uses.
+                    if (logMoveTo && trace::VerdictOf("corpserun") == trace::Verdict::On)
+                        sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
+                            "reason=spirit-healer|result=" + std::to_string(moved ? 1 : 0) +
+                            "|dist=" + std::to_string((int)ghostDistAfter) +
+                            "|posUnchanged=" + std::to_string(posUnchangedSec) +
+                            "|deadTime=" + std::to_string((long long)deadTime));
+                }
             }
             else if (!moved)
             {
