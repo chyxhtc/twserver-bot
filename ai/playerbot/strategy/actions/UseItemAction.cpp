@@ -252,8 +252,17 @@ bool RequiresItemToUse(const ItemPrototype* itemProto, PlayerbotAI* ai, Player* 
     // function (UseQuestItemOnObjectiveAction -> UseAction::UseItem). So either the pool bots do not
     // actually carry the item cheat, or the 18:26 refusal came from the game object's own state.
     // Keeping keys on the item path is the correct reading either way.
+    // A41 reverse experiment (2026-10-08). The key line above is the last unproven step: the two
+    // ball-and-chain objectives it was written for were already advancing through the quest-item
+    // path, and that path goes through this same function (UseQuestItemOnObjectiveAction ->
+    // UseAction::UseItem -> UseItemInternal), so both "the key had to be attached to the cast" and
+    // "attaching it changed nothing" fit the data so far. Arm knob "keyitemfix" (default 1, which is
+    // today's behaviour) lets one controlled bot be pushed back to the pre-96a2870 behaviour, where
+    // a class 13 key is not attached and a key-vs-lock cast must fail. If that bot then produces
+    // ItemUseCastResult rows (arm castres) and its objective stops advancing, the fix is necessary;
+    // if it keeps advancing with no such row, the fix is a no-op on this path.
     if (itemProto->Class == ITEM_CLASS_KEY)
-        return true;
+        return !bot || sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "keyitemfix", 1) != 0;
 
     return false;
 }
