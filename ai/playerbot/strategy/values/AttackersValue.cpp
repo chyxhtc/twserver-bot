@@ -540,7 +540,46 @@ bool AttackersValue::IgnoreTarget(Unit* target, Player* playerToCheckAgainst)
         // is fought like any other. Own-team guards never trigger the helper.
         if (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
             WorldPosition(target).IsGuardedHostileTownFor(playerToCheckAgainst))
+        {
+            // A59: a creature an active quest still asks for is that quest's objective even
+            // when it stands inside a guarded town. The rule was written for camps the bot has
+            // no business in, not for the target itself, and it has a self-veto shape: the
+            // target is by definition 0 yards from its own spawn, so a quest mob whose name
+            // matches the guard-title list (WorldPosition.cpp:498-504) can never be picked.
+            // Measured 2026-10-09: quest 547 Humbert's Sword wants item 3693, which only
+            // Dun Garok Mountaineer/Rifleman/Priest (2344/2345/2346) and Tamra Stormpike
+            // (14275) drop, and all four spawn tables sit inside Dun Garok - a Hillsbrad
+            // Militia (faction template 88, hostile to Horde only) camp. 17 bots held 547 at
+            // 0/1 for the whole day, bot_events.csv has no attack, kill or xp row for any Dun
+            // Garok creature, and the only two trace lines mentioning the camp are one death
+            // and one evade probe. Arm knob "questtargettown", default 0: 0 keeps today's veto,
+            // 1 lets the objective through. Either way one line per bot per refused quest target
+            // per 30 minutes names what the rule is throwing away, so an empty probe list is
+            // itself the answer "these creatures are never offered to this bot at all".
+            bool const isQuestTarget = target->IsCreature() &&
+                context->GetValue<bool>("need for quest", std::to_string(target->GetEntry()))->Get();
+            if (isQuestTarget)
+            {
+                time_t const now = time(nullptr);
+                std::string const probeKey = "hostiletownqt::" + std::to_string(target->GetEntry());
+                time_t const lastProbe = context->GetValue<time_t>("manual time", probeKey)->Get();
+                if (!lastProbe || now - lastProbe >= 30 * MINUTE)
+                {
+                    context->GetValue<time_t>("manual time", probeKey)->Set(now);
+                    sPlayerbotAIConfig.logEvent(ai, "HostileTownQuestTarget",
+                        std::to_string(target->GetEntry()) + "|" + target->GetName(),
+                        "level=" + std::to_string(target->GetLevel()) +
+                        "|botLevel=" + std::to_string(playerToCheckAgainst->GetLevel()) +
+                        "|arm=" + std::to_string(sPlayerbotAIConfig.GetBotArmInt(
+                            playerToCheckAgainst->GetGUIDLow(), "questtargettown", 0)));
+                }
+
+                if (sPlayerbotAIConfig.GetBotArmInt(playerToCheckAgainst->GetGUIDLow(), "questtargettown", 0) != 0)
+                    return false;
+            }
+
             return true;
+        }
     }
 
     //Ignore Hard hostiles while not already fighting.

@@ -1080,10 +1080,38 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     if (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
                         position->IsGuardedHostileTownFor(bot))
                     {
-                        ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - hostile town guards", "debug travel");
-                        reject("hostile-town");
-                        StrikeUnreachableTaker(ai, bot, destination);
-                        continue;
+                        // A59: a destination that exists because an active quest asks for it
+                        // (a kill objective or the looter of a quest item) is exempt under the
+                        // same arm as the attack-side rule in AttackersValue - see the long
+                        // comment there for the Dun Garok / quest 547 measurement. Default 0
+                        // keeps the veto; the probe line still names every quest objective the
+                        // rule refuses, so an empty list proves the camp is never offered.
+                        bool const questObjectiveDestination =
+                            dynamic_cast<QuestObjectiveTravelDestination*>(destination) != nullptr;
+                        uint32 const armQuestTargetTown =
+                            sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "questtargettown", 0);
+                        if (questObjectiveDestination)
+                        {
+                            time_t const now = time(nullptr);
+                            std::string const probeKey = "hostiletowndest::" + std::to_string(destination->GetEntry());
+                            time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
+                            if (!lastProbe || now - lastProbe >= 30 * MINUTE)
+                            {
+                                SET_AI_VALUE2(time_t, "manual time", probeKey, now);
+                                sPlayerbotAIConfig.logEvent(ai, "HostileTownQuestDestination",
+                                    std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                    "purpose=" + std::to_string((uint32)destination->GetPurpose()) +
+                                    "|arm=" + std::to_string(armQuestTargetTown));
+                            }
+                        }
+
+                        if (!(questObjectiveDestination && armQuestTargetTown != 0))
+                        {
+                            ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - hostile town guards", "debug travel");
+                            reject("hostile-town");
+                            StrikeUnreachableTaker(ai, bot, destination);
+                            continue;
+                        }
                     }
 
                     AreaTableEntry const* area = position->GetArea();
