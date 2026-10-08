@@ -312,6 +312,18 @@ void ChooseTravelTargetAction::setNewTarget(Player* requester, TravelTarget* new
             dest << "|";
 
         sPlayerbotAIConfig.logEvent(ai, "TravelTarget", purpose, dest.str());
+
+        // A25 pairing row: the leave-request probe names the sub-area the bot stood in, this row
+        // names only the picked zone. A move inside the same zone but out of the outgrown sub-area
+        // therefore looks exactly like "the request picked a spot it was supposed to leave", and
+        // 29.7% of 10-08 requests showed a same-name destination for that reason alone. Log both
+        // area *ids* for the one condition where the question exists.
+        if (AI_VALUE2(std::string, "manual string", "future travel condition") == "should leave outgrown zone")
+        {
+            AreaTableEntry const* toArea = oldTarget->getPosition() ? oldTarget->getPosition()->GetArea() : nullptr;
+            sPlayerbotAIConfig.logEvent(ai, "LeaveOutgrownTarget",
+                std::to_string(sServerFacade.GetAreaId(bot)) + "|" + std::to_string(toArea ? toArea->Id : 0));
+        }
     }
 
     oldTarget->SetStatus(TravelStatus::TRAVEL_STATUS_READY);
@@ -1547,6 +1559,9 @@ bool RequestTravelTargetAction::Execute(Event& event)
     if (event.GetSource() == "should leave outgrown zone")
     {
         std::string reason = WorldPosition(bot).HasAreaFlag(AREA_FLAG_CAPITAL) ? "capital" : "outgrown";
+        // A25: carry the sub-area id next to the human-readable name, so this row can be paired
+        // with the destination row below by id instead of by name.
+        reason += "|area=" + std::to_string(sServerFacade.GetAreaId(bot));
         sPlayerbotAIConfig.logEvent(ai, "LeaveOutgrownZone", WorldPosition(bot).GetAreaName(true, true), reason);
     }
 
