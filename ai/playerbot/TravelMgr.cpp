@@ -1891,7 +1891,6 @@ void TravelMgr::LoadQuestTravelTable()
 
     sPlayerbotAIConfig.openLog("unload_grid.csv", "w");
     sPlayerbotAIConfig.openLog("unload_obj.csv", "w");
-    sPlayerbotAIConfig.openLog("bot_events.csv", "w");
     sPlayerbotAIConfig.openLog("travel_map.csv", "w");
     sPlayerbotAIConfig.openLog("quest_map.csv", "w");
     // deaths.csv is an event history, not a per-run dump like the files above:
@@ -1899,6 +1898,12 @@ void TravelMgr::LoadQuestTravelTable()
     // full restart when the file already exists), so before/after comparisons
     // stay possible.
     sPlayerbotAIConfig.openLog("deaths.csv", "a");
+    // bot_events.csv is an event history too - the hunter ranged telemetry (AutoShot distance and
+    // kit flags on every switch, see HunterRangedTelemetry.h) - so it belongs on the append side
+    // for the same reason deaths.csv does. Measured 2026-10-08: it sat at 59.64 MB before the
+    // 22:24 restart and 3.3 MB with its first row at 22:25:29 after it, which took A53's opening
+    // distance comparison with it and left nothing in _archived to recover from.
+    sPlayerbotAIConfig.openLog("bot_events.csv", "a");
     sPlayerbotAIConfig.openLog("player_paths.csv", "w");
     sPlayerbotAIConfig.openLog("travel_destinations.csv", "w");
     sPlayerbotAIConfig.openLog("deadzone.csv", "w");
