@@ -4,6 +4,8 @@
 #include "playerbot/PlayerbotAI.h"
 #include "SharedValueContext.h"
 
+#include <memory>
+
 using namespace ai;
 
 VendorMap* VendorMapValue::Calculate()
@@ -50,6 +52,53 @@ std::list<int32> ItemVendorListValue::Calculate()
     std::list<int32> entries;
 
     auto range = vendorMap->equal_range(itemId);
+
+    for (auto itr = range.first; itr != range.second; ++itr)
+        entries.push_back(itr->second);
+
+    return entries;
+}
+
+GossipItemMap* GossipItemMapValue::Calculate()
+{
+    GossipItemMap* gossipMap = new GossipItemMap;
+
+    // One pass over the world database at first use (this is a SharedValue, so it is built once per
+    // session). creature_template.gossip_menu_id is the menu the bot opens - the same field
+    // GossipHelloAction reads - gossip_menu_option binds each option to its action script, and
+    // gossip_scripts holds that script's command. SCRIPT_COMMAND_CREATE_ITEM carries the item in
+    // datalong and the amount in datalong2. Reaching the NPC is enough for the bot: its gossip
+    // handler picks an option of the menu it opens (GossipHelloAction::ProcessGossip), and the
+    // menus this is about hold that single option.
+    std::unique_ptr<QueryResult> result(WorldDatabase.PQuery(
+        "SELECT c.entry, gs.datalong FROM creature_template c "
+        "JOIN gossip_menu_option o ON o.menu_id = c.gossip_menu_id "
+        "JOIN gossip_scripts gs ON gs.id = o.action_script_id "
+        "WHERE gs.command = '%u' AND gs.datalong <> 0",
+        SCRIPT_COMMAND_CREATE_ITEM));
+
+    if (result)
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            gossipMap->insert(std::make_pair(fields[0].GetUInt32(), (int32)fields[1].GetUInt32()));
+        } while (result->NextRow());
+    }
+
+    return gossipMap;
+}
+
+//Which creatures hand this item over through a gossip option?
+std::list<int32> ItemGossipListValue::Calculate()
+{
+    uint32 itemId = stoi(getQualifier());
+
+    GossipItemMap* gossipMap = GAI_VALUE(GossipItemMap*, "gossip item map");
+
+    std::list<int32> entries;
+
+    auto range = gossipMap->equal_range(itemId);
 
     for (auto itr = range.first; itr != range.second; ++itr)
         entries.push_back(itr->second);

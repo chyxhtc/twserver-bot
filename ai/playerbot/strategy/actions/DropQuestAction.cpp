@@ -238,6 +238,33 @@ bool ItemHasReachableSource(Player* bot, uint32 itemId)
         }
     }
 
+    // A51: an NPC can also hand the item over through a gossip option (gossip_scripts
+    // SCRIPT_COMMAND_CREATE_ITEM). Same reachability test as the vendors just above, because the
+    // destination gate that has to accept the NPC is the same one, so an NPC behind any of those
+    // three predicates could never become a travel target either. 18 items over 15 NPCs on this
+    // realm; without this the objective was reported as sourceless and skipped forever
+    // (41768 The Messenger Of Northwind object 2, Sir Amberwood's Report 41865).
+    for (int32 entry : GAI_VALUE2(std::list<int32>, "item gossip list", itemId))
+    {
+        auto const it = guidps.find(entry);
+        if (it == guidps.end())
+            continue;
+
+        for (GuidPosition const& position : it->second)
+        {
+            if (position.IsEnemyHomeZoneFor(bot->GetTeam()))
+                continue;
+            if (position.IsGuardedHostileTownFor(bot))
+                continue;
+
+            int32 const areaLevel = position.GetAreaLevel();
+            if (areaLevel > 0 && areaLevel > (int32)bot->GetLevel() + AreaLevelMargin())
+                continue;
+
+            return true;
+        }
+    }
+
     return false;
 }
 

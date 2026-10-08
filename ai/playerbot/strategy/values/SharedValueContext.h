@@ -28,6 +28,9 @@ namespace ai
             creators["vendor map"] = [](PlayerbotAI* ai) { return new VendorMapValue(ai); };
             creators["item vendor list"] = [](PlayerbotAI* ai) { return new ItemVendorListValue(ai); };
 
+            creators["gossip item map"] = [](PlayerbotAI* ai) { return new GossipItemMapValue(ai); };
+            creators["item gossip list"] = [](PlayerbotAI* ai) { return new ItemGossipListValue(ai); };
+
             creators["entry quest relation"] = [](PlayerbotAI* ai) { return new EntryQuestRelationMapValue(ai); };
 
             creators["quest guidp map"] = [](PlayerbotAI* ai) { return new QuestGuidpMapValue(ai); };

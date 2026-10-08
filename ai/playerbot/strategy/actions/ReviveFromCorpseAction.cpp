@@ -493,6 +493,25 @@ bool FindCorpseAction::Execute(Event& event)
     //Actual mobing part.
     bool moved = false;
 
+    // A57 + A55: has this corpse run stopped closing in on the corpse? Tracks the best distance
+    // reached during the run in the same two AI values the triage further down uses and answers
+    // true once kCorpseRunNoProgressSec has passed without an improvement. It only reports; the
+    // branch that gives up is the one that resets the values, so asking here is free.
+    auto CorpseRunStalled = [&](WorldPosition const& destination) -> bool
+    {
+        int32 const closeYards = (int32)WorldPosition(bot).distance(destination);
+        int32 const bestYards = AI_VALUE2(int32, "manual int", "corpse run best dist");
+        time_t const lastGain = AI_VALUE2(time_t, "manual time", "corpse run last gain");
+        time_t const nowGain = time(nullptr);
+        if (!lastGain || closeYards < bestYards)
+        {
+            SET_AI_VALUE2(int32, "manual int", "corpse run best dist", closeYards);
+            SET_AI_VALUE2(time_t, "manual time", "corpse run last gain", nowGain);
+            return false;
+        }
+        return (nowGain - lastGain) >= kCorpseRunNoProgressSec;
+    };
+
     if (!ai->AllowActivity(DETAILED_MOVE_ACTIVITY) && !ai->HasPlayerNearby(moveToPos))
     {
         uint32 delay = sServerFacade.getDistance2d(bot, moveToPos.getX(), moveToPos.getY()) / bot->GetSpeed(MOVE_RUN); //Time a bot would take to travel to destination.
@@ -517,8 +536,19 @@ bool FindCorpseAction::Execute(Event& event)
     }
     else
     {
-        if (bot->IsMoving())
+        // A55 (2026-10-08): this used to be a dead end for the triage further down - a ghost whose
+        // IsMoving() stays true never reached it, so a run that kept reporting movement without
+        // closing in was never given up on. Measured that day: ghost_moves.csv held 1675 rows with
+        // the position unchanged for over 90 s while the repop fallback fired 41 times, and 654 of
+        // 3114 deaths still ran the full ten minutes to the spirit-healer gate. Ask the same
+        // question here, and let a stalled mover fall through to the MoveTo block, which owns the
+        // give-up dispatch (repop, or the wait-for-master arm).
+        bool const moving = bot->IsMoving();
+        bool const stalledWhileMoving = moving && CorpseRunStalled(moveToPos);
+        if (moving && !stalledWhileMoving)
             moved = true;
+        if (stalledWhileMoving)
+            sLog.outDetail("[BOT CORPSE] %s: find corpse - still reporting movement but no closer for %llds, handing the run to the give-up path", bot->GetName(), (long long)kCorpseRunNoProgressSec);
         if (moved)
         {
             sLog.outDetail("[BOT CORPSE] %s: find corpse - already moving towards corpse", bot->GetName());

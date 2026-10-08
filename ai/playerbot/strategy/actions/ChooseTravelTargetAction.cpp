@@ -1832,6 +1832,13 @@ bool RequestNamedTravelTargetAction::Execute(Event& event)
                             std::list<int32> vendorList = GAI_VALUE2(std::list<int32>, "item vendor list", quest->ReqItemId[objective]);
                             for (int32 entry : vendorList)
                                 objectiveEntries.push_back(entry);
+
+                            // A51: an NPC that hands the item over through a gossip option is a
+                            // destination like any other, or the objective would count as having a
+                            // source while the travel layer still had nowhere to send the bot.
+                            std::list<int32> gossipList = GAI_VALUE2(std::list<int32>, "item gossip list", quest->ReqItemId[objective]);
+                            for (int32 entry : gossipList)
+                                objectiveEntries.push_back(entry);
                         }
                     }
                 }
