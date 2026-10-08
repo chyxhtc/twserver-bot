@@ -65,10 +65,15 @@ void TortoiseBotsNewHandler()
         std::fflush(stderr);
     }
 
-    // Returning hands control back to the allocator, which retries once and then throws
-    // std::bad_alloc exactly as it does today - the M8 catch keeps the world running.
+    // This must not simply return. Measured 2026-10-09 against the same libstdc++ the module is
+    // built with (_twserver\modules\build-out\_observe\newhandler-test.cc): with no previous
+    // handler installed, set_new_handler reports NULL and operator new calls the handler in a
+    // tight loop - "retries once and then throws" is not what it does, it calls the handler
+    // again, forever. An allocation-failure hook that hangs the world thread would be strictly
+    // worse than the bad_alloc it is meant to explain (2-5 rows an hour today).
     if (g_previousNewHandler)
         g_previousNewHandler();
+    throw std::bad_alloc();
 }
 
 void TortoiseBotsTerminateHandler()
