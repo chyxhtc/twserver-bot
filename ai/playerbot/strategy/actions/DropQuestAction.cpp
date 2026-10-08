@@ -221,26 +221,50 @@ void LogGossipSourceMiss(Player* bot, uint32 itemId, std::string const& reason)
         "|listSize=" + std::to_string(GAI_VALUE2(std::list<int32>, "item gossip list", itemId).size()));
 }
 
-// A60 diagnostic: the item has drop sources, but not one of them has a known spawn position.
+// A60 diagnostic: the item has drop sources, but not one of them can become a destination.
 void LogItemDropWithoutDestination(Player* bot, uint32 itemId, std::list<int32> const& dropList,
     EntryGuidps const& guidps)
 {
     if (!bot || dropList.empty())
         return;
 
-    // Only creature sources are judged here. The drop map stores a gameobject source as the
-    // negated gameobject entry (LootValues.cpp:262) and EntryGuidps is built from
-    // WorldPosition().GetCreaturesNear(), so it can never answer for one - and 790 quest items
-    // in this world DB drop only from game objects, so testing them here would bury the real
-    // rows under one line per bot per chest item every six hours.
+    // Two ways a source fails to become a destination, and the objective is dead either way:
+    //   position - the drop map stores a gameobject source as the negated gameobject entry
+    //              (LootValues.cpp:262) and EntryGuidps is built from
+    //              WorldPosition().GetCreaturesNear(), so it can never answer for one - and 790
+    //              quest items in this world DB drop only from game objects, so those are not
+    //              judged here at all;
+    //   chance   - the destination index itself admits a drop source only when the item is
+    //              quest class or the chance is above 5% (QuestValues.cpp:80-84), so an item
+    //              whose every positive chance is <= 5% keeps "a source" here and still has no
+    //              place to go. Measured 2026-10-09: 80 quest items are in exactly that state
+    //              (all non-quest-class, best chance 0.02-5%, no vendor, no use-target, not a
+    //              quest reward), and four low-level quests among them are held at zero today
+    //              (466, 705, 713, 5421).
+    ItemPrototype const* proto = sObjectMgr.GetItemPrototype(itemId);
+    bool const questClass = proto && proto->Class == ITEM_CLASS_QUEST;
+
     bool anyCreatureSource = false;
+    std::string reason;
     for (int32 entry : dropList)
     {
         if (entry <= 0)
             continue;
         anyCreatureSource = true;
-        if (guidps.find(entry) != guidps.end())
-            return;   // at least one creature source is placed: the normal case, nothing to report
+        if (guidps.find(entry) == guidps.end())
+        {
+            if (reason.empty())
+                reason = "no-position:" + std::to_string(entry);
+            continue;
+        }
+
+        float const chance = GAI_VALUE2(float, "loot chance",
+            std::to_string(entry) + " " + std::to_string(itemId));
+        if (questClass || chance > 5.0f)
+            return;   // reachable: the destination index admits this source
+
+        if (reason.empty())
+            reason = "chance=" + std::to_string((int)chance) + ":" + std::to_string(entry);
     }
 
     if (!anyCreatureSource)
@@ -273,8 +297,8 @@ void LogItemDropWithoutDestination(Player* bot, uint32 itemId, std::list<int32> 
     }
 
     sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveNoDestination",
-        std::to_string(itemId) + "|entries=" + entries +
-        "|botLevel=" + std::to_string(bot->GetLevel()));
+        std::to_string(itemId) + "|" + reason,
+        "entries=" + entries + "|botLevel=" + std::to_string(bot->GetLevel()));
 }
 
 bool ItemHasReachableSource(Player* bot, uint32 itemId)
