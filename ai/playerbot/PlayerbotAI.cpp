@@ -1289,7 +1289,8 @@ bool PlayerbotAI::ShouldAvoidPlayerKiller(std::string const& name) const
     // 10-minute window; empty name or expired window never avoids.
     if (name.empty() || avoidPlayerKiller_.empty() || name != avoidPlayerKiller_)
         return false;
-    return WorldTimer::getMSTime() - avoidPlayerKillerMs_ <= 10 * MINUTE * IN_MILLISECONDS;
+    // getMSTimeDiff, not a raw subtraction: see the BOTSEARCH note in TravelMgr.cpp.
+    return WorldTimer::getMSTimeDiff(avoidPlayerKillerMs_, WorldTimer::getMSTime()) <= 10 * MINUTE * IN_MILLISECONDS;
 }
 
 void PlayerbotAI::OnDeath()

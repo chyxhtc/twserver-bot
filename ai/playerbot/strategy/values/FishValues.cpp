@@ -46,7 +46,8 @@ bool DoneFishingValue::Calculate()
     // pole off (and, with a stat on it, put it right back). Half a minute after the last
     // cast the fishing is over and the weapon may come back.
     int const lastCast = AI_VALUE2(int, "manual int", "last fish cast");
-    if (lastCast && WorldTimer::getMSTime() - uint32(lastCast) < 30000)
+    // getMSTimeDiff, not a raw subtraction: see the BOTSEARCH note in TravelMgr.cpp.
+    if (lastCast && WorldTimer::getMSTimeDiff(uint32(lastCast), WorldTimer::getMSTime()) < 30000)
         return false;
 
     if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))

@@ -443,7 +443,10 @@ namespace ai
 
 		uint32 GetRetryCount(bool isMove) const { return isMove ? moveRetryCount : extendRetryCount; }
 		int32 GetTimeLeft() const { return statusTime - GetExpiredTime(); }
-		int32 GetExpiredTime() const { return WorldTimer::getMSTime() - startTime; }
+		// getMSTimeDiff rather than a raw subtraction: see the note at the BOTSEARCH probe in
+		// TravelMgr.cpp - a raw difference can come out as 0xFFFFFFFF when the tick mark moves
+		// between the two reads, which would make this target look freshly started forever.
+		int32 GetExpiredTime() const { return (int32)WorldTimer::getMSTimeDiff(startTime, WorldTimer::getMSTime()); }
 
 		void SetRetry(bool isMove, uint32 newCount = 0) { if (isMove) moveRetryCount = newCount; else extendRetryCount = newCount; }
 		bool IsMaxRetry(bool isMove) { return isMove ? (moveRetryCount > 10) : (extendRetryCount >= 5); }

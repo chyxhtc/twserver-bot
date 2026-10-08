@@ -1497,7 +1497,7 @@ void TravelMgr::EnsureCreatureLevelIndex()
     }
 
     sLog.outString(">> TortoiseBots: creature level index built once (%llu spawn rows, " SIZEFMTD " areas, %u ms)",
-        (unsigned long long)rows, creatureLevels.size(), WorldTimer::getMSTime() - startMs);
+        (unsigned long long)rows, creatureLevels.size(), WorldTimer::getMSTimeDiff(startMs, WorldTimer::getMSTime()));
 }
 
 int32 TravelMgr::GetAreaLevel(uint32 area_id)
@@ -2957,7 +2957,13 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     // 28 s while 2156 took 31 s, so it is per-point work, not the destination count. Split the
     // existing line instead of adding another one - build is the destination list, loop is the
     // per-point pass, points counts the points that pass walked.
-    uint32 const buildMs = WorldTimer::getMSTime() - searchStartMs;
+    // WorldTimer::getMSTime() is derived from the time since the last world tick and its last step
+    // (diff % 0xFFFFFFFF) is not monotonic when another thread moves that tick mark between the two
+    // reads - subtracting raw readings then yields 0xFFFFFFFF, which is exactly what two BOTSEARCH
+    // rows on 2026-10-08 printed (08:54 buildMs=0/loopMs=4294967295 and 15:12 the other way round).
+    // getMSTimeDiff is the core's helper for this: on a backwards step it takes the smaller of the
+    // two interpretations, so the same pair of readings yields 1 ms instead of a garbage 4294967295.
+    uint32 const buildMs = WorldTimer::getMSTimeDiff(searchStartMs, WorldTimer::getMSTime());
 
     // The hub the bot is standing in, if any: used for the "finish this town before
     // moving on" preference (see the partition step below).
@@ -3119,7 +3125,7 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
 
     sTravelMgr.GetPartitionsLock(false);
 
-    uint32 const searchMs = WorldTimer::getMSTime() - searchStartMs;
+    uint32 const searchMs = WorldTimer::getMSTimeDiff(searchStartMs, WorldTimer::getMSTime());
     uint32 const loopMs = searchMs > buildMs ? searchMs - buildMs : 0;
     if (searchMs >= 50)
         sLog.outBasic("BOTSEARCH: travel search took %u ms (destinations=%u, purpose=%u, entries=%u, kept=%u, buildMs=%u, loopMs=%u, points=%llu, bucketsSeen=%llu, buckets=%llu, possibleCalls=%llu, possibleMs=%llu, worstPossibleMs=%llu, worstEntry=%d, worstSS=%llu, worstPts=%llu, worstPortalLists=%llu, worstPortals=%llu, examined=%llu, distMs=%llu, worstDestMs=%llu)",

@@ -2506,7 +2506,8 @@ bool BGTactics::selectObjective(bool reset)
         if (botSelectedObjectives.find(botGUID) != botSelectedObjectives.end() &&
             uniqueObjectives.find(botSelectedObjectives[botGUID]) != uniqueObjectives.end())
         {
-            uint32 elapsedTime = WorldTimer::getMSTime() - botObjectiveSelectionTime[botGUID];
+            // getMSTimeDiff, not a raw subtraction: see the BOTSEARCH note in TravelMgr.cpp.
+            uint32 elapsedTime = WorldTimer::getMSTimeDiff(botObjectiveSelectionTime[botGUID], WorldTimer::getMSTime());
             float probabilityToKeepSameObjective = 1.0f; // Start at 100% then lower over time
 
             GameObject* lastObj = botSelectedObjectives[botGUID];
