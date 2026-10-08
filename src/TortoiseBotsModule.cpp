@@ -13,13 +13,63 @@
 #include <cxxabi.h>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <execinfo.h>
+#include <new>
 #include <string>
 #include <typeinfo>
 
 namespace
 {
 std::terminate_handler g_previousTerminateHandler = nullptr;
+
+// M11: the second heap-corruption source. The module has been throwing
+// std::bad_alloc out of single bot ticks since 2026-10-07 - 103 rows in one session on
+// 2026-10-08, spread over thirteen bots, and one crash that stopped the world thread inside
+// TravelNodeMap::getRoute's unordered_map emplace/rehash - and every row so far only names the
+// catch site, because the stack is already unwound by then (the M8 adapter logs from its handler).
+// A std::new_handler runs before the throw, with the stack still intact, so it is the one place
+// that can name the allocation that failed. Nothing here may allocate - a handler that allocates
+// would re-enter itself - so the output goes straight to fd 2 through fputs and
+// backtrace_symbols_fd, the same pair the terminate handler above uses.
+//
+// This deliberately does NOT replace operator new: a global allocation hook would change the
+// allocation path of every component in the process, which is a bigger risk than the failure it
+// is meant to explain, and the module cannot see the requested size that way either without
+// duplicating the allocator. A new_handler observes failure without touching the happy path.
+std::new_handler g_previousNewHandler = nullptr;
+
+void TortoiseBotsNewHandler()
+{
+    static time_t lastLog = 0;
+    static unsigned suppressed = 0;
+
+    time_t const now = std::time(nullptr);
+    if (lastLog && now - lastLog < 60)
+    {
+        ++suppressed;
+    }
+    else
+    {
+        char header[160];
+        std::snprintf(header, sizeof(header),
+            "TortoiseBots: new handler: allocation failed (suppressed=%u since the previous row)\n",
+            suppressed);
+        suppressed = 0;
+        lastLog = now;
+
+        std::fputs(header, stderr);
+        void* frames[64];
+        int const n = backtrace(frames, 64);
+        backtrace_symbols_fd(frames, n, fileno(stderr));
+        std::fflush(stderr);
+    }
+
+    // Returning hands control back to the allocator, which retries once and then throws
+    // std::bad_alloc exactly as it does today - the M8 catch keeps the world running.
+    if (g_previousNewHandler)
+        g_previousNewHandler();
+}
 
 void TortoiseBotsTerminateHandler()
 {
@@ -50,5 +100,6 @@ void TortoiseBotsTerminateHandler()
 void AddTortoiseBotsScripts()
 {
     g_previousTerminateHandler = std::set_terminate(&TortoiseBotsTerminateHandler);
+    g_previousNewHandler = std::set_new_handler(&TortoiseBotsNewHandler);
     TortoiseBots::RegisterScripts();
 }
