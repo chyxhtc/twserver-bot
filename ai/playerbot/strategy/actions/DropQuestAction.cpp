@@ -228,9 +228,23 @@ void LogItemDropWithoutDestination(Player* bot, uint32 itemId, std::list<int32> 
     if (!bot || dropList.empty())
         return;
 
+    // Only creature sources are judged here. The drop map stores a gameobject source as the
+    // negated gameobject entry (LootValues.cpp:262) and EntryGuidps is built from
+    // WorldPosition().GetCreaturesNear(), so it can never answer for one - and 790 quest items
+    // in this world DB drop only from game objects, so testing them here would bury the real
+    // rows under one line per bot per chest item every six hours.
+    bool anyCreatureSource = false;
     for (int32 entry : dropList)
+    {
+        if (entry <= 0)
+            continue;
+        anyCreatureSource = true;
         if (guidps.find(entry) != guidps.end())
-            return;   // at least one source is placed: the normal case, nothing to report
+            return;   // at least one creature source is placed: the normal case, nothing to report
+    }
+
+    if (!anyCreatureSource)
+        return;
 
     PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(bot);
     if (!ai)
