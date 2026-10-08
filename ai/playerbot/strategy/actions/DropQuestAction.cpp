@@ -4,6 +4,7 @@
 #include "playerbot/QuestGreyRule.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
 #include "playerbot/TravelMgr.h"
+#include "../../runtime/PlayerbotAIStorage.h" // A51 diagnostic reads the bot's AI context
 
 #include <unordered_set>
 
@@ -25,6 +26,10 @@ bool ItemHasKnownSource(uint32 itemId)
     bool const hasSource =
         !GAI_VALUE2(std::list<int32>, "item drop list", itemId).empty() ||
         !GAI_VALUE2(std::list<int32>, "item vendor list", itemId).empty() ||
+        // A51: an NPC that hands the item over through a gossip option is a source too. Without
+        // this arm the quest-drop rule saw such an item as having no known source at all and could
+        // throw the quest away (the travel-side arm in ItemHasReachableSource is the other half).
+        !GAI_VALUE2(std::list<int32>, "item gossip list", itemId).empty() ||
         !QuestsRewardingItem(itemId).empty() ||
         bounds.first != bounds.second;
 
@@ -182,6 +187,40 @@ bool QuestRewardsNeededItem(Player* bot, Quest const* quest)
     return false;
 }
 
+// A51 diagnostic (2026-10-08): one row per bot per item per six hours saying why the gossip-source
+// arm in ItemHasReachableSource found nothing. The arm's first live read still had 41737 reported
+// as sourceless (Marisa Arello 62146) while 41865 was not, and the database side of the two is
+// identical - NPC present, exactly one spawn, Stormwind faction, not an event spawn, the same SQL
+// returns both rows - so the answer has to come from inside the arm.
+void LogGossipSourceMiss(Player* bot, uint32 itemId, std::string const& reason)
+{
+    if (!bot)
+        return;
+
+    PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(bot);
+    if (!ai)
+        return;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    if (!context)
+        return;
+
+    std::string const key = "gossipsrc::" + std::to_string(itemId);
+    Value<time_t>* last = context->GetValue<time_t>("manual time", key);
+    if (!last)
+        return;
+
+    time_t const now = time(nullptr);
+    if (last->Get() && now - last->Get() < 6 * HOUR)
+        return;
+    last->Set(now);
+
+    sPlayerbotAIConfig.logEvent(ai, "QuestGossipSource",
+        std::to_string(itemId) + "|" + reason +
+        "|botLevel=" + std::to_string(bot->GetLevel()) +
+        "|listSize=" + std::to_string(GAI_VALUE2(std::list<int32>, "item gossip list", itemId).size()));
+}
+
 bool ItemHasReachableSource(Player* bot, uint32 itemId)
 {
     if (!itemId)
@@ -244,26 +283,48 @@ bool ItemHasReachableSource(Player* bot, uint32 itemId)
     // three predicates could never become a travel target either. 18 items over 15 NPCs on this
     // realm; without this the objective was reported as sourceless and skipped forever
     // (41768 The Messenger Of Northwind object 2, Sir Amberwood's Report 41865).
+    //
+    // Diagnostic (2026-10-08): the first live read after this arm shipped still had 41737 (also a
+    // gossip item, Marisa Arello 62146) reported as sourceless while 41865 was not, and the DB
+    // side of both is identical - NPC exists, exactly one spawn, Stormwind faction, not an event
+    // spawn, the same SQL finds both. So say which step of this arm drops it: list empty, NPC not
+    // in "entry guidps", or one of the three reachability predicates. One row per bot per item per
+    // six hours, the throttle shape QuestObjectiveNoSource uses.
+    std::string gossipMiss;
     for (int32 entry : GAI_VALUE2(std::list<int32>, "item gossip list", itemId))
     {
         auto const it = guidps.find(entry);
         if (it == guidps.end())
+        {
+            gossipMiss += "|" + std::to_string(entry) + ":not-spawned";
             continue;
+        }
 
         for (GuidPosition const& position : it->second)
         {
             if (position.IsEnemyHomeZoneFor(bot->GetTeam()))
+            {
+                gossipMiss += "|" + std::to_string(entry) + ":enemy-home";
                 continue;
+            }
             if (position.IsGuardedHostileTownFor(bot))
+            {
+                gossipMiss += "|" + std::to_string(entry) + ":hostile-town";
                 continue;
+            }
 
             int32 const areaLevel = position.GetAreaLevel();
             if (areaLevel > 0 && areaLevel > (int32)bot->GetLevel() + AreaLevelMargin())
+            {
+                gossipMiss += "|" + std::to_string(entry) + ":area=" + std::to_string(areaLevel) +
+                    ">bot=" + std::to_string(bot->GetLevel()) + "+" + std::to_string(AreaLevelMargin());
                 continue;
+            }
 
             return true;
         }
     }
+    LogGossipSourceMiss(bot, itemId, gossipMiss.empty() ? "no-entry" : gossipMiss);
 
     return false;
 }

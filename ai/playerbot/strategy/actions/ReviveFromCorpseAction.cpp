@@ -548,7 +548,17 @@ bool FindCorpseAction::Execute(Event& event)
         if (moving && !stalledWhileMoving)
             moved = true;
         if (stalledWhileMoving)
+        {
             sLog.outDetail("[BOT CORPSE] %s: find corpse - still reporting movement but no closer for %llds, handing the run to the give-up path", bot->GetName(), (long long)kCorpseRunNoProgressSec);
+            // A55 acceptance needs to tell this new entry point from the old one, which reaches the
+            // same give-up below and writes the same reason=no-displacement row. This row only
+            // exists on the "was moving" path, so counting it answers whether the branch ever runs.
+            if (trace::VerdictOf("corpserun") == trace::Verdict::On)
+                sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
+                    "reason=no-displacement-moving|dist=" + std::to_string((int)WorldPosition(bot).distance(moveToPos)) +
+                    "|posUnchanged=" + std::to_string(AI_VALUE2(uint32, "time since last change", "current position")) +
+                    "|deadTime=" + std::to_string((long long)deadTime));
+        }
         if (moved)
         {
             sLog.outDetail("[BOT CORPSE] %s: find corpse - already moving towards corpse", bot->GetName());
