@@ -374,7 +374,12 @@ namespace
     BlacklistEntry const questBlacklist[] =
     {
         { 6581,  "craft: 4369 Deadly Blunderbuss is engineering 3936 only, no bot has it" },
-        { 55210, "craft: 7191/3575/4375 are engineering and smelting products, no bot has them" },
+        // Corrected 2026-10-09 against the world database: the quest wants 7191 Fused Wiring x2,
+        // 3575 Iron Bar x16 and 3466 Strong Flux x6. 4375 Whirring Bronze Gizmo is not one of them,
+        // 7191 has 13 loot rows (it drops) and 3466 is sold by 103 vendors plus 16 vendor templates,
+        // so the only real blocker is 3575 - an Iron Bar that exists as a smelting product only
+        // (0 loot rows, 0 vendors). The old text sent anyone reading it after the wrong item.
+        { 55210, "craft: needs 3575 Iron Bar x16 (smelting/mining only); 7191 Fused Wiring drops and 3466 Strong Flux has 100+ vendors" },
         { 565,   "craft: 3719 Hillman's Cloak is leatherworking 3760 only, no bot has it" },
         { 6571,  "craft: its 16742 comes only from quest 6581, which is itself craft-gated" },
         { 1195,  "two-hop: empty phial drops from 4054, use it to fill; no plan and no fill spot in DB" },
