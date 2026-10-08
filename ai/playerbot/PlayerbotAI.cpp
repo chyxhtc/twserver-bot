@@ -4596,6 +4596,44 @@ SpellCastResult PlayerbotAI::CheckSpellTargetAlignment(SpellEntry const* spellIn
     return SPELL_CAST_OK;
 }
 
+namespace
+{
+    // A54 (2026-10-08). The CanCastSpell overloads below are pre-checks: a temporary Spell is built
+    // and handed straight to CheckCast, but the core fills Spell::m_powerCost - protected, see
+    // Spell.h:537 - only inside Spell::prepare. Spell::CheckCast does call CheckPower (Spell.cpp:6002),
+    // so with the cost still zero every ability looks affordable; the action is selected, the real
+    // cast then fails in prepare with SPELL_FAILED_NO_POWER, and because AllowBackgroundRetry keeps
+    // combat out of the back-off the same ability is attempted again on the next tick. Measured
+    // 2026-10-08: 2779451 NO_POWER attempts in 20 h, 67 % of all failed casts.
+    //
+    // Ask Spell::CalculatePowerCost (public static, the very function the cast itself uses) and apply
+    // the guards of Spell::CheckPower here, so the pre-check answers the question the cast will ask.
+    // No Spell argument is passed on purpose: that path calls ApplySpellMod into the spell being
+    // checked, and a temporary spell is deleted right away, so leaving the mod bookkeeping alone
+    // keeps this read-only.
+    SpellCastResult PrecheckPowerCost(Unit* caster, SpellEntry const* spellInfo, Item* castItem)
+    {
+        if (!caster || castItem)
+        {
+            return SPELL_CAST_OK;                  // item casts do not pay power
+        }
+
+        const int32 cost = int32(Spell::CalculatePowerCost(spellInfo, caster, nullptr, nullptr));
+
+        if (spellInfo->powerType == POWER_HEALTH)
+        {
+            return caster->GetHealth() <= (uint32)cost ? SPELL_FAILED_CASTER_AURASTATE : SPELL_CAST_OK;
+        }
+
+        if (spellInfo->powerType >= MAX_POWERS)
+        {
+            return SPELL_FAILED_DONT_REPORT;
+        }
+
+        return caster->GetPower(Powers(spellInfo->powerType)) < cost ? SPELL_FAILED_NO_POWER : SPELL_CAST_OK;
+    }
+}
+
 bool PlayerbotAI::CanCastSpell(std::string name, Unit* target, uint8 effectMask, Item* itemTarget, bool ignoreRange, bool ignoreInCombat, bool ignoreMount, SpellCastResult* checkResult)
 {
     return CanCastSpell(aiObjectContext->GetValue<uint32>("spell id", name)->Get(), target, 0, true, itemTarget, ignoreRange, ignoreInCombat, ignoreMount, checkResult);
@@ -4779,6 +4817,21 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, uint8 effectMask, b
     // nothing had written) kept it empty and made every weapon imbue SPELL_FAILED_ITEM_GONE.
     spell->m_targets.setItemTarget(SpellEnchantsItem(spellInfo) ? checkCastItem : spell->m_targets.getItemTarget());
 
+    // A54: this pre-check must know what the cast will cost, or it reports an unaffordable ability
+    // as castable every tick and the cast itself fails in prepare (see PrecheckPowerCost).
+    const SpellCastResult powerResult = PrecheckPowerCost(bot, spellInfo, checkCastItem);
+    if (powerResult != SPELL_CAST_OK)
+    {
+        delete spell;
+
+        if (checkResult)
+        {
+            *checkResult = powerResult;
+        }
+
+        return false;
+    }
+
     SpellCastResult result = spell->CheckCast(true);
     delete spell;
 	//if (oldSel)
@@ -4904,8 +4957,23 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, GameObject* goTarget, uint8 effec
     Spell* spell = new Spell(bot, spellInfo, false);
 
     spell->m_targets.setGOTarget(goTarget);
-    spell->SetCastItem(aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get());
+    Item* const checkCastItem = aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get();
+    spell->SetCastItem(checkCastItem);
     spell->m_targets.setItemTarget(spell->m_targets.getItemTarget());
+
+    // A54: see PrecheckPowerCost.
+    const SpellCastResult powerResult = PrecheckPowerCost(bot, spellInfo, checkCastItem);
+    if (powerResult != SPELL_CAST_OK)
+    {
+        delete spell;
+
+        if (checkResult)
+        {
+            *checkResult = powerResult;
+        }
+
+        return false;
+    }
 
     SpellCastResult result = spell->CheckCast(true);
     delete spell;
@@ -5012,8 +5080,23 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, float x, float y, float z, uint8 
     Spell* spell = new Spell(bot, spellInfo, false);
 
     spell->m_targets.setDestination(x, y, z);
-    spell->SetCastItem(itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get());
+    Item* const checkCastItem = itemTarget ? itemTarget : aiObjectContext->GetValue<Item*>("item for spell", spellid)->Get();
+    spell->SetCastItem(checkCastItem);
     spell->m_targets.setItemTarget(spell->m_targets.getItemTarget());
+
+    // A54: see PrecheckPowerCost.
+    const SpellCastResult powerResult = PrecheckPowerCost(bot, spellInfo, checkCastItem);
+    if (powerResult != SPELL_CAST_OK)
+    {
+        delete spell;
+
+        if (checkResult)
+        {
+            *checkResult = powerResult;
+        }
+
+        return false;
+    }
 
     SpellCastResult result = spell->CheckCast(true);
     delete spell;
