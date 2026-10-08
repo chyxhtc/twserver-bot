@@ -221,13 +221,72 @@ void LogGossipSourceMiss(Player* bot, uint32 itemId, std::string const& reason)
         "|listSize=" + std::to_string(GAI_VALUE2(std::list<int32>, "item gossip list", itemId).size()));
 }
 
+// A60 diagnostic: the item has drop sources, but not one of them has a known spawn position.
+void LogItemDropWithoutDestination(Player* bot, uint32 itemId, std::list<int32> const& dropList,
+    EntryGuidps const& guidps)
+{
+    if (!bot || dropList.empty())
+        return;
+
+    for (int32 entry : dropList)
+        if (guidps.find(entry) != guidps.end())
+            return;   // at least one source is placed: the normal case, nothing to report
+
+    PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(bot);
+    if (!ai)
+        return;
+
+    AiObjectContext* context = ai->GetAiObjectContext();
+    if (!context)
+        return;
+
+    std::string const key = "dropnodest::" + std::to_string(itemId);
+    Value<time_t>* last = context->GetValue<time_t>("manual time", key);
+    if (!last)
+        return;
+
+    time_t const now = time(nullptr);
+    if (last->Get() && now - last->Get() < 6 * HOUR)
+        return;
+    last->Set(now);
+
+    std::string entries;
+    for (int32 entry : dropList)
+    {
+        if (!entries.empty())
+            entries += ",";
+        entries += std::to_string(entry);
+    }
+
+    sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveNoDestination",
+        std::to_string(itemId) + "|entries=" + entries +
+        "|botLevel=" + std::to_string(bot->GetLevel()));
+}
+
 bool ItemHasReachableSource(Player* bot, uint32 itemId)
 {
     if (!itemId)
         return false;
 
-    if (!GAI_VALUE2(std::list<int32>, "item drop list", itemId).empty())
+    std::list<int32> const dropList = GAI_VALUE2(std::list<int32>, "item drop list", itemId);
+    if (!dropList.empty())
+    {
+        // A60 probe (2026-10-09): a non-empty drop list is enough for this function to call the
+        // item sourced, which keeps the quest out of the drop rule - but if none of those
+        // creature entries has a known spawn position, the travel layer cannot build a
+        // destination for the objective either, so the quest sits at zero forever and no probe
+        // in the module names it (QuestObjectiveNoSource only fires when this function returns
+        // false, and the drop list makes it return true). Measured 2026-10-09: quest 881
+        // Echeyakee wants 5100 from 3475, quest 348 Stranglethorn Fever wants 2797 from 1514
+        // Mokk the Savage, quest 851 Verog the Dervish wants 5023 from 3395, quest 437 The Dead
+        // Fields wants 3622 from 1983 Nightlash - all four entries have zero rows in creature in
+        // any of its four id columns, which is correct for creatures that only ever appear
+        // through a script (Echeyakee is summoned with a horn, Mokk by the witch doctor,
+        // Nightlash and Verog are scripted rare spawns). One row per bot per item per six hours,
+        // the same shape QuestObjectiveNoSource uses.
+        LogItemDropWithoutDestination(bot, itemId, dropList, GAI_VALUE(EntryGuidps, "entry guidps"));
         return true;
+    }
 
     ItemRequiredTargetMapBounds const bounds = sObjectMgr.GetItemRequiredTargetMapBounds(itemId);
     if (bounds.first != bounds.second)
