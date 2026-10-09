@@ -1567,6 +1567,41 @@ void PlayerbotAI::OnDeath()
                 !killerName.empty() ? killerName : (lastKiller_.isEnvironment ? "Environment" : "none"),
                 std::to_string(killerLevel));
 
+            // A83 (2026-10-10, track-A): the death loop on a travel leg that never arrives.
+            //
+            // A31 already retires a travel target whose OWN entry killed the bot, but a bot that
+            // dies to something it merely passes keeps the leg and walks back into it after every
+            // corpse run. Measured on the night of 10-10: Walgrurbral (level 46 warrior, Searing
+            // Gorge) picked Northwind|62298 1854 yards away, died to Twilight Fire Guard (49) at
+            // the same spot five times in forty minutes with corpse runs of 6-11 minutes each and
+            // zero xp, and Tharurthyrf (level 36 hunter, Dustwallow Marsh) spent forty minutes
+            // oscillating inside 250 yards on the way to The Barrens with 0 xp and six deaths.
+            // In both cases the killer is not the destination, so the A31 check cannot see them.
+            //
+            // The fix is deliberately not a new recovery path: a death that happens while the
+            // target is in TRAVEL status counts as ONE move failure on that leg, which feeds the
+            // existing retry / last-mile-teleport / drop chain (A49/A50/A79). Knob
+            // travel_death_retry (default 0 = off, holds the probe only) so it can be turned on
+            // and off live from bot_diag.conf without another build.
+            if (TravelTarget* deathTravel = AI_VALUE(TravelTarget*, "travel target"))
+            {
+                if (deathTravel->GetDestination() &&
+                    deathTravel->GetStatus() == TravelStatus::TRAVEL_STATUS_TRAVEL)
+                {
+                    WorldPosition const deathPos(bot);
+                    float const deathDist = deathTravel->GetDestination()->DistanceTo(deathPos);
+                    int32 const deathRetryOn = trace::IntValue("travel_death_retry", 0);
+                    if (deathRetryOn > 0)
+                        deathTravel->IncMoveRetryThrottled();
+
+                    sPlayerbotAIConfig.logEvent(this, "TravelDeath",
+                        std::to_string((int32)deathTravel->GetDestination()->GetEntry()) +
+                            "|dist=" + std::to_string((int)deathDist),
+                        "retry=" + std::to_string(deathTravel->GetRetryCount(true)) +
+                            "|counted=" + std::to_string(deathRetryOn > 0 ? 1 : 0));
+                }
+            }
+
             if (sPlayerbotAIConfig.hasLog("deaths.csv"))
             {
                 WorldPosition botPos(bot);
