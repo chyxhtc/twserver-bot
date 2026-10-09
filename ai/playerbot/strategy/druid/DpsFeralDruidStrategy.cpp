@@ -577,6 +577,17 @@ public:
     float GetValue(Action* action) override
     {
         // Only allow stealth actions
+        //
+        // A34 (2026-10-10): this list had fallen behind the rogue one. A stealthed feral druid
+        // could not order "attack anything" and none of the travel actions, so it could neither
+        // start a fight nor walk anywhere - and DruidUnstealthTrigger only fires while the bot is
+        // moving, so the bot deadlocked in place until prowl wore off. Measured 2026-10-10
+        // 00:01-00:02: Jidretorr (level 42 feral druid, Durotar) re-evaluated "move to travel
+        // target" 70 times in 90 s, every one impossible with relevance 0.000, and the VetoTrace
+        // line named this multiplier as the one that zeroed his actions; his position did not
+        // change for that whole window, and 13 minutes of trace at the same spot carry nothing
+        // but the throttled diagnostics. RogueStrategy.cpp's twin list has carried the travel,
+        // rpg, battleground and loot-roll entries all along, so keep the two in step.
         const std::string& actionName = action->GetName();
         if ((actionName == "unstealth") ||
             (actionName == "check stealth") ||
@@ -597,7 +608,30 @@ public:
             (actionName == "set dead state") ||
             (actionName == "update pvp strats") ||
             (actionName == "update pve strats") ||
-            (actionName == "update raid strats"))
+            (actionName == "update raid strats") ||
+            // The rogue twin of this multiplier has carried all of these since the stealth
+            // strategy was written; a stealthed character may still walk, pick its travel
+            // target, roll on loot and open a fight from stealth.
+            (actionName == "accept invitation") ||
+            (actionName == "bg status") ||
+            (actionName == "bg leave") ||
+            (actionName == "check mount state") ||
+            (actionName == "loot roll") ||
+            (actionName == "auto loot roll") ||
+            (actionName == "attack anything") ||
+            (actionName == "choose rpg target") ||
+            (actionName == "move to rpg target") ||
+            (actionName == "move to travel target") ||
+            (actionName == "choose travel target") ||
+            (actionName == "reset travel target") ||
+            (actionName == "bg move to start") ||
+            (actionName == "bg move to objective") ||
+            (actionName == "bg check objective") ||
+            (actionName == "bg check flag") ||
+            (actionName == "attack enemy flag carrier") ||
+            (actionName == "travel") ||
+            (actionName == "move to suppression device") ||
+            (actionName == "disarm suppression device"))
         {
             return 1.0f;
         }
