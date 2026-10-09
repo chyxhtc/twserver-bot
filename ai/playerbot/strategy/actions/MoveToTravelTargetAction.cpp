@@ -888,9 +888,64 @@ bool MoveToTravelTargetAction::isUseful()
 
     if (AI_VALUE(bool, "has available loot"))
     {
-        LootObject lootObject = AI_VALUE(LootObjectStack*, "available loot")->GetLoot(sPlayerbotAIConfig.lootDistance);
+        LootObjectStack* const lootStack = AI_VALUE(LootObjectStack*, "available loot");
+        LootObject lootObject = lootStack->GetLoot(sPlayerbotAIConfig.lootDistance);
         if (lootObject.IsLootPossible(bot))
+        {
+            // A84 (2026-10-10): the loot gate had no give-up of its own, and everything that
+            // could break a pin lives in Execute, which never runs while isUseful() says no.
+            //
+            // Measured on the night of 10-10: TravelMoveDenied reason=loot ran at ~324 rows/hour,
+            // and the freeze probe recorded one bot (Suvalsarth) standing still for 25.8 minutes
+            // with status=TRAVEL while a Shellfish Trap (176582, a quest game object) 0 yards away
+            // stayed "loot possible". Every add-all-loot sweep re-adds that object, and Add()
+            // refreshes its timestamp on purpose (see the comment there), so the 180 s expiry never
+            // fires; the approach-failure give-up only runs while the loot chain is walking to the
+            // object, and a bot standing on top of it never records a failure. Net effect: nothing
+            // in the module can end the pin. This is the same shape A57 fixed on the corpse run and
+            // A79 on the travel leg, one gate further up.
+            //
+            // Reuse the existing bounded give-up instead of adding a second recovery path: after
+            // loot_gate_stall_sec (hot knob, default 60, 0 = off) with no displacement and the same
+            // loot object, count one approach failure. Three of those abandon the object for
+            // APPROACH_FAILURE_TTL and travel resumes. A bot that is genuinely walking to loot
+            // changes position every tick, so this cannot fire on healthy looting.
+            struct LootGateMark { uint64 guid; time_t since; float x; float y; float z; };
+            static std::map<uint32, LootGateMark> lootGateMarks;
+            int32 const lootStallSec = trace::IntValue("loot_gate_stall_sec", 60);
+            if (lootStallSec > 0 && !lootObject.IsEmpty())
+            {
+                LootGateMark& mark = lootGateMarks[bot->GetGUIDLow()];
+                uint64 const guidRaw = lootObject.guid.GetRawValue();
+                time_t const now = time(nullptr);
+                float const px = bot->GetPositionX();
+                float const py = bot->GetPositionY();
+                float const pz = bot->GetPositionZ();
+                bool const displaced =
+                    std::fabs(px - mark.x) + std::fabs(py - mark.y) + std::fabs(pz - mark.z) > 1.0f;
+
+                if (mark.guid != guidRaw || !mark.since || displaced)
+                {
+                    mark.guid = guidRaw;
+                    mark.since = now;
+                    mark.x = px;
+                    mark.y = py;
+                    mark.z = pz;
+                }
+                else if (now - mark.since >= lootStallSec)
+                {
+                    lootStack->NoteApproachFailure(lootObject.guid);
+                    mark.since = now;
+                    WorldObject* const lootWo = lootObject.GetWorldObject(bot);
+                    sPlayerbotAIConfig.logEvent(ai, "LootGateStall",
+                        std::to_string(lootObject.guid.GetEntry()) +
+                            "|dist=" + std::to_string(lootWo ? (int)bot->GetDistance(lootWo) : -1),
+                        "stalledSec=" + std::to_string((int)(now - mark.since + lootStallSec)) +
+                            "|abandoned=" + std::to_string(lootStack->IsAbandoned(lootObject.guid) ? 1 : 0));
+                }
+            }
             return deny("loot");
+        }
     }
 
     if (!travelTarget->IsForced())
