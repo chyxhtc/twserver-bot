@@ -109,6 +109,14 @@ namespace ai
 
         virtual uint32 GetSize() const = 0;
 
+        // A62 (2026-10-10): how many points this square really holds. The container level used to
+        // answer that with GetSize(), which returns the size of the FIRST sub-square only - so a
+        // destination with several spawn points was judged "unique" whenever its first cell
+        // happened to hold one point. Measured 2026-10-10: creature 4387 has six spawn points and
+        // still came back unique=1. IsUnique() is the only consumer that needs the true count;
+        // GetSize() keeps its old meaning for the destination report line (TravelMgr.cpp:2539).
+        virtual uint32 GetPointCount() const = 0;
+
     protected:
         WorldPosition GetMin() const { return min; }
         WorldPosition GetMax() const { return max; }
@@ -253,6 +261,8 @@ namespace ai
         void printWKT(std::ostringstream& out, bool squares) const;
 
         virtual uint32 GetSize() const override { return points.size(); }
+
+        virtual uint32 GetPointCount() const override { return points.size(); }
     private:
         std::vector<WorldPosition*> points;
     };
@@ -408,6 +418,14 @@ namespace ai
         }
 
         virtual uint32 GetSize() const override { return subSquares.begin()->second.GetSize(); }
+
+        virtual uint32 GetPointCount() const override
+        {
+            uint32 count = 0;
+            for (auto& [id, sq] : subSquares)
+                count += sq.GetPointCount();
+            return count;
+        }
     protected:
         virtual uint32 GetSubSquareId(const WorldPosition& point) const = 0;
 
@@ -486,7 +504,7 @@ namespace ai
         virtual uint32 ClosestMapId(const WorldPosition& point) const;
         const MapEntry* ClosetMapEntry(const WorldPosition& point) const { return sMapStore.LookupEntry(ClosestMapId(point)); }
         virtual bool IsOverWorld(const WorldPosition& point) const { const MapEntry* entry = ClosetMapEntry(point); return entry ? entry->IsContinent() : false; }
-        virtual bool IsUnique() const { return GetSize() == 1; }
+        virtual bool IsUnique() const { return GetPointCount() == 1; }
     private:
         virtual uint32 GetSubSquareId(const WorldPosition& point) const override { return point.mapId; };
     };
