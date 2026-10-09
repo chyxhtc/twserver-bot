@@ -96,6 +96,22 @@ EntryQuestRelationMap EntryQuestRelationMapValue::Calculate()
 					rMap[entry][questId] |= relationFlag;
 			}
 
+			// A64 (2026-10-10): an NPC that hands the item over through a gossip option is a
+			// destination like any other. The travel layer has asked for these entries since A51 -
+			// ChooseTravelTargetAction iterates "item gossip list" when it builds the objective
+			// candidate list - but this index never learned the entry, so no destination was ever
+			// built for it and the bot had nowhere to go. Measured 2026-10-10: quest 41768 The
+			// Messenger Of Northwind sits at 2/3 on all five holders (41864 and 41866 in hand,
+			// 41865 missing), and NPC 62164 Sir Amberwood - whose gossip option 1 creates 41865 -
+			// has no creature_questrelation / creature_involvedrelation row, so nothing else could
+			// have put it into the map either. The gossip handler already picks the option once the
+			// bot is there (see GossipItemMapValue's query and GossipHelloAction).
+			if (quest->ReqItemId[objective])
+			{
+				for (auto& entry : GAI_VALUE2(std::list<int32>, "item gossip list", quest->ReqItemId[objective]))
+					rMap[entry][questId] |= relationFlag;
+			}
+
 			// Quest-reward objective: the item is paid out by another quest, so the only place
 			// that produces it is that quest's giver. 116 Dry Times needs 1262 Keg of
 			// Thunderbrew Lager, which is 117 Thunderbrew's fixed reward; without this the
