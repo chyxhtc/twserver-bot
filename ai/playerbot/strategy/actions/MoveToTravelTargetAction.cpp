@@ -108,6 +108,36 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 {
     TravelTarget* target = AI_VALUE(TravelTarget*, "travel target");
 
+    // A76 probe (2026-10-10): the A72 freeze has two live shapes - status=3 TRAVEL with
+    // travelsValue=1, or status=2 READY - both with moving=0 for up to 260 s, and the A75 gate
+    // probe shows they are NOT refusals inside isUseful (Subish logged 16 frozen samples and not
+    // one TravelMoveDenied). That leaves exactly two candidates that no existing log separates:
+    // this action never runs (the engine did not select it), or it runs, hands a successful MoveTo
+    // to the motion master, and nothing displaces anyway (the shape A57 fixed on the corpse-run
+    // path). Two rows per bot per 30 s, no behaviour change: one on entry with the target's live
+    // status, the bot's moving flag and its current movement generator type; one right after the
+    // MoveTo call with its verdict and the same two flags.
+    struct TravelExecMark { uint32 lastMs; };
+    static std::map<uint32, TravelExecMark> travelExecMarks;
+    auto travelExecLog = [&](char const* phase, int canMove)
+    {
+        uint32 const nowMs = WorldTimer::getMSTime();
+        TravelExecMark& mark = travelExecMarks[bot->GetGUIDLow()];
+        if (mark.lastMs && WorldTimer::getMSTimeDiff(mark.lastMs, nowMs) < 30000)
+            return;
+        mark.lastMs = nowMs;
+
+        sPlayerbotAIConfig.logEvent(ai, "TravelExecuteProbe",
+            std::string("phase=") + phase +
+            " status=" + std::to_string(target ? (uint32)target->GetStatus() : 0) +
+            " canMove=" + std::to_string(canMove) +
+            " moving=" + (bot->IsMoving() ? "1" : "0"),
+            "motion=" + std::to_string((uint32)bot->GetMotionMaster()->GetCurrentMovementGeneratorType()) +
+            "|dist=" + std::to_string(target && target->getPosition() ? (int)target->getPosition()->distance(bot) : -1));
+    };
+
+    travelExecLog("enter", -1);
+
     if (target->GetStatus() == TravelStatus::TRAVEL_STATUS_READY)
     {
         ai->TellDebug(ai->GetMaster(), "The target is ready to travel start now.", "debug travel");
@@ -503,6 +533,8 @@ bool MoveToTravelTargetAction::Execute(Event& event)
     }
 
     bool canMove = MoveTo(mapId, x, y, z, false, false);
+
+    travelExecLog("after-move", canMove ? 1 : 0);
 
     if (!canMove)
     {
