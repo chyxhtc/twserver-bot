@@ -1665,12 +1665,22 @@ bool RequestTravelTargetAction::isUseful() {
                 {
                     lastLog = nowMs;
                     WorldPosition const* const pos = freezeTarget->getPosition();
+                    // A72 second pass: the travel triggers read "leader travel target" while this
+                    // request action reads "travel target", and the engine log shows a frozen bot
+                    // whose candidate list stops before those triggers ever fire. LeaderTravelTargetValue
+                    // returns the group master's target when GetGroupMaster() is a different live
+                    // player, so print that value's status and whether the two pointers are the same
+                    // object - that separates "two different targets" from "one value, throttled".
+                    TravelTarget* const leaderTarget = AI_VALUE(TravelTarget*, "leader travel target");
                     sPlayerbotAIConfig.logEvent(ai, "TravelFreezeProbe",
                         "status=" + std::to_string((uint32)freezeTarget->GetStatus()) +
                         " travelsValue=" + (AI_VALUE(bool, "travel target traveling") ? "1" : "0") +
+                        " readyValue=" + (AI_VALUE(bool, "travel target ready") ? "1" : "0") +
                         " moving=" + (bot->IsMoving() ? "1" : "0") +
                         " frozenSec=" + std::to_string(frozenSec),
-                        "dest=" + std::to_string(freezeTarget->GetDestination() ? (int32)freezeTarget->GetDestination()->GetEntry() : 0) +
+                        "leaderSame=" + (leaderTarget == freezeTarget ? std::string("1") : std::string("0")) +
+                        "|leaderStatus=" + std::to_string(leaderTarget ? (uint32)leaderTarget->GetStatus() : 999u) +
+                        "|dest=" + std::to_string(freezeTarget->GetDestination() ? (int32)freezeTarget->GetDestination()->GetEntry() : 0) +
                         "|dist=" + std::to_string(pos ? (int)pos->distance(bot) : -1) +
                         "|freeSlots=" + std::to_string((uint32)AI_VALUE(uint8, "free quest log slots")));
                 }
