@@ -570,6 +570,16 @@ namespace
         { 40698, "script token: the objective is dummy trigger 60008 with no spawn row and no DB script that spawns it (A47 family)" },
         { 41677, "script token: the objective is dummy trigger 60070 x15 with no spawn row and no DB script that spawns it (A47 family)" },
         { 70029, "script token: the objective is custom trigger 70028 with no spawn row and no DB script that spawns it (A47 family)" },
+        // A66 second half (2026-10-10, source check): quest 5381 Hand of Iruxos needs the Demon Box
+        // (13542), whose only source is the Demon Spirit (11876). That creature has no row in
+        // creature in any of its four id columns, and it is summoned by using a crystal inside
+        // Thunder Axe Fortress: gameobject_scripts id 11894 command 11 (summon) datalong 11876, and
+        // wowhead's notes for the quest say to clear the room and use the large red crystal. The
+        // module has no "use this object to summon the objective" step, so the four holders - all
+        // of them carrying the provided Demon Pick and none of them the box - cannot finish it.
+        // Release condition: the module learns to use a quest-provided item on the object that
+        // summons the objective (the same shape as the A60 batch).
+        { 5381, "script: the Demon Box (13542) only drops from Demon Spirit (11876), which has no spawn row and is summoned by using the crystal in Thunder Axe Fortress (gameobject_scripts 11894); the module has no use-object-to-summon step" },
     };
 }
 
