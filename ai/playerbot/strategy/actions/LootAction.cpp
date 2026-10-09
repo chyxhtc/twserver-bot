@@ -340,6 +340,33 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
         float const dist3d = bot->GetDistance(go);
         uint32 const lockId = go->GetGOInfo()->GetLockId();
 
+        // A21 probe (2026-10-10): with A61 feeding game-object objectives into the travel layer,
+        // bots now reach chests in numbers, and the open-spell chain splits cleanly into two
+        // groups with an identical spell shape (effect1=33, effectMiscValue1=13, target 23,
+        // range 12 for all three "Opening" spells): entry 175384 produced 12 windows from 12
+        // casts in one night, while the Shellfish Trap 176582 produced 0 from 12 - and its two
+        // visitors both held the quest whose 84.9% drop it carries, so 12 empty rolls is not a
+        // probability story. Name the server-side state the cast sees: the loot already
+        // generated for this bot, the object's own state, and whether a stale loot guid is held.
+        // One line per bot per game object per 30 minutes - no behaviour change.
+        {
+            std::string const probeKey = "gostate::" + std::to_string(lootObject.guid.GetRawValue());
+            Value<time_t>* stamp = context->GetValue<time_t>("manual time", probeKey);
+            time_t const now = time(nullptr);
+            if (stamp && (!stamp->Get() || now - stamp->Get() >= 30 * MINUTE))
+            {
+                stamp->Set(now);
+                sPlayerbotAIConfig.logEvent(ai, "GoOpenState",
+                    std::to_string(go->GetEntry()) + "|lock=" + std::to_string(lockId) +
+                    "|goState=" + std::to_string((uint32)go->GetGoState()) +
+                    "|lootState=" + std::to_string((uint32)go->getLootState()),
+                    "goItems=" + std::to_string((uint32)go->loot.items.size()) +
+                    "|goGold=" + std::to_string(go->loot.gold) +
+                    "|lootGuid=" + std::to_string(bot->GetLootGuid() ? 1 : 0) +
+                    "|dist=" + std::to_string((int)dist3d));
+            }
+        }
+
         if (dist3d > INTERACTION_DISTANCE)
         {
             LootTrace(bot, ai, lootObject.guid,
