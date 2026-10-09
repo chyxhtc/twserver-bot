@@ -716,7 +716,13 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
 // A8: a completed quest whose taker keeps being refused by the structural gates can never be
 // handed in, and the whole-search strike counter cannot see it while another quest keeps the
 // search succeeding. Strike the quest at the rejection site instead, sharing the counter key
-// with the drain-failure path so both routes drop after the same three strikes.
+// with the drain-failure path so both routes drop after the same number of strikes.
+// A82 (2026-10-10): "the same number" has to be read, not remembered. A81 raised the
+// drain-failure threshold to the hot knob handin_drop_strikes (default 6) but left this
+// rejection-site copy at a hard 3, so a finished quest whose taker was refused three times
+// by a route/hostile-town gate was still thrown away while the other path would have given
+// it six. Measured 2026-10-10 00:00-05:45: 8 QuestDropped rows still left by this path
+// (1707 x4, 40403 x3, 1690 x1) next to the 4 that the relaxed drain path produced.
 static void StrikeUnreachableTaker(PlayerbotAI* ai, Player* bot, TravelDestination* destination)
 {
     QuestRelationTravelDestination* questDest = dynamic_cast<QuestRelationTravelDestination*>(destination);
@@ -733,7 +739,8 @@ static void StrikeUnreachableTaker(PlayerbotAI* ai, Player* bot, TravelDestinati
 
     std::string const key = "hand-in fail::" + std::to_string(questId);
     uint32 const strikes = sRandomBotFacade.GetValue(bot, key) + 1;
-    if (strikes < 3)
+    int32 const dropStrikes = std::max(1, trace::IntValue("handin_drop_strikes", 6));
+    if (strikes < (uint32)dropStrikes)
     {
         sRandomBotFacade.SetValue(bot, key, strikes, {}, 30 * 60);
         return;
