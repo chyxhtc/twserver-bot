@@ -3,6 +3,8 @@
 #include "LootValues.h"
 #include "playerbot/strategy/actions/LootAction.h"
 
+#include <cstdlib>
+
 using namespace ai;
 
 // Penqle's Singleton<> requires an explicit instantiation in a .cpp file.
@@ -357,7 +359,21 @@ float LootChanceValue::Calculate()
 	if (entry > 0)
 		lTemplateA = DropMapValue::GetLootTemplate(ObjectGuid(HIGHGUID_UNIT, entry, uint32(1)), LOOT_CORPSE);
 	else
-		lTemplateA = DropMapValue::GetLootTemplate(ObjectGuid(HIGHGUID_GAMEOBJECT, entry, uint32(1)), LOOT_CORPSE);
+	{
+		// A61 (2026-10-10): the drop map keys a game object source as the negated game object
+		// entry, and ObjectGuid(HighGuid, uint32 entry, uint32 counter) packs that argument into
+		// bits 24-47. Handing the negative value straight over put 0xFF into the guid's high bits,
+		// so GetHigh() answered 255 instead of HIGHGUID_GAMEOBJECT: GetLootTemplate's IsGameObject
+		// test failed and every game object source reported chance 0. The destination index admits
+		// a source only above 5% (QuestValues.cpp:83 and :141), so no item that drops from a chest
+		// or a vein could ever become a travel objective. Measured 2026-10-10: item 4371 Bronze
+		// Tube (quest 174 Look To The Stars) drops at 31.33% from Box of Assorted Parts
+		// (19019/19020, loot_id 5000113, 16 spawns) and item 3340 Incendicite Ore (quest 466) at
+		// 100% from Incendicite Mineral Vein (1610/1667, loot_id 5000080, 21 spawns); neither
+		// objective had a destination and seven bots held 174 at 0/1 all day.
+		lTemplateA = DropMapValue::GetLootTemplate(
+			ObjectGuid(HIGHGUID_GAMEOBJECT, uint32(std::abs(entry)), uint32(1)), LOOT_CORPSE);
+	}
 
 	if (lTemplateA)
 	{

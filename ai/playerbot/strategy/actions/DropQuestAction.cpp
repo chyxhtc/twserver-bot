@@ -229,11 +229,9 @@ void LogItemDropWithoutDestination(Player* bot, uint32 itemId, std::list<int32> 
         return;
 
     // Two ways a source fails to become a destination, and the objective is dead either way:
-    //   position - the drop map stores a gameobject source as the negated gameobject entry
-    //              (LootValues.cpp:262) and EntryGuidps is built from
-    //              WorldPosition().GetCreaturesNear(), so it can never answer for one - and 790
-    //              quest items in this world DB drop only from game objects, so those are not
-    //              judged here at all;
+    //   position - the spawn-point index has no entry for that source, so the travel layer
+    //              cannot put it on the map at all (a creature that only ever appears through a
+    //              script, or a game object with no spawn row);
     //   chance   - the destination index itself admits a drop source only when the item is
     //              quest class or the chance is above 5% (QuestValues.cpp:80-84), so an item
     //              whose every positive chance is <= 5% keeps "a source" here and still has no
@@ -241,16 +239,23 @@ void LogItemDropWithoutDestination(Player* bot, uint32 itemId, std::list<int32> 
     //              (all non-quest-class, best chance 0.02-5%, no vendor, no use-target, not a
     //              quest reward), and four low-level quests among them are held at zero today
     //              (466, 705, 713, 5421).
+    //
+    // A61 (2026-10-10): the first version skipped every negated entry on the belief that
+    // EntryGuidps could not answer for a game object. It can - TravelValues indexes each game
+    // object as -entry - so the skip hid the whole chest and vein family behind a false
+    // "chance" verdict, and LootChanceValue's own guid construction was broken for the same
+    // negated input. Judge every entry the drop map names; the entry's sign already says which
+    // kind of source it is.
     ItemPrototype const* proto = sObjectMgr.GetItemPrototype(itemId);
     bool const questClass = proto && proto->Class == ITEM_CLASS_QUEST;
 
-    bool anyCreatureSource = false;
+    bool anySource = false;
     std::string reason;
     for (int32 entry : dropList)
     {
-        if (entry <= 0)
+        if (!entry)
             continue;
-        anyCreatureSource = true;
+        anySource = true;
         if (guidps.find(entry) == guidps.end())
         {
             if (reason.empty())
@@ -267,7 +272,7 @@ void LogItemDropWithoutDestination(Player* bot, uint32 itemId, std::list<int32> 
             reason = "chance=" + std::to_string((int)chance) + ":" + std::to_string(entry);
     }
 
-    if (!anyCreatureSource)
+    if (!anySource)
         return;
 
     PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(bot);
