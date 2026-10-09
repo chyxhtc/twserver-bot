@@ -397,8 +397,35 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
     PlayerbotAI* ai = PlayerbotAIStorage::Instance().GetAI(bot);
     AiObjectContext* context = ai->GetAiObjectContext();
 
-    if (!IsPossible(info))
+    // A62 probe (2026-10-10): "inactive" is the single biggest reason a quest candidate loses
+    // (5695 of the day's rejection tokens on 2026-10-09 against 3494 for route, see
+    // _observe/travelnotarget.py), and this method has four ways to return false while only two
+    // of them are named in the trace (QuestSpotVeto for the dangerous spot, ObjInactive for the
+    // group-or check). Name the branch that fired, one line per bot per quest objective per six
+    // hours, only while the travel trace category is on. No behaviour change.
+    auto why = [&](char const* branch) -> bool
+    {
+        if (trace::On("travel"))
+        {
+            std::string const key = std::string("objinactivewhy::") +
+                std::to_string(GetQuestTemplate()->GetQuestId()) + "::" +
+                std::to_string(GetObjective()) + "::" + branch;
+            Value<time_t>* stamp = context->GetValue<time_t>("manual time", key);
+            time_t const now = time(nullptr);
+            if (stamp && (!stamp->Get() || now - stamp->Get() >= 6 * HOUR))
+            {
+                stamp->Set(now);
+                sPlayerbotAIConfig.logEvent(ai, "ObjInactiveWhy",
+                    std::to_string(GetQuestTemplate()->GetQuestId()) + "|obj=" + std::to_string(GetObjective()) +
+                    "|entry=" + std::to_string(GetEntry()),
+                    std::string("branch=") + branch + "|unique=" + (IsUnique() ? "1" : "0"));
+            }
+        }
         return false;
+    };
+
+    if (!IsPossible(info))
+        return why("not-possible");
 
     // A36 second round: a quest objective inside a spot where this bot already died twice
     // without producing anything is refused for half an hour - the bot has to stop feeding
@@ -421,7 +448,7 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
                 sPlayerbotAIConfig.logEvent(ai, "QuestSpotVeto", std::to_string(GetQuestId()),
                     std::to_string((int)point->GetX()) + "," + std::to_string((int)point->GetY()));
             }
-            return false;
+            return why("dangerous-spot");
         }
 
     bool forceThisQuest = info.HasFocusQuest();
@@ -454,12 +481,12 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
 
     if (!groupOr) //Noone needs the quest objective.
     {
-        if (trace::On("travel"))
-            sPlayerbotAIConfig.logEvent(ai, "ObjInactive", objectiveQualifier,
-                std::string("need=") + (needObjective ? "1" : "0") +
-                " groupOr=" + (groupOr ? "1" : "0") +
-                " entry=" + std::to_string(GetEntry()));
-        return false;
+            if (trace::On("travel"))
+                sPlayerbotAIConfig.logEvent(ai, "ObjInactive", objectiveQualifier,
+                    std::string("need=") + (needObjective ? "1" : "0") +
+                    " groupOr=" + (groupOr ? "1" : "0") +
+                    " entry=" + std::to_string(GetEntry()));
+        return why("group-or");
     }
 
     WorldPosition botPos(bot);
@@ -477,7 +504,7 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
                 if (target.GetEntry() == GetEntry() && target.IsCreature() && ai->GetCreature(target) && ai->GetCreature(target)->IsAlive())
                     return true;
 
-            return false;
+            return why("unique-not-nearby");
         }
     }
 
