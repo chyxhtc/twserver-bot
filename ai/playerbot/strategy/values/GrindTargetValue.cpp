@@ -556,38 +556,44 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
         int const farRange = trace::IntValue("grind_far_range", 0);
         if (farRange > (int)sPlayerbotAIConfig.sightDistance)
         {
-            std::list<Unit*> wide;
-            PossibleTargetsValue::FindUnfriendlyUnits(bot, wide, (float)farRange);
-
-            Unit* widest = NULL;
-            float widestDist = 0.0f;
-            uint32 wideSeen = 0;
-            for (Unit* unit : wide)
-            {
-                if (!unit || !sServerFacade.IsAlive(unit))
-                    continue;
-                ++wideSeen;
-                if (!PossibleTargetsValue::IsValid(unit, bot, true))
-                    continue;
-                if (unit->IsCreature() && static_cast<Creature*>(unit)->IsInEvadeMode())
-                    continue;
-                if (unit->IsCreature() && static_cast<Creature*>(unit)->IsEvadeBecauseTargetNotReachable())
-                    continue;
-                if (levelTooHigh(unit))
-                    continue;
-                float const d = sServerFacade.getDistance2d(bot, unit);
-                if (!widest || d < widestDist)
-                {
-                    widest = unit;
-                    widestDist = d;
-                }
-            }
-
+            // The search itself runs on every empty evaluation (GrindTargetValue has a 2 tick
+            // check interval), so the extra grid visit is rate limited to once a minute per bot.
+            // The near scan is cached by the AI value layer; this direct call is not, so it must
+            // carry its own stamp or the knob would add a full 110 yard Cell walk many times a
+            // second. (At 50 bots this is under one extra scan a second pool wide.)
             time_t const now = time(nullptr);
-            time_t const last = AI_VALUE2(time_t, "manual time", "grindfar logged");
-            if (!last || now - last >= 5 * MINUTE)
+            time_t const last = AI_VALUE2(time_t, "manual time", "grindfar scanned");
+            if (!last || now - last >= 1 * MINUTE)
             {
-                SET_AI_VALUE2(time_t, "manual time", "grindfar logged", now);
+                SET_AI_VALUE2(time_t, "manual time", "grindfar scanned", now);
+
+                std::list<Unit*> wide;
+                PossibleTargetsValue::FindUnfriendlyUnits(bot, wide, (float)farRange);
+
+                Unit* widest = NULL;
+                float widestDist = 0.0f;
+                uint32 wideSeen = 0;
+                for (Unit* unit : wide)
+                {
+                    if (!unit || !sServerFacade.IsAlive(unit))
+                        continue;
+                    ++wideSeen;
+                    if (!PossibleTargetsValue::IsValid(unit, bot, true))
+                        continue;
+                    if (unit->IsCreature() && static_cast<Creature*>(unit)->IsInEvadeMode())
+                        continue;
+                    if (unit->IsCreature() && static_cast<Creature*>(unit)->IsEvadeBecauseTargetNotReachable())
+                        continue;
+                    if (levelTooHigh(unit))
+                        continue;
+                    float const d = sServerFacade.getDistance2d(bot, unit);
+                    if (!widest || d < widestDist)
+                    {
+                        widest = unit;
+                        widestDist = d;
+                    }
+                }
+
                 sPlayerbotAIConfig.logEvent(ai, "GrindFarProbe",
                     "range=" + std::to_string(farRange) +
                     " seen=" + std::to_string(wideSeen) +
@@ -596,12 +602,12 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
                     "|level=" + std::to_string(widest ? (int)widest->GetLevel() : -1) +
                     "|botLevel=" + std::to_string(bot->GetLevel()) +
                     "|area=" + std::to_string(sServerFacade.GetAreaId(bot)));
-            }
 
-            if (widest)
-            {
-                logGrind(widest, "selected (wide).");
-                result = widest;
+                if (widest)
+                {
+                    logGrind(widest, "selected (wide).");
+                    result = widest;
+                }
             }
         }
     }
