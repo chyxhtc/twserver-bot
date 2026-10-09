@@ -507,6 +507,27 @@ namespace
         // 60033 Fashion Demands Sacrifices wants two crafted armour pieces plus a leatherworking
         // reagent: 4236 Cured Heavy Hide, 5783 Murloc Scale Bracers and 3845 Golden Scale Cuirass.
         { 60033, "craft: wants crafted armour 5783 Murloc Scale Bracers and 3845 Golden Scale Cuirass plus 4236 Cured Heavy Hide; no bot has the recipes" },
+        // A60 second family (2026-10-10, source check): the five quest items whose only drop
+        // source has no spawn row are all scripted summons, not a gap in the spawn table.
+        //   - wowhead's own notes for 6134 say the crate of ghost magnets is placed on a hill in
+        //     Desolace (about 63,89) and summons the spectres; 881's horn summons Echeyakee;
+        //     348 has Witch Doctor Unbagwa summon Mokk the Savage; 851 says to kill the centaurs
+        //     around the command tent until Verog spawns; 437's comments say to kill the gnolls
+        //     until Nightlash appears.
+        //   - the world DB agrees: 11560 carries script_name npc_magrami_spetre, the two summoning
+        //     items exist and carry on-use spells (10327 spell 12189, 15848 spell 19588), and none
+        //     of the five entries has a row in creature in any of its four id columns.
+        //   - quest_template carries no objective point for any of the five (PointMapId/PointX/
+        //     PointY are 0), so there is nowhere the travel layer could send a bot to do the
+        //     summoning. Adding a static spawn row instead would put extra mobs into the live
+        //     world for the human players, which is not the same thing as fixing the quest.
+        // Release condition: the module learns to use a quest-provided item at an objective spot
+        // (and the world DB gains the spot), or to handle a kill-to-spawn step.
+        { 6134, "script: the Magrami Spectres (11560) only appear when the quest-provided Crate of Ghost Magnets (15848, on-use spell 19588) is used at a spot in Desolace; the DB has no objective point for this quest" },
+        { 881,  "script: Echeyakee (3475) is summoned with the quest-provided Horn of Echeyakee (10327, on-use spell 12189) in the Barrens; the DB has no objective point for this quest" },
+        { 348,  "script: Mokk the Savage (1514) is summoned by Witch Doctor Unbagwa, not a normal spawn, and the DB has no spawn row for him" },
+        { 851,  "script: Verog the Dervish (3395) spawns only after the centaurs around the command tent are killed; the DB has no spawn row for him" },
+        { 437,  "script: Nightlash (1983) is a conditional spawn in the Dead Fields (the notes say she appears after the gnolls are killed); the DB has no spawn row for her" },
     };
 }
 
