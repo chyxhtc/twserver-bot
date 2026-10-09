@@ -485,6 +485,23 @@ namespace
         { 40691, "script token 60399: credit is gossip option 1 on Grumnir Battlebeard (issue A47)" },
         { 80395, "script token 80007: credit is using game object 3000284 south of Ratchet (issue A47)" },
         { 55048, "script token 91296: credit is gossip on Hizzle while carrying aura 50060 (issue A47)" },
+        // 2026-10-09, user decision: profession- and trade-gated quests go on this list until the
+        // module can craft on demand or use the auction house. The Green Hills of Stranglethorn
+        // chain is the classic trade quest - its pages are meant to be bought from other players,
+        // and a single bot farming all 16 of them at 1.6-8.3% is not a plan.
+        { 338,   "trade: needs the 4 Stranglethorn chapters, i.e. 16 pages dropped at 1.6-8.3%; meant to be bought from players, not farmed solo" },
+        { 339,   "trade: Chapter I wants pages 1/4/6/8 (2725/2728/2730/2732) at 1.6-8.3%; part of the 338 page chain" },
+        { 340,   "trade: Chapter II wants pages 10/11/14/16 (2734/2735/2738/2740) at 1.8-6.4%; part of the 338 page chain" },
+        { 341,   "trade: Chapter III wants pages 18/20/21/24 (2742/2744/2745/2748) at 1.6-6.7%; part of the 338 page chain" },
+        // 3388 Strong Troll's Blood Potion has no loot rows and no vendors in this world DB - it is
+        // an alchemy 3176 product, and no bot knows the recipe (character_spell is empty for it).
+        { 515,   "craft: 3388 Strong Troll's Blood Potion is alchemy 3176 only (0 loot rows, 0 vendors), no bot has it" },
+        // 6451 Heavy Silk Bandage needs first aid 129; the bots have the skill line at value 4-10
+        // but no recipe, so ItemHasReachableSource can never be satisfied.
+        { 41689, "craft: 6451 Heavy Silk Bandage is first aid 7929 only, no bot has it" },
+        // 60033 Fashion Demands Sacrifices wants two crafted armour pieces plus a leatherworking
+        // reagent: 4236 Cured Heavy Hide, 5783 Murloc Scale Bracers and 3845 Golden Scale Cuirass.
+        { 60033, "craft: wants crafted armour 5783 Murloc Scale Bracers and 3845 Golden Scale Cuirass plus 4236 Cured Heavy Hide; no bot has the recipes" },
     };
 }
 
