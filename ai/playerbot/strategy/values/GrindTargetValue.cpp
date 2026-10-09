@@ -580,15 +580,29 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
                     ++wideSeen;
                     if (!PossibleTargetsValue::IsValid(unit, bot, true))
                         continue;
-                    // A68 follow-up: the near path skips critters that pay no xp (see the
-                    // CREATURE_TYPE_CRITTER guard below); the first live wide read picked a
-                    // level 1 critter at 0 yards, so apply the same shape here.
-                    if (unit->IsCreature() && unit->GetCreatureType() == CREATURE_TYPE_CRITTER &&
+                    // A68 follow-up: the near path applies two policy filters the first wide
+                    // version did not, and the live read picked both kinds - a level 1 critter at
+                    // 0 yards and level 18-20 mobs against a level 45 bot. Keep the same
+                    // semantics: a mob that pays no xp is only worth walking to when an active
+                    // quest still asks for it (that is exactly the needForQuest bypass the near
+                    // loop uses), and critters that pay no xp are never worth it.
+                    Creature* wideCreature = unit->IsCreature() ? static_cast<Creature*>(unit) : NULL;
+                    if (wideCreature && !bot->IsHonorOrXPTarget(unit))
+                    {
+                        uint32 const wideEntry = unit->GetEntry();
+                        bool const wantedByQuest = wideEntry &&
+                            AI_VALUE2(bool, "need for quest", std::to_string(wideEntry));
+                        if (!wantedByQuest)
+                            continue;
+                    }
+                    if (wideCreature && unit->GetCreatureType() == CREATURE_TYPE_CRITTER &&
                         !bot->IsHonorOrXPTarget(unit))
                         continue;
-                    if (unit->IsCreature() && static_cast<Creature*>(unit)->IsInEvadeMode())
+                    if (wideCreature && wideCreature->IsInEvadeMode())
                         continue;
-                    if (unit->IsCreature() && static_cast<Creature*>(unit)->IsEvadeBecauseTargetNotReachable())
+                    if (wideCreature && wideCreature->IsEvadeBecauseTargetNotReachable())
+                        continue;
+                    if (!unit->GetEntry())
                         continue;
                     if (levelTooHigh(unit))
                         continue;
@@ -602,6 +616,8 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
 
                 sPlayerbotAIConfig.logEvent(ai, "GrindFarProbe",
                     "range=" + std::to_string(farRange) +
+                    " nearAttackers=" + std::to_string(g_grindAttackTargets) +
+                    " nearPossible=" + std::to_string(g_grindPossibleTargets) +
                     " seen=" + std::to_string(wideSeen) +
                     " pick=" + std::string(widest ? std::to_string(widest->GetEntry()) : "none"),
                     "dist=" + std::to_string(widest ? (int)widestDist : -1) +
