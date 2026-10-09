@@ -505,6 +505,45 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
 
         if (coreUnreachable || !reaches)
         {
+            // A80 (2026-10-10): do not throw away a quest objective the bot can take one step
+            // toward. Measured pool-wide: 610 GrindNoPath rows in one day, every one of them
+            // "pathPoints=1 startOnMesh=1 coreUnreachable=0" with the mob 31-60 yards away, and
+            // concentrated on five bots (Karwarn 73, Graethugoth 66, Stunograr 55, Valzarustur 54,
+            // Tuzarurth 45). Karwarn's case is the platform's "went to the objective 106 times and
+            // nothing moved": 671 yards away the last-mile teleport put him at the spawn, and from
+            // there an Incendosaur 42-49 yards away had no path even though a two yard step toward
+            // it did - so the search dropped the only candidate every minute while the quest
+            // counter stayed at zero.
+            //
+            // Scoped narrowly and bounded: only when the mob is an objective of an active quest,
+            // only inside the normal scan radius, only when the core has not already declared it
+            // unreachable, and only when the two yard step test passes. The order is then handed to
+            // the reach action like any other pick, and reach gives up on a target it cannot close
+            // on for 15 s and blacklists it, so this cannot become an attacking-air loop.
+            // Hot knob quest_target_one_step (default 1, 0 = old behaviour).
+            bool keepForStep = false;
+            if (trace::IntValue("quest_target_one_step", 1) != 0 && !coreUnreachable && result->IsCreature())
+            {
+                uint32 const stepEntry = result->GetEntry();
+                if (stepEntry && start.fDist(target) <= sPlayerbotAIConfig.sightDistance &&
+                    AI_VALUE2(bool, "need for quest", std::to_string(stepEntry)))
+                {
+                    float const sdx = target.getX() - start.getX();
+                    float const sdy = target.getY() - start.getY();
+                    float const slen = std::max(0.001f, std::sqrt(sdx * sdx + sdy * sdy));
+                    WorldPosition stepProbe = start;
+                    stepProbe.setX(start.getX() + sdx / slen * 2.0f);
+                    stepProbe.setY(start.getY() + sdy / slen * 2.0f);
+                    keepForStep = stepProbe.isPathTo(start.getPathTo(stepProbe, bot), 5.0f, 5.0f);
+                }
+            }
+
+            if (keepForStep)
+            {
+                logGrind(result, "kept (quest target, one step away).");
+            }
+            else
+            {
             // GYDIAG: this drop used to be invisible. One throttled line (30 s per bot)
             // with the coordinates, the straight-line distance, how many points the
             // pathfinder returned, whether the core already flagged the mob, and whether
@@ -538,6 +577,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
             }
             logGrind(result, "ignored (no path).");
             result = NULL;
+            }
         }
     }
 
