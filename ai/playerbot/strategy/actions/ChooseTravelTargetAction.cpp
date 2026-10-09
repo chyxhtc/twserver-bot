@@ -1615,7 +1615,13 @@ bool RequestTravelTargetAction::isUseful() {
         TravelTarget* freezeTarget = AI_VALUE(TravelTarget*, "travel target");
         if (freezeTarget && freezeTarget->IsActive() && !bot->IsInCombat())
         {
-            struct FreezeMark { uint32 lastMs; float x; float y; uint32 sinceMs; };
+            // A72 second pass: the first version compared the position between two consecutive
+            // calls, and this action's caller runs roughly every tick, so a bot walking at run
+            // speed advances well under a yard per sample and was counted as frozen while moving
+            // (the first live rows carried moving=1 for exactly that reason). Compare against the
+            // position the run started from instead, and only accumulate while the bot's own
+            // moving flag is also false.
+            struct FreezeMark { uint32 lastMs; float x; float y; uint32 sinceMs; float sinceX; float sinceY; };
             static std::map<uint32, FreezeMark> freezeMarks;
             static std::map<uint32, uint32> freezeLogged;
 
@@ -1627,12 +1633,22 @@ bool RequestTravelTargetAction::isUseful() {
             float const dx = px - mark.x;
             float const dy = py - mark.y;
             bool const sameSpot = mark.lastMs != 0 && (dx * dx + dy * dy) < 1.0f &&
-                WorldTimer::getMSTimeDiff(mark.lastMs, nowMs) < 10000;
+                WorldTimer::getMSTimeDiff(mark.lastMs, nowMs) < 10000 &&
+                !sServerFacade.isMoving(bot);
 
             if (sameSpot)
             {
                 if (!mark.sinceMs)
+                {
                     mark.sinceMs = mark.lastMs;
+                    mark.sinceX = mark.x;
+                    mark.sinceY = mark.y;
+                }
+                // The run also ends when the bot has actually travelled away from where it started.
+                float const rx = px - mark.sinceX;
+                float const ry = py - mark.sinceY;
+                if ((rx * rx + ry * ry) > 25.0f)
+                    mark.sinceMs = 0;
             }
             else
                 mark.sinceMs = 0;
