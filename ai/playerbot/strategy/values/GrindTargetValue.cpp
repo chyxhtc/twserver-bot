@@ -541,6 +541,19 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
             if (keepForStep)
             {
                 logGrind(result, "kept (quest target, one step away).");
+                // A80 observability: the kept case otherwise only reaches grind_target.csv, which
+                // this deployment leaves switched off, so the fix could not be seen firing.
+                time_t const now = time(nullptr);
+                time_t const last = AI_VALUE2(time_t, "manual time", "grindstepkeep logged");
+                if (!last || now - last >= 60)
+                {
+                    SET_AI_VALUE2(time_t, "manual time", "grindstepkeep logged", now);
+                    sPlayerbotAIConfig.logEvent(ai, "GrindNoPathKept",
+                        "entry=" + std::to_string(result->GetEntry()) +
+                        " dist=" + std::to_string((int)start.fDist(target)),
+                        "pathPoints=" + std::to_string(path.size()) +
+                        "|to=" + std::to_string((int)target.getX()) + "," + std::to_string((int)target.getY()));
+                }
             }
             else
             {
