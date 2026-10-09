@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "playerbot/AiFactory.h"
+#include "playerbot/TraceSwitch.h"
 
 #include "../../runtime/ObservabilityEmitter.h"
 #include "../../runtime/BotActivityLease.h"
@@ -644,6 +645,67 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             fallAfterJump = false;
             jumpDestination = WorldPosition(bot->GetMapId(), bot->m_movementInfo.pos.x, bot->m_movementInfo.pos.y, landingHeight);
             sLog.outDetail("%s: Jump: Falling simulated, height: %f, timeToLand %u", bot->GetName(), landingHeight, jumpTime);
+        }
+    }
+
+    // A78 (2026-10-10): a fall flag that never clears freezes the bot for good.
+    //
+    // Player::IsFalling() (m_fallStartZ != 0) gates PlayerbotAI::CanMove(), and CanMove() gates
+    // every movement action (MovementAction::isPossible is just ai->CanMove()), so a bot left with
+    // the flag set can still log a travel target but never move again. The landing block above
+    // already clears it directly for the normal jump path - its own comment explains that the
+    // MSG_MOVE_FALL_LAND round-trip is unreliable for an AI-synthesized packet - but knocks, the
+    // "falling after hitting something" branch and any fall this module did not start all leave
+    // m_fallStartZ behind.
+    //
+    // Measured 2026-10-10 with the A77 probe: in the two minutes after it went live, fifteen
+    // "move to travel target impossible" rows, seven of them with falling=1, motion=0 (idle) and
+    // distances of 3.9-9.5k yards; and the A72 freeze probe shows the worst case sitting in one
+    // spot for 916 s. This watchdog only fires when the bot is flagged as falling AND has not
+    // moved in three dimensions for kFallWatchdogSec, which a real fall cannot do - so it cannot
+    // cut a genuine fall short. Knob fall_watchdog_sec (default 15, 0 = off).
+    {
+        int32 const fallWatchSec = trace::IntValue("fall_watchdog_sec", 15);
+        if (fallWatchSec > 0 && bot->IsFalling() && !bot->IsInCombat())
+        {
+            struct FallWatchMark { uint32 sinceMs; float x; float y; float z; uint32 lastLogMs; };
+            static std::map<uint32, FallWatchMark> fallWatchMarks;
+            FallWatchMark& mark = fallWatchMarks[bot->GetGUIDLow()];
+
+            uint32 const nowMs = WorldTimer::getMSTime();
+            float const fx = bot->GetPositionX();
+            float const fy = bot->GetPositionY();
+            float const fz = bot->GetPositionZ();
+            float const moved = std::fabs(fx - mark.x) + std::fabs(fy - mark.y) + std::fabs(fz - mark.z);
+
+            if (!mark.sinceMs || moved > 1.0f)
+            {
+                mark.sinceMs = nowMs;
+                mark.x = fx;
+                mark.y = fy;
+                mark.z = fz;
+            }
+            else if (WorldTimer::getMSTimeDiff(mark.sinceMs, nowMs) >= (uint32)fallWatchSec * 1000)
+            {
+                // No displacement at all while flagged as falling: the landing was never processed.
+                bot->SetFallInformation(0.0f);
+                jumpTime = 0;
+                fallAfterJump = false;
+                ResetJumpDestination();
+                mark.sinceMs = nowMs;
+                mark.x = fx;
+                mark.y = fy;
+                mark.z = fz;
+                if (!mark.lastLogMs || WorldTimer::getMSTimeDiff(mark.lastLogMs, nowMs) >= 60000)
+                {
+                    mark.lastLogMs = nowMs;
+                    sPlayerbotAIConfig.logEvent(this, "FallStuckCleared",
+                        "fallStartCleared",
+                        "x=" + std::to_string((int)fx) + "|y=" + std::to_string((int)fy) +
+                        "|z=" + std::to_string((int)fz) +
+                        "|motion=" + std::to_string((uint32)bot->GetMotionMaster()->GetCurrentMovementGeneratorType()));
+                }
+            }
         }
     }
 
