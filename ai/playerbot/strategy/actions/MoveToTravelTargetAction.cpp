@@ -700,24 +700,54 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 
 bool MoveToTravelTargetAction::isUseful()
 {
-    if (!bot->IsAlive()) // a ghost travelling or picking fights instead of going for its corpse
+    // A75 probe (2026-10-10): for a bot that holds an active travel target and stands still, the
+    // engine writes "try: move to travel target useless" every tick without saying which of the
+    // gates below refused it - and measured with the A72 probe, that is one of the two live freeze
+    // shapes (status=3 TRAVEL with travelsValue=1, or status=2 READY, both with moving=0 for up to
+    // 258 s). Name the gate, once per bot per 30 s, with the state each gate reads, so the next
+    // read says whether the bot is blocked by "can move around", by an unreachable loot object, by
+    // the free-move radius or by something else. No behaviour change: every path still returns
+    // false exactly as before.
+    auto deny = [&](char const* why) -> bool
+    {
+        if (trace::On("travel"))
+        {
+            time_t const now = time(nullptr);
+            time_t const last = AI_VALUE2(time_t, "manual time", "movetraveldeny logged");
+            if (!last || now - last >= 30)
+            {
+                SET_AI_VALUE2(time_t, "manual time", "movetraveldeny logged", now);
+                TravelTarget* t = AI_VALUE(TravelTarget*, "travel target");
+                sPlayerbotAIConfig.logEvent(ai, "TravelMoveDenied", why,
+                    "status=" + std::to_string(t ? (uint32)t->GetStatus() : 0) +
+                    "|dist=" + std::to_string(t && t->getPosition() ? (int)t->getPosition()->distance(bot) : -1) +
+                    "|loot=" + (AI_VALUE(bool, "has available loot") ? "1" : "0") +
+                    "|canMove=" + (AI_VALUE(bool, "can move around") ? "1" : "0") +
+                    "|freeRange=" + std::to_string((int)AI_VALUE(float, "free move range")) +
+                    "|forced=" + (t && t->IsForced() ? "1" : "0"));
+            }
+        }
         return false;
+    };
+
+    if (!bot->IsAlive()) // a ghost travelling or picking fights instead of going for its corpse
+        return deny("dead");
 
     if (!ai->AllowActivity(TRAVEL_ACTIVITY))
-        return false;
+        return deny("activity");
 
     if (!AI_VALUE(bool, "travel target traveling") && AI_VALUE(TravelTarget*, "travel target")->GetStatus() != TravelStatus::TRAVEL_STATUS_READY)
-        return false;
+        return deny("not-traveling");
 
     if (bot->IsTaxiFlying())
-        return false;
+        return deny("taxi");
 
     if (MEM_AI_VALUE(WorldPosition, "current position")->LastChangeDelay() < 10)
         if (bot->IsMoving())
-            return false;
+            return deny("already-moving");
 
     if (!AI_VALUE(bool, "can move around"))
-        return false;
+        return deny("cannot-move");
 
     TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target");
 
@@ -727,7 +757,7 @@ bool MoveToTravelTargetAction::isUseful()
         for (auto& cond : conditions)
         {
             if (cond == "should travel named::guild order")
-                return false;
+                return deny("guild-order");
         }
     }
 
@@ -736,23 +766,23 @@ bool MoveToTravelTargetAction::isUseful()
             ai->HasStrategy("stay", BotState::BOT_STATE_NON_COMBAT) ||
             ai->HasStrategy("guard", BotState::BOT_STATE_NON_COMBAT))
             if (!travelTarget->IsForced())
-                return false;
+                return deny("follower");
 
     WorldPosition travelPos(*travelTarget->getPosition());
 
     if (travelPos.isDungeon() && bot->GetGroup() && bot->GetGroup()->IsLeader(bot->getObjectGuid()) && sTravelMgr.MapTransDistance(bot, travelPos, true) < sPlayerbotAIConfig.sightDistance && !AI_VALUE2(bool, "group and", "near leader"))
-        return false;
+        return deny("dungeon-near");
 
     if (AI_VALUE(bool, "has available loot"))
     {
         LootObject lootObject = AI_VALUE(LootObjectStack*, "available loot")->GetLoot(sPlayerbotAIConfig.lootDistance);
         if (lootObject.IsLootPossible(bot))
-            return false;
+            return deny("loot");
     }
 
     if (!travelTarget->IsForced())
         if (!CanFreeMoveValue::CanFreeMoveTo(ai, *travelTarget->getPosition()))
-            return false;
+            return deny("free-move");
 
     return true;
 }
