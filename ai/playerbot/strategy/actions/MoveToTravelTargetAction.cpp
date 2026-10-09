@@ -540,6 +540,53 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 
     travelExecLog("after-move", canMove ? 1 : 0);
 
+    // A79 (2026-10-10): the last freeze shape the A76/A77/A78 chain leaves behind. Measured with
+    // the A76 probe over 8.5 minutes: 150 "after-move canMove=1 moving=1" rows (the normal case),
+    // 13 with canMove=0, and 6 with canMove=1 but moving=0 - a move the motion master accepted
+    // that produced no displacement, which is the shape A57 fixed on the corpse-run path. The
+    // engine keeps re-dispatching it every tick, so nothing ever counts it as a failure and the
+    // bot stands in TRAVEL status while the A72 freeze probe ticks up to 167 s.
+    //
+    // Watchdog: no displacement in three dimensions for travel_stall_sec (default 90, hot knob,
+    // 0 = off) while the target is in TRAVEL and the bot believes it can move, then count one move
+    // failure. That feeds the existing retry/drop/last-mile-teleport machinery instead of adding a
+    // second recovery path. A bot that is genuinely walking changes its position every tick, so
+    // this cannot fire on healthy travel.
+    {
+        int32 const stallSec = trace::IntValue("travel_stall_sec", 90);
+        if (stallSec > 0 && !bot->IsMoving() && !bot->IsInCombat() &&
+            target->GetStatus() == TravelStatus::TRAVEL_STATUS_TRAVEL)
+        {
+            struct StallMark { uint32 sinceMs; float x; float y; float z; };
+            static std::map<uint32, StallMark> stallMarks;
+            StallMark& mark = stallMarks[bot->GetGUIDLow()];
+
+            uint32 const nowMs = WorldTimer::getMSTime();
+            float const sx = bot->GetPositionX();
+            float const sy = bot->GetPositionY();
+            float const sz = bot->GetPositionZ();
+            float const moved = std::fabs(sx - mark.x) + std::fabs(sy - mark.y) + std::fabs(sz - mark.z);
+
+            if (!mark.sinceMs || moved > 1.0f)
+            {
+                mark.sinceMs = nowMs;
+                mark.x = sx;
+                mark.y = sy;
+                mark.z = sz;
+            }
+            else if (WorldTimer::getMSTimeDiff(mark.sinceMs, nowMs) >= (uint32)stallSec * 1000)
+            {
+                mark.sinceMs = nowMs;
+                target->IncMoveRetryThrottled();
+                sPlayerbotAIConfig.logEvent(ai, "TravelStallRetry", "no-displacement",
+                    "dist=" + std::to_string((int)botLocation.distance(location)) +
+                    "|retry=" + std::to_string(target->GetRetryCount(true)) +
+                    "|dest=" + std::to_string(target->GetDestination() ? (int32)target->GetDestination()->GetEntry() : 0) +
+                    "|moving=" + (bot->IsMoving() ? "1" : "0"));
+            }
+        }
+    }
+
     if (!canMove)
     {
         // Throttled: this action runs every tick, so the raw counter measured ticks, not
