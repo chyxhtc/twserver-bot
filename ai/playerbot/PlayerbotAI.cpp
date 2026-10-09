@@ -8599,57 +8599,62 @@ uint32 PlayerbotAI::GetBuffedCount(Player* player, std::string spellname)
 
 bool PlayerbotAI::CanMove()
 {
+    return CannotMoveReason().empty();
+}
+
+std::string PlayerbotAI::CannotMoveReason()
+{
     if (sServerFacade.IsFrozen(bot))
     {
-        return false;
+        return "frozen";
     }
     if (sServerFacade.IsInRoots(bot))
     {
-        return false;
+        return "rooted";
     }
     if (sServerFacade.IsFeared(bot))
     {
-        return false;
+        return "feared";
     }
     if (sServerFacade.IsCharmed(bot))
     {
-        return false;
+        return "charmed";
     }
     if (bot->HasUnitState(UNIT_STAT_STUNNED))
     {
-        return false;
+        return "stunned";
     }
     if (bot->HasAuraType(SPELL_AURA_SPIRIT_OF_REDEMPTION))
     {
-        return false;
+        return "spirit-of-redemption";
     }
     if (bot->IsPolymorphed())
     {
-        return false;
+        return "polymorphed";
     }
     if (bot->IsTaxiFlying())
     {
-        return false;
+        return "taxi";
     }
     if (sServerFacade.UnitIsDead(bot) && !bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST))
     {
-        return false;
+        return "dead";
     }
     if (bot->IsBeingTeleported())
     {
-        return false;
+        return "teleporting";
     }
     if (bot->HasUnitState(UNIT_STAT_CAN_NOT_REACT_OR_LOST_CONTROL))
     {
-        return false;
+        return "lost-control";
     }
     if (IsJumping())
     {
-        return false;
+        return "jumping";
     }
     if (bot->IsFalling())
     {
-        return false;
+        return "falling";
     }
 
     MotionMaster& mm = *bot->GetMotionMaster();
@@ -8658,16 +8663,16 @@ bool PlayerbotAI::CanMove()
 #ifdef CMANGOS
     if (currentMotion == TAXI_MOTION_TYPE)
     {
-        return false;
+        return "taxi-motion";
     }
 #endif
 #ifdef MANGOS
     if (currentMotion == FLIGHT_MOTION_TYPE)
     {
-        return false;
+        return "flight-motion";
     }
 #endif
-    return true;
+    return "";
 }
 
 void PlayerbotAI::StopMoving()

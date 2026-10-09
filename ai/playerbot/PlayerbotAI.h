@@ -717,6 +717,13 @@ public:
     bool ShouldReuseSpatialScan();
     void NoteSpatialScan() { m_lastSpatialScanMs = WorldTimer::getMSTime(); }
 
+    // A77 (2026-10-10): name the check inside CanMove() that is refusing movement, or an empty
+    // string when the bot can move. Diagnostic only - CanMove() keeps its own copy of the same
+    // predicates so nothing on the hot path changes. Needed because the engine records
+    // "move to travel target impossible" without saying which of the fifteen conditions fired,
+    // and that is what freezes a bot holding a READY travel target (measured: 916 s).
+    std::string CannotMoveReason();
+
     bool IsStateActive(BotState state) const;
     time_t GetCombatStartTime() const;
 

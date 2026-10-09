@@ -734,6 +734,36 @@ bool MoveToTravelTargetAction::Execute(Event& event)
     return canMove;
 }
 
+// A77 probe (2026-10-10): the engine names this action "impossible" while a bot holds a READY
+// travel target and stands still, and MoveToTravelTargetAction inherits isPossible() from
+// MovementAction, which is just ai->CanMove(). CanMove() has fifteen ways to say no and none of
+// them is visible in the trace, so the freeze could be a root, a fear, a stuck teleport flag or
+// simply standing in the air. Log which one fired, once per bot per 30 s, with the target's
+// status, distance, motion generator and height. No behaviour change: the verdict still comes
+// from MovementAction::isPossible().
+bool MoveToTravelTargetAction::isPossible()
+{
+    if (!ai->CanMove())
+    {
+        uint32 const nowMs = WorldTimer::getMSTime();
+        static std::map<uint32, uint32> lastImpossible;
+        uint32& last = lastImpossible[bot->GetGUIDLow()];
+        if (!last || WorldTimer::getMSTimeDiff(last, nowMs) >= 30000)
+        {
+            last = nowMs;
+            TravelTarget* t = AI_VALUE(TravelTarget*, "travel target");
+            sPlayerbotAIConfig.logEvent(ai, "TravelMoveImpossible", ai->CannotMoveReason(),
+                "status=" + std::to_string(t ? (uint32)t->GetStatus() : 0) +
+                "|dist=" + std::to_string(t && t->getPosition() ? (int)t->getPosition()->distance(bot) : -1) +
+                "|motion=" + std::to_string((uint32)bot->GetMotionMaster()->GetCurrentMovementGeneratorType()) +
+                "|falling=" + (bot->IsFalling() ? "1" : "0") +
+                "|z=" + std::to_string((int)bot->GetPositionZ()));
+        }
+    }
+
+    return MovementAction::isPossible();
+}
+
 bool MoveToTravelTargetAction::isUseful()
 {
     // A75 probe (2026-10-10): for a bot that holds an active travel target and stands still, the
