@@ -666,7 +666,18 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // cut a genuine fall short. Knob fall_watchdog_sec (default 15, 0 = off).
     {
         int32 const fallWatchSec = trace::IntValue("fall_watchdog_sec", 15);
-        if (fallWatchSec > 0 && bot->IsFalling() && !bot->IsInCombat())
+        MovementGeneratorType const watchMotion = bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+        // A78 second pass: the A77 probe's first live read split the frozen bots in two - some with
+        // IsJumping()/IsFalling() set (the flag that never cleared) and some with motion=7, the
+        // taxi/flight generator that CanMove() also refuses. Both leave a bot holding a travel
+        // target it can never move on, and both are caught by the same test: no displacement at
+        // all while the state says it should be moving.
+#ifdef CMANGOS
+        bool const watchMotionBlocked = (watchMotion == TAXI_MOTION_TYPE);
+#else
+        bool const watchMotionBlocked = (watchMotion == FLIGHT_MOTION_TYPE);
+#endif
+        if (fallWatchSec > 0 && !bot->IsInCombat() && (bot->IsFalling() || IsJumping() || watchMotionBlocked))
         {
             struct FallWatchMark { uint32 sinceMs; float x; float y; float z; uint32 lastLogMs; };
             static std::map<uint32, FallWatchMark> fallWatchMarks;
@@ -687,7 +698,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             }
             else if (WorldTimer::getMSTimeDiff(mark.sinceMs, nowMs) >= (uint32)fallWatchSec * 1000)
             {
-                // No displacement at all while flagged as falling: the landing was never processed.
+                // No displacement at all while the state says the bot should be moving: the landing
+                // or the flight never completed.
+                bool const wasFalling = bot->IsFalling();
+                bool const wasJumping = IsJumping();
+                if (watchMotionBlocked)
+                    bot->GetMotionMaster()->Clear();
                 bot->SetFallInformation(0.0f);
                 jumpTime = 0;
                 fallAfterJump = false;
@@ -700,7 +716,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 {
                     mark.lastLogMs = nowMs;
                     sPlayerbotAIConfig.logEvent(this, "FallStuckCleared",
-                        "fallStartCleared",
+                        std::string("cleared") + (watchMotionBlocked ? "|motionBlocked" : "") +
+                        (wasFalling ? "|wasFalling" : "") + (wasJumping ? "|wasJumping" : ""),
                         "x=" + std::to_string((int)fx) + "|y=" + std::to_string((int)fy) +
                         "|z=" + std::to_string((int)fz) +
                         "|motion=" + std::to_string((uint32)bot->GetMotionMaster()->GetCurrentMovementGeneratorType()));
