@@ -333,7 +333,9 @@ bool QuestObjectiveTravelDestination::IsPossible(const PlayerTravelInfo& info) c
 
         CreatureInfo const* cInfo = GetCreatureInfo();
 
-        if (cInfo->npc_flags & UNIT_NPC_FLAG_VENDOR && GetQuestTemplate()->ReqItemId[GetObjective()])
+        bool const itemObjective = GetQuestTemplate()->ReqItemId[GetObjective()] != 0;
+
+        if ((cInfo->npc_flags & UNIT_NPC_FLAG_VENDOR) && itemObjective)
         {
             ItemPrototype const* proto = sObjectMgr.GetItemPrototype(GetQuestTemplate()->ReqItemId[GetObjective()]);
             if (GetQuestTemplate()->ReqItemCount[GetObjective()] * proto->BuyPrice > info.GetMoney()) //Need more money.
@@ -341,6 +343,22 @@ bool QuestObjectiveTravelDestination::IsPossible(const PlayerTravelInfo& info) c
 
             skipKillableCheck = true;
         }
+        // A71 (2026-10-10): an NPC that hands the objective item over through a gossip option is a
+        // service stop, not a fight, so the two combat gates below must not apply to it. Same
+        // shape as the vendor exemption just above: the bot walks there, opens the menu and the
+        // gossip handler picks the option (or buys the item); there is nothing to kill and the
+        // NPC's own level and rank are irrelevant.
+        //
+        // Measured 2026-10-10: quest 41768 The Messenger Of Northwind's missing report 41865 comes
+        // only from Sir Amberwood (62164), and creature_template gives him level 50 rank 1 (elite,
+        // verified against CreatureEliteType in SharedDefines.h: CREATURE_ELITE_ELITE = 1). The
+        // five holders are level 36-46, so level_max - botLevel > MobLevelCap (mob_over, default
+        // 4) refused the destination outright for the four below 46, and the elite gate refused it
+        // for a solo random bot at any level. After A64 put the entry into the destination index
+        // and A69 fixed the gossip map the candidate list finally named 62164, yet a TravelTarget
+        // to it still never appeared - this gate was the remaining wall.
+        else if ((cInfo->npc_flags & UNIT_NPC_FLAG_GOSSIP) && itemObjective)
+            skipKillableCheck = true;
 
         if (!skipKillableCheck && !forceThisQuest)
         {
