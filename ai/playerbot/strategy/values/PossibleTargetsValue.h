@@ -25,6 +25,12 @@ namespace ai
             FindPossibleTargets(player, targets, range);
         }
 
+        // A73: when this instance last ran its own grid scan. The reuse decision lives in
+        // PlayerbotAI::ShouldReuseSpatialScan, which is driven by a timestamp the whole AI shares
+        // (see PossibleTargetsValue::Calculate), so without this the cached list below can be
+        // served long past the 1.5 s cap.
+        uint32 lastOwnScanMs = 0;
+
 	protected:
         virtual void FindUnits(std::list<Unit*> &targets) override;
         virtual bool AcceptUnit(Unit* unit) override;

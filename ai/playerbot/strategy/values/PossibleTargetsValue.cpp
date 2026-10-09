@@ -8,6 +8,7 @@
 #include "Maps/GridNotifiers.h"
 #include "Maps/GridNotifiersImpl.h"
 #include "Maps/CellImpl.h"
+#include "playerbot/TraceSwitch.h"
 
 using namespace ai;
 using namespace MaNGOS;
@@ -24,7 +25,25 @@ std::list<ObjectGuid> PossibleTargetsValue::Calculate()
     if (ai->IsSpatialScanIdle())
         return std::list<ObjectGuid>();
     if (ai->ShouldReuseSpatialScan())
-        return LazyGet();
+    {
+        // A73 (2026-10-10): ShouldReuseSpatialScan answers from PlayerbotAI::m_lastSpatialScanMs,
+        // which EVERY instance of this class refreshes - AllTargetsValue derives from
+        // PossibleTargetsValue and runs this same Calculate - while the cached list belongs to
+        // this instance alone. So a sibling value that keeps scanning can hold the timestamp
+        // fresh while this one keeps answering from a list far older than the 1.5 s cap, and an
+        // empty list cached back when the bot stood in a mobless spot then persists indefinitely.
+        // Measured 2026-10-10 with the A68 probe: the 60 yard candidate list this grind search
+        // reads was empty (nearPossible=0) while an identical grid scan re-run at exactly
+        // sightDistance in the same call found 1-16 valid mobs, and IsSpatialScanIdle() was 0.
+        // Cap the reuse by this instance's own scan age; the grid visit then runs at most once a
+        // second per value, which is what the value layer's own 1 s check interval intends.
+        // Hot knob scan_cache_own_cap (default 1): set 0 to restore the old shared-cadence
+        // behaviour without a rebuild.
+        bool const ownCap = trace::IntValue("scan_cache_own_cap", 1) != 0;
+        uint32 const nowMs = WorldTimer::getMSTime();
+        if (!ownCap || (lastOwnScanMs && WorldTimer::getMSTimeDiff(lastOwnScanMs, nowMs) < 1500))
+            return LazyGet();
+    }
 
     float rangeCheck = range;
     bool shouldIgnoreValidate = false;
@@ -49,6 +68,7 @@ std::list<ObjectGuid> PossibleTargetsValue::Calculate()
 
     Set(results);
     ai->NoteSpatialScan();
+    lastOwnScanMs = WorldTimer::getMSTime();
     return results;
 }
 
