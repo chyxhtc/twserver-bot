@@ -82,7 +82,18 @@ GossipItemMap* GossipItemMapValue::Calculate()
         do
         {
             Field* fields = result->Fetch();
-            gossipMap->insert(std::make_pair(fields[0].GetUInt32(), (int32)fields[1].GetUInt32()));
+            // A69 (2026-10-10): the map is keyed by ITEM id and carries the NPC entry (see the
+            // typedef in VendorValues.h and the equal_range(itemId) in ItemGossipListValue), but
+            // this insert stored the SELECT's own order - c.entry first, gs.datalong second - so
+            // every key was an NPC entry and every lookup by item id came back empty. The whole
+            // gossip arm was therefore dead: "item gossip list" was always empty, so A51's
+            // sourceless test and A64's destination-index branch never saw a single gossip NPC.
+            // Measured 2026-10-10: the QuestGossipSource probe reported listSize=0 for every item
+            // it named (41737, 5455, 15924) while the database side of the same query is complete
+            // - creature_template 62146 Marisa Arello has gossip_menu_id 62146, option 0 points at
+            // action_script_id 62146, and gossip_scripts 62146 is command 17 (SCRIPT_COMMAND_CREATE_ITEM,
+            // verified 17 in this core's ScriptMgr.h) with datalong 41737.
+            gossipMap->insert(std::make_pair(fields[1].GetUInt32(), (int32)fields[0].GetUInt32()));
         } while (result->NextRow());
     }
 

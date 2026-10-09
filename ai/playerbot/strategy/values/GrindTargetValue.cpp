@@ -580,6 +580,12 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
                     ++wideSeen;
                     if (!PossibleTargetsValue::IsValid(unit, bot, true))
                         continue;
+                    // A68 follow-up: the near path skips critters that pay no xp (see the
+                    // CREATURE_TYPE_CRITTER guard below); the first live wide read picked a
+                    // level 1 critter at 0 yards, so apply the same shape here.
+                    if (unit->IsCreature() && unit->GetCreatureType() == CREATURE_TYPE_CRITTER &&
+                        !bot->IsHonorOrXPTarget(unit))
+                        continue;
                     if (unit->IsCreature() && static_cast<Creature*>(unit)->IsInEvadeMode())
                         continue;
                     if (unit->IsCreature() && static_cast<Creature*>(unit)->IsEvadeBecauseTargetNotReachable())
