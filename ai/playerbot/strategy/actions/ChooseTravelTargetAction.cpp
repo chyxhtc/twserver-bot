@@ -123,7 +123,18 @@ bool ChooseTravelTargetAction::Execute(Event& event)
 
                 std::string const key = "hand-in fail::" + std::to_string(questId);
                 uint32 const strikes = sRandomBotFacade.GetValue(bot, key) + 1;
-                if (strikes >= 3)
+                // A81 (2026-10-10): the threshold was a hard 3. Measured on a live run: seven
+                // finished quests were dropped this way in a day, and one of them was quest 41768
+                // only minutes after the bot had walked the whole five-layer chain and turned 3/3 -
+                // "QuestDropped The Messenger Of Northwind hand-in-unreachable:41768" at 04:50:44,
+                // with the bot standing in the Northwind zone whose route to the Stormwind taker
+                // had just failed to path. The drain loop this rule was written for is already
+                // broken by the ten minute park set just above, so the strikes only decide whether
+                // the finished quest is thrown away as well; a route gate or a stuck moment should
+                // not cost the work once, let alone twice. Knob handin_drop_strikes (default 6;
+                // set 3 to restore the old threshold).
+                int32 const dropStrikes = std::max(1, trace::IntValue("handin_drop_strikes", 6));
+                if (strikes >= (uint32)dropStrikes)
                 {
                     sRandomBotFacade.SetValue(bot, key, 0);
                     unreachable.push_back(questId);
