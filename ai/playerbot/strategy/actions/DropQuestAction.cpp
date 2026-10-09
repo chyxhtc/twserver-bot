@@ -148,6 +148,32 @@ static bool BotCarriesItemCreating(Player* bot, uint32 itemId)
     return false;
 }
 
+// A65 (2026-10-10): the material a quest hands over to create an objective item, when the bot no
+// longer has it. 1016 Elemental Bracers hands out 5456 Divining Scroll, whose use creates the
+// objective item 5455 Divined Scroll; a bot that lost the scroll can never finish the quest, and
+// the drop rule could not see it because QuestHasNoKnownSource is bot-free and counts the granted
+// route as a source. Returns the missing item, or 0 when nothing is missing.
+static uint32 MissingGrantedMaterial(Player* bot, Quest const* quest)
+{
+    if (!bot || !quest)
+        return 0;
+
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+    {
+        if (!quest->ReqItemId[i] || !quest->ReqItemCount[i])
+            continue;
+
+        uint32 const granted = QuestGrantedItem(quest, i);
+        if (!granted || ItemCreatedByUsing(granted) != quest->ReqItemId[i])
+            continue;
+
+        if (!bot->GetItemCount(granted, false))
+            return granted;
+    }
+
+    return 0;
+}
+
 static bool ItemNeededByActiveQuest(Player* bot, uint32 itemId)
 {
     if (!bot || !itemId)
@@ -665,6 +691,25 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
         // so this only drops quests the module provably cannot plan for.
         if (upkeep && questgrey::QuestHasNoKnownSource(quest))
             return true;
+
+        // A65 (2026-10-10): a quest whose objective item is made by *using* an item the quest
+        // itself handed over (SrcItemId) is only finishable while that material is still around.
+        // QuestHasNoKnownSource cannot see this - it is bot-free and counts the granted-transform
+        // route as a source - so the quest sits in the log forever once the material is gone.
+        // Measured 2026-10-10: quest 1016 Elemental Bracers (SrcItemId 5456 Divining Scroll
+        // creates 5455 Divined Scroll) is held by three bots, none of them carries 5456, and no
+        // character in the whole character DB holds 5455 or 5456 at all. Dropping is safe: taking
+        // the quest again hands the material over afresh.
+        if (upkeep)
+        {
+            if (uint32 const missingMaterial = questgrey::MissingGrantedMaterial(bot, quest))
+            {
+                sPlayerbotAIConfig.logEvent(ai, "QuestGrantedItemLost", quest->GetTitle(),
+                    "id=" + std::to_string(quest->GetQuestId()) +
+                    "|missing=" + std::to_string(missingMaterial));
+                return true;
+            }
+        }
 
         // Blacklisted quest: the module provably cannot finish it today (craft-gated material,
         // a two-hop source chain, or a script-token objective). Drop it with the reason written
