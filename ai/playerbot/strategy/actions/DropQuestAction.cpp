@@ -528,6 +528,22 @@ namespace
         { 348,  "script: Mokk the Savage (1514) is summoned by Witch Doctor Unbagwa, not a normal spawn, and the DB has no spawn row for him" },
         { 851,  "script: Verog the Dervish (3395) spawns only after the centaurs around the command tent are killed; the DB has no spawn row for him" },
         { 437,  "script: Nightlash (1983) is a conditional spawn in the Dead Fields (the notes say she appears after the gnolls are killed); the DB has no spawn row for her" },
+        // A47 family, remaining members (2026-10-10, source check): quests whose objective is a
+        // dummy trigger creature. The five A47 quests were blacklisted long ago with the reason
+        // "script token ... (issue A47)"; these four are the same shape and were still being held
+        // by ten bots between them.
+        //   41643 Empty Houses: kill 60066/60067/60068 (quest_41643_dummy_triger_1..3)
+        //   40698 Conflicting Questions: kill 60008 (quest_40698_dummy_triger)
+        //   41677 Darker than Iron: kill 60070 x15 (quest_41677_dummy_triger)
+        //   70029 What We Know: kill 70028 (Quest 70029 Custom Trigger)
+        // None of the four trigger entries has a row in creature, and none of them is referenced
+        // by spell_scripts / quest_start_scripts / quest_end_scripts / gameobject_scripts /
+        // event_scripts, so nothing in the world DB ever spawns them: the objective can only be
+        // credited by a core script, which is exactly what A47 covers.
+        { 41643, "script token: the three objectives are dummy triggers 60066/60067/60068 with no spawn row and no DB script that spawns them (A47 family)" },
+        { 40698, "script token: the objective is dummy trigger 60008 with no spawn row and no DB script that spawns it (A47 family)" },
+        { 41677, "script token: the objective is dummy trigger 60070 x15 with no spawn row and no DB script that spawns it (A47 family)" },
+        { 70029, "script token: the objective is custom trigger 70028 with no spawn row and no DB script that spawns it (A47 family)" },
     };
 }
 
