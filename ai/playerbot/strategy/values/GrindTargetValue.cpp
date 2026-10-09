@@ -623,7 +623,15 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
                     "dist=" + std::to_string(widest ? (int)widestDist : -1) +
                     "|level=" + std::to_string(widest ? (int)widest->GetLevel() : -1) +
                     "|botLevel=" + std::to_string(bot->GetLevel()) +
-                    "|area=" + std::to_string(sServerFacade.GetAreaId(bot)));
+                    "|area=" + std::to_string(sServerFacade.GetAreaId(bot)) +
+                    // A68 follow-up: the wide scan validates with ignoreLos=true while the near
+                    // lists validate with ignoreLos=false, so a mob the wide scan picks from
+                    // inside the 60 yard radius is either one the visibility check refused
+                    // (IsVisibleForOrDetect) or one the 1s-staggered spatial-scan cache had not
+                    // produced yet. Re-judge the pick without the LOS exemption to tell them
+                    // apart: losOk=0 means visibility was the filter, losOk=1 means the near
+                    // list simply did not contain it.
+                    "|losOk=" + std::to_string(widest && PossibleTargetsValue::IsValid(widest, bot, false) ? 1 : 0));
 
                 if (widest)
                 {
