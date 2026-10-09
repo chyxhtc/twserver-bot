@@ -117,15 +117,19 @@ bool MoveToTravelTargetAction::Execute(Event& event)
     // path). Two rows per bot per 30 s, no behaviour change: one on entry with the target's live
     // status, the bot's moving flag and its current movement generator type; one right after the
     // MoveTo call with its verdict and the same two flags.
-    struct TravelExecMark { uint32 lastMs; };
+    // A76 second pass: the first version gave both rows one throttle stamp, so the entry row
+    // consumed it and the after-move row - the one that carries MoveTo's verdict - was never
+    // written for a bot that logs the entry row first. Separate stamps, one per phase.
+    struct TravelExecMark { uint32 entryMs; uint32 afterMs; };
     static std::map<uint32, TravelExecMark> travelExecMarks;
     auto travelExecLog = [&](char const* phase, int canMove)
     {
         uint32 const nowMs = WorldTimer::getMSTime();
         TravelExecMark& mark = travelExecMarks[bot->GetGUIDLow()];
-        if (mark.lastMs && WorldTimer::getMSTimeDiff(mark.lastMs, nowMs) < 30000)
+        uint32& stamp = (phase[0] == 'e') ? mark.entryMs : mark.afterMs;
+        if (stamp && WorldTimer::getMSTimeDiff(stamp, nowMs) < 30000)
             return;
-        mark.lastMs = nowMs;
+        stamp = nowMs;
 
         sPlayerbotAIConfig.logEvent(ai, "TravelExecuteProbe",
             std::string("phase=") + phase +
