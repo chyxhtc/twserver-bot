@@ -491,7 +491,19 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
 
     WorldPosition botPos(bot);
 
-    if (!skipKillableCheck && GetEntry() > 0 && !IsOut(botPos))
+    // A66 (2026-10-10): the presence check below exists so a bot standing at a dead or empty
+    // spawn does not keep waiting there - it must not decide whether a DISTANT destination may be
+    // planned at all. Applied from anywhere it refused every single-point quest objective to bots
+    // that were not already next to it: the A62 probe shows 67 "inactive" rows in the 45 minutes
+    // after the A62 fix, and the ones with unique=1 (for example quest 41768's gossip NPC 62164,
+    // which has exactly one spawn and sits 500 yards from Krukal) can never be planned. So the
+    // check now only runs when the bot is already within sight distance of the destination point,
+    // which is exactly the situation it was written for: the bot has arrived and looks around.
+    bool nearTheSpot = false;
+    if (WorldPosition* point = GetClosestPoint(info.getPosition()))
+        nearTheSpot = point->IsWithinDist(info.getPosition(), sPlayerbotAIConfig.sightDistance);
+
+    if (!skipKillableCheck && GetEntry() > 0 && !IsOut(botPos) && nearTheSpot)
     {
         TravelTarget* target = AI_VALUE(TravelTarget*, "travel target");
 
