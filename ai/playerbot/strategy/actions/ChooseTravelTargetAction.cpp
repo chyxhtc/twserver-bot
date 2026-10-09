@@ -12,6 +12,7 @@
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/QuestGreyRule.h"
 #include "Database/DBCStore.h"
 #include "runtime/BotManager.h"
@@ -1885,32 +1886,11 @@ bool RequestNamedTravelTargetAction::Execute(Event& event)
                         }
                     }
 
-                    // A66 probe (2026-10-10): quest 41768's gossip NPC 62164 has not appeared in a
-                    // single probe row even after A64 put it into the destination index and A66
-                    // removed the near-only presence check, so the next question is whether the
-                    // entry reaches this candidate list at all. One line per bot per quest per six
-                    // hours, travel trace only, no behaviour change.
-                    if (trace::On("travel") && !objectiveEntries.empty())
-                    {
-                        AiObjectContext* ctx = ai->GetAiObjectContext();
-                        std::string const key = "qobjentries::" + std::to_string(questId);
-                        Value<time_t>* stamp = ctx ? ctx->GetValue<time_t>("manual time", key) : nullptr;
-                        time_t const now = time(nullptr);
-                        if (stamp && (!stamp->Get() || now - stamp->Get() >= 6 * HOUR))
-                        {
-                            stamp->Set(now);
-                            std::string list;
-                            for (int32 entry : objectiveEntries)
-                            {
-                                if (!list.empty())
-                                    list += ",";
-                                list += std::to_string(entry);
-                            }
-                            sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveEntries",
-                                std::to_string(questId) + "|" + quest->GetTitle(),
-                                "entries=" + list);
-                        }
-                    }
+                    // A67 (2026-10-10): the A66 candidate-entries probe was first placed HERE, in
+                    // the guild-order QuestReward branch, which a random bot never executes - so
+                    // its zero rows said nothing about quest 41768's gossip NPC 62164. It now
+                    // lives in RequestQuestTravelTargetAction::Execute, the path a real quest
+                    // travel search actually goes through.
                 }
             }
 
@@ -2396,6 +2376,63 @@ bool RequestQuestTravelTargetAction::Execute(Event& event)
 
                     if (AI_VALUE2(bool, "group or", "following party,need quest objective::" + Qualified::MultiQualify(qualifier, ","))) //Noone needs the quest objective.
                         flag = flag | (uint32)purposeFlag;
+                }
+
+                // A67 (2026-10-10): name the entries this quest's objectives contribute, from
+                // the place a real quest travel search is actually built. The A66 version of
+                // this probe sat in the guild-order branch above, so it never ran for a random
+                // bot and its zero rows were silent about quest 41768's gossip NPC 62164. One
+                // row per bot per quest per six hours, travel trace only, no behaviour change:
+                // if 62164 is absent here the candidate construction is the blocker, and if it
+                // is present the travel layer dropped it after this point.
+                if (trace::On("travel") && questInProgress)
+                {
+                    std::vector<int32> objectiveEntries;
+                    for (uint32 objective = 0; objective < 4; objective++)
+                    {
+                        std::vector<std::string> entryQualifier = { std::to_string(questId), std::to_string(objective) };
+                        if (!AI_VALUE2(bool, "need quest objective", Qualified::MultiQualify(entryQualifier, ",")))
+                            continue;
+
+                        if (questTemplate->ReqCreatureOrGOId[objective])
+                            objectiveEntries.push_back(questTemplate->ReqCreatureOrGOId[objective]);
+
+                        if (questTemplate->ReqItemId[objective])
+                        {
+                            uint32 itemId = questTemplate->ReqItemId[objective];
+                            while (itemId)
+                            {
+                                for (int32 entry : GAI_VALUE2(std::list<int32>, "item drop list", itemId))
+                                    objectiveEntries.push_back(entry);
+                                for (int32 entry : GAI_VALUE2(std::list<int32>, "item vendor list", itemId))
+                                    objectiveEntries.push_back(entry);
+                                for (int32 entry : GAI_VALUE2(std::list<int32>, "item gossip list", itemId))
+                                    objectiveEntries.push_back(entry);
+                                itemId = ItemUsageValue::ItemCreatedFrom(itemId);
+                            }
+                        }
+                    }
+
+                    if (!objectiveEntries.empty())
+                    {
+                        std::string const key = "qobjentries2::" + std::to_string(questId);
+                        time_t const now = time(nullptr);
+                        time_t const last = AI_VALUE2(time_t, "manual time", key);
+                        if (!last || now - last >= 6 * HOUR)
+                        {
+                            SET_AI_VALUE2(time_t, "manual time", key, now);
+                            std::string list;
+                            for (int32 entry : objectiveEntries)
+                            {
+                                if (!list.empty())
+                                    list += ",";
+                                list += std::to_string(entry);
+                            }
+                            sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveEntries",
+                                std::to_string(questId) + "|" + questTemplate->GetTitle(),
+                                "entries=" + list);
+                        }
+                    }
                 }
             }
 

@@ -7,6 +7,7 @@
 #include "playerbot/WorldPosition.h"
 #include "AttackersValue.h"
 #include "PossibleAttackTargetsValue.h"
+#include "PossibleTargetsValue.h"
 #include "playerbot/strategy/actions/ChooseTargetActions.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/TraceSwitch.h"
@@ -310,9 +311,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
 
     std::list<ObjectGuid> targets = *context->GetValue<std::list<ObjectGuid> >("possible targets");
     g_grindPossibleTargets = (uint32)targets.size();
-
-    if (targets.empty())
-        return NULL;
+    // A68: the tail below behaves exactly as before, including the grind_target.csv "none"
+    // row, which the old early return skipped whenever the near list was empty.
+    bool const nearCandidatesExisted = !targets.empty();
 
     float distance = 0;
     Unit* result = NULL;
@@ -539,11 +540,77 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
             result = NULL;
         }
     }
+
+    // A68 (2026-10-10): the wide pickup, behind the hot knob "grind_far_range" (default 0).
+    // The two candidate lists above come from a sightDistance scan (60 yards by default), so a
+    // bot standing between two hunt spots sees nothing, logs GrindNoTarget with an empty
+    // histogram, and stands there - which is 89% of every no-target row the pool writes (10-10,
+    // 4047 of 4536; 60% of those with the bot standing still). What that row cannot say is
+    // whether a mob it could simply walk to was 70-100 yards away, so the knob widens the
+    // cheap DISCOVERY radius only: the candidate still has to pass the same validity, evade and
+    // level predicates, and the order still walks to it through the existing reach action. One
+    // probe row per bot per five minutes names what the wider scan saw, so the knob can be
+    // turned on live in bot_diag.conf, read, and turned back off without a rebuild.
+    if (!result)
+    {
+        int const farRange = trace::IntValue("grind_far_range", 0);
+        if (farRange > (int)sPlayerbotAIConfig.sightDistance)
+        {
+            std::list<Unit*> wide;
+            PossibleTargetsValue::FindUnfriendlyUnits(bot, wide, (float)farRange);
+
+            Unit* widest = NULL;
+            float widestDist = 0.0f;
+            uint32 wideSeen = 0;
+            for (Unit* unit : wide)
+            {
+                if (!unit || !sServerFacade.IsAlive(unit))
+                    continue;
+                ++wideSeen;
+                if (!PossibleTargetsValue::IsValid(unit, bot, true))
+                    continue;
+                if (unit->IsCreature() && static_cast<Creature*>(unit)->IsInEvadeMode())
+                    continue;
+                if (unit->IsCreature() && static_cast<Creature*>(unit)->IsEvadeBecauseTargetNotReachable())
+                    continue;
+                if (levelTooHigh(unit))
+                    continue;
+                float const d = sServerFacade.getDistance2d(bot, unit);
+                if (!widest || d < widestDist)
+                {
+                    widest = unit;
+                    widestDist = d;
+                }
+            }
+
+            time_t const now = time(nullptr);
+            time_t const last = AI_VALUE2(time_t, "manual time", "grindfar logged");
+            if (!last || now - last >= 5 * MINUTE)
+            {
+                SET_AI_VALUE2(time_t, "manual time", "grindfar logged", now);
+                sPlayerbotAIConfig.logEvent(ai, "GrindFarProbe",
+                    "range=" + std::to_string(farRange) +
+                    " seen=" + std::to_string(wideSeen) +
+                    " pick=" + std::string(widest ? std::to_string(widest->GetEntry()) : "none"),
+                    "dist=" + std::to_string(widest ? (int)widestDist : -1) +
+                    "|level=" + std::to_string(widest ? (int)widest->GetLevel() : -1) +
+                    "|botLevel=" + std::to_string(bot->GetLevel()) +
+                    "|area=" + std::to_string(sServerFacade.GetAreaId(bot)));
+            }
+
+            if (widest)
+            {
+                logGrind(widest, "selected (wide).");
+                result = widest;
+            }
+        }
+    }
+
     if (result)
     {
         logGrind(result, "selected.");
     }
-    else if (sPlayerbotAIConfig.hasLog("grind_target.csv"))
+    else if (nearCandidatesExisted && sPlayerbotAIConfig.hasLog("grind_target.csv"))
     {
         std::ostringstream out;
         out << sPlayerbotAIConfig.GetTimestampStr() << "+00,";

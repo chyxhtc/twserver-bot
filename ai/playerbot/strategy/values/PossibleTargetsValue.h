@@ -17,7 +17,15 @@ namespace ai
         std::list<ObjectGuid> Calculate() override;
         static bool IsValid(Unit* target, Player* player, bool ignoreLos = false);
 
-    protected:
+        // A68: the unfriendly-unit grid scan at an arbitrary radius, for callers that need to
+        // know whether anything stands just outside the normal sightDistance window. The
+        // protected FindPossibleTargets below stays the local name; this is the public door.
+        static void FindUnfriendlyUnits(Player* player, std::list<Unit*>& targets, float range)
+        {
+            FindPossibleTargets(player, targets, range);
+        }
+
+	protected:
         virtual void FindUnits(std::list<Unit*> &targets) override;
         virtual bool AcceptUnit(Unit* unit) override;
 
