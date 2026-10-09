@@ -108,65 +108,6 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 {
     TravelTarget* target = AI_VALUE(TravelTarget*, "travel target");
 
-    // A72 probe (2026-10-10): a bot that holds an active travel target in TRAVEL status, stands
-    // still for minutes with nothing to kill and logs no MoveFail at all leaves no trace of why.
-    // Measured: Jartorrn, level 46, from 03:01:52 to 03:07:25 at one coordinate (12638.9/278.8),
-    // ReqState showing status=3 (TRAVEL), canMove=1, and the engine loop only ever trying
-    // "request quest travel target useless", "attack anything useless" and "stop follow useless"
-    // - neither "move to travel target" nor "check mount state" was tried, although both hang off
-    // the "val::travel target traveling" trigger with relevance 1. So either that trigger is not
-    // evaluating true for this bot or the move is dispatched and silently does nothing; those two
-    // are separable by one line. One row per bot per 30 s, only after 45 s without displacement,
-    // no behaviour change: which status the target really carries right now, whether the trigger
-    // value agrees, combat/moving flags, and the distance to the destination.
-    if (target && target->IsActive() && !bot->IsInCombat())
-    {
-        struct FreezeMark { uint32 lastMs; float x; float y; uint32 sinceMs; };
-        static std::map<uint32, FreezeMark> freezeMarks;
-        static std::map<uint32, uint32> freezeLogged;
-
-        uint32 const nowMs = WorldTimer::getMSTime();
-        float const px = bot->GetPositionX();
-        float const py = bot->GetPositionY();
-        FreezeMark& mark = freezeMarks[bot->GetGUIDLow()];
-
-        float const dx = px - mark.x;
-        float const dy = py - mark.y;
-        bool const sameSpot = mark.lastMs != 0 && (dx * dx + dy * dy) < 1.0f &&
-            WorldTimer::getMSTimeDiff(mark.lastMs, nowMs) < 10000;
-
-        if (sameSpot)
-        {
-            if (!mark.sinceMs)
-                mark.sinceMs = mark.lastMs;
-        }
-        else
-            mark.sinceMs = 0;
-
-        mark.lastMs = nowMs;
-        mark.x = px;
-        mark.y = py;
-
-        if (mark.sinceMs)
-        {
-            uint32 const frozenSec = WorldTimer::getMSTimeDiff(mark.sinceMs, nowMs) / 1000;
-            uint32& lastLog = freezeLogged[bot->GetGUIDLow()];
-            if (frozenSec >= 45 && WorldTimer::getMSTimeDiff(lastLog, nowMs) >= 30000)
-            {
-                lastLog = nowMs;
-                WorldPosition const* const pos = target->getPosition();
-                sPlayerbotAIConfig.logEvent(ai, "TravelFreezeProbe",
-                    "status=" + std::to_string((uint32)target->GetStatus()) +
-                    " travelsValue=" + (AI_VALUE(bool, "travel target traveling") ? "1" : "0") +
-                    " moving=" + (bot->IsMoving() ? "1" : "0") +
-                    " frozenSec=" + std::to_string(frozenSec),
-                    "dest=" + std::to_string(target->GetDestination() ? (int32)target->GetDestination()->GetEntry() : 0) +
-                    "|dist=" + std::to_string(pos ? (int)pos->distance(bot) : -1) +
-                    "|freeSlots=" + std::to_string((uint32)AI_VALUE(uint8, "free quest log slots")));
-            }
-        }
-    }
-
     if (target->GetStatus() == TravelStatus::TRAVEL_STATUS_READY)
     {
         ai->TellDebug(ai->GetMaster(), "The target is ready to travel start now.", "debug travel");

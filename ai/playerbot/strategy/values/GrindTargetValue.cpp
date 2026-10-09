@@ -570,6 +570,24 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
                 std::list<Unit*> wide;
                 PossibleTargetsValue::FindUnfriendlyUnits(bot, wide, (float)farRange);
 
+                // A68 second follow-up: the wide pick inside the 60 yard radius is visible
+                // (losOk=1) and passes the same validator, so the 60 yard candidate list the
+                // grind loop reads was empty for another reason. Re-run the identical grid scan
+                // at exactly sightDistance right here: fresh60=0 means this part of the world
+                // really holds nothing; fresh60>0 while nearPossible=0 puts the fault in the
+                // value layer above the scan - the staggered 1s reuse cache
+                // (ShouldReuseSpatialScan) or the idle early-out (IsSpatialScanIdle), and the
+                // idle flag is logged next to it to say which.
+                uint32 freshNear = 0;
+                {
+                    std::list<Unit*> nearUnits;
+                    PossibleTargetsValue::FindUnfriendlyUnits(bot, nearUnits, sPlayerbotAIConfig.sightDistance);
+                    for (Unit* nearUnit : nearUnits)
+                        if (nearUnit && sServerFacade.IsAlive(nearUnit) &&
+                            PossibleTargetsValue::IsValid(nearUnit, bot, false))
+                            ++freshNear;
+                }
+
                 Unit* widest = NULL;
                 float widestDist = 0.0f;
                 uint32 wideSeen = 0;
@@ -631,7 +649,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
                     // produced yet. Re-judge the pick without the LOS exemption to tell them
                     // apart: losOk=0 means visibility was the filter, losOk=1 means the near
                     // list simply did not contain it.
-                    "|losOk=" + std::to_string(widest && PossibleTargetsValue::IsValid(widest, bot, false) ? 1 : 0));
+                    "|losOk=" + std::to_string(widest && PossibleTargetsValue::IsValid(widest, bot, false) ? 1 : 0) +
+                    "|fresh60=" + std::to_string(freshNear) +
+                    "|idle=" + std::to_string(ai->IsSpatialScanIdle() ? 1 : 0));
 
                 if (widest)
                 {
