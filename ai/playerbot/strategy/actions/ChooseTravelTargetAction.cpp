@@ -1884,6 +1884,33 @@ bool RequestNamedTravelTargetAction::Execute(Event& event)
                                 objectiveEntries.push_back(entry);
                         }
                     }
+
+                    // A66 probe (2026-10-10): quest 41768's gossip NPC 62164 has not appeared in a
+                    // single probe row even after A64 put it into the destination index and A66
+                    // removed the near-only presence check, so the next question is whether the
+                    // entry reaches this candidate list at all. One line per bot per quest per six
+                    // hours, travel trace only, no behaviour change.
+                    if (trace::On("travel") && !objectiveEntries.empty())
+                    {
+                        AiObjectContext* ctx = ai->GetAiObjectContext();
+                        std::string const key = "qobjentries::" + std::to_string(questId);
+                        Value<time_t>* stamp = ctx ? ctx->GetValue<time_t>("manual time", key) : nullptr;
+                        time_t const now = time(nullptr);
+                        if (stamp && (!stamp->Get() || now - stamp->Get() >= 6 * HOUR))
+                        {
+                            stamp->Set(now);
+                            std::string list;
+                            for (int32 entry : objectiveEntries)
+                            {
+                                if (!list.empty())
+                                    list += ",";
+                                list += std::to_string(entry);
+                            }
+                            sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveEntries",
+                                std::to_string(questId) + "|" + quest->GetTitle(),
+                                "entries=" + list);
+                        }
+                    }
                 }
             }
 
