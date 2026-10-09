@@ -483,6 +483,31 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
         {
             skipKillableCheck = true;
         }
+
+        // A74 (2026-10-10): the presence check further down asks whether this destination creature
+        // is in "possible targets", and that list holds UNFRIENDLY units only. A friendly quest
+        // giver that hands the objective item over through a gossip option can therefore never
+        // satisfy it: the bot walks to it, stands on it, and the destination is judged inactive
+        // instead of reached. Measured: Khorfush arrived at Sir Amberwood (destination 62164) to
+        // distance 0 with him selected - "travskip: Khorfush level 43 status=5 destEntry=62164
+        // dist=0 sel=Sir Amberwood(62164)" - and status 5 is COOLDOWN, not WORK, so the hand-off
+        // that actually opens the menu and takes the option never ran. Same shape as the vendor
+        // arm right above (and A71's exemption in IsPossible): an NPC that creates the item
+        // through a gossip option is a service stop, not a mob to watch for. Narrow: only when the
+        // creature carries UNIT_NPC_FLAG_GOSSIP and the entry really is on this objective item's
+        // gossip list, so ordinary kill destinations are untouched.
+        if (!skipKillableCheck && (cInfo->npc_flags & UNIT_NPC_FLAG_GOSSIP) &&
+            GetQuestTemplate()->ReqItemId[GetObjective()])
+        {
+            for (int32 gossipEntry : GAI_VALUE2(std::list<int32>, "item gossip list", GetQuestTemplate()->ReqItemId[GetObjective()]))
+            {
+                if (gossipEntry == GetEntry())
+                {
+                    skipKillableCheck = true;
+                    break;
+                }
+            }
+        }
     }
 
     std::vector<std::string> qualifier = { std::to_string(GetQuestTemplate()->GetQuestId()), std::to_string(GetObjective()) };
