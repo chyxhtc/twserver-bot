@@ -137,14 +137,35 @@ Unit* GrindTargetValue::Calculate()
         // level, and was held back by policy (the bot wants quest targets, or someone else
         // is already pulling it). Every other reason describes a mob this bot cannot use
         // right now - grey, tapped, cced, out of range, on another height layer, unreachable,
-        // evading, an unkillable elite, a critter - so it must not keep the stamp cleared.
+        // evading, an unkillable elite, a critter, or above this bot's own grind cap (A97) -
+        // so it must not keep the stamp cleared.
         // Measured 2026-10-04 18:37-18:38: the level 8 Tirisfal trio sat on the same delivery
         // point tapping each other's mobs, so every "possible=N skipped=N" carried a
         // tapped/cced line next to the grey ones and the timer was wiped about once a minute
         // (greyAge 82 then 30, 109 then 31).
-        auto indicatesSupply = [](std::string const& why)
+        // A97 (2026-10-11): the list below used to include "levels above bot)", and that text
+        // is written in exactly one place - levelTooHigh(), i.e. the mob is N levels ABOVE the
+        // bot and was refused for that reason. That is the opposite of the three reasons that
+        // belong here (this bot declined a usable mob: an active quest does not need it, it is
+        // farther than a needed one, or another bot is already pulling it). Treating it as
+        // supply kept the stamp cleared for bots standing in a pocket whose local mobs are all
+        // too high, so the ten minute hatch the leave rule reads could never arm.
+        //
+        // Measured 2026-10-11 00:00-04:20 (bot_trace, _observe/grindsupply.py): of 3112
+        // GrindNoTarget rows with a reason histogram, 346 were cleared by that one reason alone
+        // (Tharurthyrf 43, Zefeth 32, Fitharalthe 22, Robarn 20, Tharuputarr 17 ...), against
+        // 459 cleared by the three real ones. Tharurthyrf's own GreyClear rows name it:
+        // "reason=supply|area=75|outgrownSince=0|possible=2" next to GrindNoTarget
+        // "8/9/10/11 levels above bot)" - he stood at Stonard (level 39 zone, local mobs 47-50)
+        // with 43 such clearings in 4.2 h, i.e. one every six minutes, so the stamp reset before
+        // it could ever reach the ten minutes the escape hatch waits for.
+        //
+        // Knob supply_too_high: 1 restores the old reading, 0 (default) treats it like every
+        // other "cannot use this mob" reason - it must not keep the stamp cleared.
+        bool const tooHighCountsAsSupply = trace::IntValue("supply_too_high", 0) != 0;
+        auto indicatesSupply = [tooHighCountsAsSupply](std::string const& why)
         {
-            return why.find("levels above bot)") != std::string::npos ||
+            return (tooHighCountsAsSupply && why.find("levels above bot)") != std::string::npos) ||
                 why.find("not needed for active quest") != std::string::npos ||
                 why.find("increased distance (not needed for quest)") != std::string::npos ||
                 why.find("bots already targeting)") != std::string::npos;
