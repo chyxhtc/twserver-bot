@@ -785,6 +785,38 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
                     "|missing=" + missing);
                 return true;
             }
+
+            // A96 (2026-10-11): A87 put the elite / dungeon / raid gate on the ACCEPT side, but the
+            // quests bots already held when it landed stayed in their logs. Measured 2026-10-11:
+            // more than a hundred distinct Type 1/62/81 quests were still held (547 x17, 41753 x15,
+            // 41638 x14, 386 x12, 41749 x12, 40458 x11, 41671 x11, 255 x10 ...), every one of them
+            // unfinishable in a pool with no groups - the travel layer refuses all their
+            // destinations - and they crowd out reachable quests, because the giver travel gate
+            // needs ten free log slots. Apply the same predicate here so the residue drains.
+            // Same knob questtype_gate (bot_diag.conf, default 1); 0 restores the old behaviour.
+            // If elite_solo_below is ever turned on, this predicate has to grow the same
+            // MayFightEliteSolo escape the accept side and TravelMgr use.
+            if (trace::IntValue("questtype_gate", 1) != 0)
+            {
+                uint32 const questType = quest->GetType();
+                bool const groupContent =
+                    (questType == QUEST_TYPE_ELITE && !AI_VALUE(bool, "can fight elite")) ||
+                    ((questType == QUEST_TYPE_DUNGEON || questType == QUEST_TYPE_RAID) &&
+                     !AI_VALUE(bool, "can fight boss"));
+                if (groupContent)
+                {
+                    std::string missing;
+                    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                        if (quest->ReqItemId[i] && quest->ReqItemCount[i] &&
+                            bot->GetItemCount(quest->ReqItemId[i]) < quest->ReqItemCount[i])
+                            missing += (missing.empty() ? "" : ",") + std::to_string(quest->ReqItemId[i]);
+                    sPlayerbotAIConfig.logEvent(ai, "QuestBlacklistDropped", quest->GetTitle(),
+                        "id=" + std::to_string(quest->GetQuestId()) +
+                        "|reason=group-content: type " + std::to_string(questType) +
+                        " is elite/dungeon/raid content and the pool has no groups|missing=" + missing);
+                    return true;
+                }
+            }
         }
 
         if (IsGreyIncomplete(quest) && !quest->HasSpecialFlag(QUEST_SPECIAL_FLAG_DELIVER))
