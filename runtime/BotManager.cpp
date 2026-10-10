@@ -104,7 +104,44 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId
     constexpr uint32 maxDestinationAttempts = 32;
     constexpr uint32 maxPointAttempts = 8;
     ai::WorldPosition* chosen = nullptr;
-    uint32 destinationAttempts = std::min<uint32>(maxDestinationAttempts, dests.size());
+
+    // A91 (2026-10-10): the probe used to draw one destination at random *with replacement*
+    // maxDestinationAttempts times. A cross-continent transfer requires a point on the target
+    // map and only a handful of the GenericRpg entries sit there, so the same few entries were
+    // re-drawn over and over: the transfer was refused about half of the time even though a
+    // usable landing point existed, and the travel layer then dropped the quest destination
+    // (the bot parks for a minute and retries). Measured 2026-10-10 from 15:00 on:
+    // "continent transfer <bot> level 46 has no valid landing point on map 1" 55 times against
+    // 18 successful 0->1 transfers at that same level, and the 22:52:40 tick logged the
+    // refusal five times for Tumorurthar alone while his quest 1131 target sat in the
+    // candidate list. Draw distinct entries instead, and when a map is required consider only
+    // the entries that actually have a point on it (a pointer-and-map-id pass, no terrain
+    // work). The expensive per-point validation below keeps its bound.
+    std::vector<ai::TravelDestination*> candidates;
+    candidates.reserve(dests.size());
+    for (ai::TravelDestination* destination : dests)
+        if (destination)
+            candidates.push_back(destination);
+
+    if (requireMapId >= 0)
+    {
+        std::vector<ai::TravelDestination*> onMap;
+        onMap.reserve(candidates.size());
+        for (ai::TravelDestination* destination : candidates)
+            for (ai::WorldPosition* point : destination->GetPoints())
+                if (point && point->getMapId() == (uint32)requireMapId)
+                {
+                    onMap.push_back(destination);
+                    break;
+                }
+        if (!onMap.empty())
+            candidates.swap(onMap);
+    }
+
+    for (size_t i = candidates.size(); i > 1; --i)
+        std::swap(candidates[i - 1], candidates[urand(0, static_cast<uint32>(i - 1))]);
+
+    uint32 destinationAttempts = std::min<uint32>(maxDestinationAttempts, candidates.size());
     // Level window rationale (both bounds, no speculative config):
     //  Upper +2, tightened from +5 on 2026-10-04: landing a bot in a zone up to five levels above
     //   its own is how Stunograr (level 17) kept arriving in the Wetlands (area ~20) and dying -
@@ -126,11 +163,20 @@ ai::WorldPosition const* PickLevelFittingPoint(::Player* bot, int32 requireMapId
     ai::WorldPosition const botPos(bot);
     for (uint32 destinationAttempt = 0; destinationAttempt < destinationAttempts && !chosen; ++destinationAttempt)
     {
-        ai::TravelDestination* destination = dests[urand(0, static_cast<uint32>(dests.size() - 1))];
+        ai::TravelDestination* destination = candidates[destinationAttempt];
         if (!destination)
             continue;
 
-        auto points = destination->GetPoints();
+        // Same distinct-draw argument as above, one level down: a destination's point list can
+        // hold points on more than one map, and the old inner loop re-drew with replacement too.
+        std::vector<ai::WorldPosition*> const& allPoints = destination->GetPoints();
+        std::vector<ai::WorldPosition*> onMapPoints;
+        if (requireMapId >= 0)
+            for (ai::WorldPosition* point : allPoints)
+                if (point && point->getMapId() == (uint32)requireMapId)
+                    onMapPoints.push_back(point);
+        std::vector<ai::WorldPosition*> const& points =
+            (requireMapId >= 0 && !onMapPoints.empty()) ? onMapPoints : allPoints;
         uint32 pointAttempts = std::min<uint32>(maxPointAttempts, points.size());
         for (uint32 pointAttempt = 0; pointAttempt < pointAttempts; ++pointAttempt)
         {
