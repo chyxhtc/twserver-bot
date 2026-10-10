@@ -11,6 +11,7 @@
 #include "playerbot/strategy/actions/ChooseTargetActions.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/EliteRule.h"
 
 using namespace ai;
 
@@ -372,7 +373,11 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
         }
 
         Creature* creature = dynamic_cast<Creature*>(unit);
-        if (creature && creature->GetCreatureInfo() && creature->GetCreatureInfo()->rank > CREATURE_ELITE_NORMAL && !AI_VALUE(bool, "can fight elite"))
+        // A86: ... unless the elite is far below the bot (see EliteRule.h).
+        if (creature && creature->GetCreatureInfo() &&
+            creature->GetCreatureInfo()->rank > CREATURE_ELITE_NORMAL &&
+            !AI_VALUE(bool, "can fight elite") &&
+            !eliterule::MayFightEliteSolo(bot->GetLevel(), creature->GetCreatureInfo()))
         {
             logGrind(unit, "ignored (can not fight elites currently).");
             continue;

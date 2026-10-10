@@ -1,5 +1,6 @@
 #include "playerbot/TravelMgr.h"
 #include "playerbot/TravelRoutePolicy.h"
+#include "playerbot/EliteRule.h"
 #include <numeric>
 #include <iomanip>
 
@@ -366,7 +367,9 @@ bool QuestObjectiveTravelDestination::IsPossible(const PlayerTravelInfo& info) c
                 return false;
 
             //Do not try to hand-in dungeon/elite quests in instances without a group.
-            if (cInfo->rank > CREATURE_ELITE_NORMAL)
+            // A86: ... unless the elite is far below the bot, see EliteRule.h.
+            if (cInfo->rank > CREATURE_ELITE_NORMAL &&
+                !eliterule::MayFightEliteSolo(info.GetLevel(), cInfo))
             {
                 if (!IsOverWorld(info.getPosition()) && info.getPosition().GetMapId() != 609 && !info.GetBoolValue("can fight boss"))
                     return false;
@@ -378,7 +381,11 @@ bool QuestObjectiveTravelDestination::IsPossible(const PlayerTravelInfo& info) c
 
     if (!forceThisQuest)
     {
-        if (!skipKillableCheck && GetQuestTemplate()->GetType() == QUEST_TYPE_ELITE && !info.GetBoolValue("can fight elite"))
+        // A86: a quest flagged elite whose destination creature is far below the bot is not
+        // group content for this bot - see EliteRule.h.
+        if (!skipKillableCheck && GetQuestTemplate()->GetType() == QUEST_TYPE_ELITE &&
+            !info.GetBoolValue("can fight elite") &&
+            !eliterule::MayFightEliteSolo(info.GetLevel(), GetCreatureInfo()))
             return false;
 
         //Do not try to do dungeon/elite quests in instances without a group.
@@ -828,7 +835,9 @@ bool GrindTravelDestination::IsPossible(const PlayerTravelInfo& info) const
     if (cInfo->gold_min == 0 && (!beginner || cInfo->type == CREATURE_TYPE_CRITTER))
         return false;
 
-    if (cInfo->rank > CREATURE_ELITE_NORMAL && !info.GetBoolValue("can fight elite"))
+    // A86: an elite far below the bot is not a threat to a solo bot - see EliteRule.h.
+    if (cInfo->rank > CREATURE_ELITE_NORMAL && !info.GetBoolValue("can fight elite") &&
+        !eliterule::MayFightEliteSolo(info.GetLevel(), cInfo))
         return false;
 
     // Don't send a bot to a grind creature located in a zone far above its level
