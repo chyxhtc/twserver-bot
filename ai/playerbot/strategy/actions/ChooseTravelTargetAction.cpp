@@ -5,6 +5,7 @@
 #include "ChooseTravelTargetAction.h"
 #include "FishAction.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/QuestTownRule.h"
 #include "playerbot/strategy/values/TravelValues.h"
 #include "playerbot/TravelNode.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
@@ -667,7 +668,7 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
             // town guards)". Quest destinations may therefore pass such a node when the arm
             // knob says so; grind/vendor/repair journeys keep the old veto.
             bool const questPassAllowed = allowTransfer &&
-                sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "questtownpass", 0) != 0;
+                questtown::PassAllowed(bot->GetGUIDLow());
             if (avoidTowns && !questPassAllowed && p->IsGuardedHostileTownFor(bot))
             {
                 blocker = p->getAreaName(true, true) + " (hostile town guards)";
@@ -1125,7 +1126,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         bool const questObjectiveDestination =
                             dynamic_cast<QuestObjectiveTravelDestination*>(destination) != nullptr;
                         uint32 const armQuestTargetTown =
-                            sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "questtargettown", 0);
+                            questtown::TargetAllowed(bot->GetGUIDLow()) ? 1u : 0u;
                         if (questObjectiveDestination)
                         {
                             time_t const now = time(nullptr);

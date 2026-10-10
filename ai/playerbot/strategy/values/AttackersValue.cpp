@@ -1,5 +1,6 @@
 
 #include "playerbot/playerbot.h"
+#include "playerbot/QuestTownRule.h"
 #include "AttackersValue.h"
 #include "PossibleTargetsValue.h"
 #include "EnemyPlayerValue.h"
@@ -570,11 +571,11 @@ bool AttackersValue::IgnoreTarget(Unit* target, Player* playerToCheckAgainst)
                         std::to_string(target->GetEntry()) + "|" + target->GetName(),
                         "level=" + std::to_string(target->GetLevel()) +
                         "|botLevel=" + std::to_string(playerToCheckAgainst->GetLevel()) +
-                        "|arm=" + std::to_string(sPlayerbotAIConfig.GetBotArmInt(
-                            playerToCheckAgainst->GetGUIDLow(), "questtargettown", 0)));
+                        "|arm=" + std::to_string(questtown::TargetAllowed(
+                            playerToCheckAgainst->GetGUIDLow()) ? 1 : 0));
                 }
 
-                if (sPlayerbotAIConfig.GetBotArmInt(playerToCheckAgainst->GetGUIDLow(), "questtargettown", 0) != 0)
+                if (questtown::TargetAllowed(playerToCheckAgainst->GetGUIDLow()))
                     return false;
             }
 
