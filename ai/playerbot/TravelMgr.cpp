@@ -464,7 +464,8 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
     // walk-backs. This branch keeps the no-output guard, so a bot that is still gaining
     // here is not fenced off.
     if (WorldPosition* point = GetClosestPoint(info.getPosition()))
-        if (ai->IsDangerousSpotNear(point->GetMapId(), point->GetX(), point->GetY(), true, 200.0f))
+        if (ai->IsDangerousSpotNear(point->GetMapId(), point->GetX(), point->GetY(), true,
+                (float)trace::IntValue("danger_quest_range", 200)))
         {
             time_t const now = time(nullptr);
             time_t const last = context->GetValue<time_t>("manual time", "quest spot veto logged at")->Get();

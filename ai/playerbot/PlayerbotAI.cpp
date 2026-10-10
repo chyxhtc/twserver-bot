@@ -1452,7 +1452,14 @@ void PlayerbotAI::OnDeath()
                             noOutput = gained * 100 < xpNext * 2;
                         }
                     }
-                    AddDangerousSpot(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), 30 * MINUTE * IN_MILLISECONDS, noOutput);
+                    // A93 (2026-10-11): the no-output fence is the one that has to last. Measured
+                    // 2026-10-10: 341 LETHAL no-output stamps in a day, 27 of them repeated 3+ times
+                    // by the same bot inside one 100 yd cell (up to 14), and the same bot returns
+                    // after the fence expires and feeds the camp again. Hot knobs so a round can
+                    // measure both: danger_quest_range (yd, default 200, the quest fence radius in
+                    // TravelMgr) and danger_spot_min (minutes, default 30, this stamp's duration).
+                    AddDangerousSpot(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                        (uint32)trace::IntValue("danger_spot_min", 30) * MINUTE * IN_MILLISECONDS, noOutput);
                     if (sPlayerbotAIConfig.hasLog("unreachable_targets.csv"))
                     {
                         time_t const nowLethal = time(nullptr);
