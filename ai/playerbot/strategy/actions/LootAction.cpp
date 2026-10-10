@@ -769,6 +769,27 @@ bool StoreLootAction::Execute(Event& event)
 
         if (AI_VALUE2(uint32, "stack space for item", itemid) < itemcount)
         {
+            // A100 (2026-10-11): a needed quest item must not lose to a full bag. The relief
+            // valve in AddLootAction only fires when *nothing at all* is lootable from this WO
+            // (bag space > 99 && !CanLootSomethingFromWO), so a corpse that also holds vendor
+            // trash opened the window and then this branch skipped the quest item: measured
+            // 2026-10-11, 917 item-skip-no-space rows, 64 of them class-12 quest items
+            // (18947 x17, 8396 x9, 8391 x7, 8483 x6 ...), and quest 2605's three holders sat
+            // at 0/1 with the probe reading q2605:8428=1/have0/req1/space0. One bounded attempt
+            // to make room with the existing sweep (which no longer throws quest items away,
+            // see DestroyItemAction), then the old skip. Knob loot_quest_item_priority
+            // (default 1 = try to make room, 0 = old behaviour).
+            if (trace::IntValue("loot_quest_item_priority", 1) != 0 && !ai->HasRealPlayerMaster() &&
+                bot->HasQuestForItem(itemid))
+            {
+                ai->DoSpecificAction("smart destroy item");
+                if (AI_VALUE2(uint32, "stack space for item", itemid) < itemcount)
+                    ai->DoSpecificAction("destroy all gray");
+            }
+        }
+
+        if (AI_VALUE2(uint32, "stack space for item", itemid) < itemcount)
+        {
             if (LootTraceOn(bot))
                 sPlayerbotAIConfig.logEvent(ai, "LootResponse", std::to_string(itemid),
                     "item-skip-no-space-have" + std::to_string(AI_VALUE2(uint32, "stack space for item", itemid)) +

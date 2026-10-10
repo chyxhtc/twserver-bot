@@ -1,6 +1,7 @@
 
 #include "playerbot/playerbot.h"
 #include "DestroyItemAction.h"
+#include "playerbot/TraceSwitch.h"
 #include "playerbot/strategy/values/ItemCountValue.h"
 #include "playerbot/strategy/values/MaintenanceValues.h"
 
@@ -118,6 +119,19 @@ bool SmartDestroyItemAction::DestroyGreyJunk(Player* requester)
 //when that happened.
 bool SmartDestroyItemAction::DestroyUsages(Player* requester, std::vector<ItemUsage> const& usages)
 {
+    // A100 (2026-10-11): the caller's list comment says "keep quest items and anything a vendor
+    // would buy (sell first), destroy only genuinely useless stuff", but the code pushes
+    // ITEM_USAGE_QUEST into the destroy list whenever the bot wants money and cannot sell
+    // (see Execute below) - so the first thing thrown away to make room is exactly the item an
+    // active quest needs. Bag pressure is real and measured: 917 item-skip-no-space rows on
+    // 2026-10-11, 64 of them class-12 quest items (18947 x17 by one bot, 8396 x9, 8391 x7,
+    // 8483 x6 ...), and quest 2605's three holders sat at 0/1 with the loot probe reading
+    // q2605:8428=1/have0/req1/space0. But losing quest progress is the wrong relief valve -
+    // the other sweeps (useless piles, no-use stacks, grey vendor trash when money is short,
+    // skill/use items) stay and are enough to make a slot. Knob destroy_quest_items:
+    // 0 (default) keeps needed quest items, 1 restores the old destroy order.
+    bool questKeepLogged = false;
+
     for (auto& usage : usages)
     {
         std::list<uint32> items = AI_VALUE2(std::list<uint32>, "inventory item ids", "usage " + std::to_string((uint8)usage));
@@ -128,6 +142,24 @@ bool SmartDestroyItemAction::DestroyUsages(Player* requester, std::vector<ItemUs
         {
             if (HAS_AI_VALUE2("force item usage", item))
                 continue;
+
+            if (usage == ItemUsage::ITEM_USAGE_QUEST)
+            {
+                bool const mayDestroy = trace::IntValue("destroy_quest_items", 0) != 0;
+                if (!questKeepLogged)
+                {
+                    questKeepLogged = true;
+                    // One line per sweep: it counts how often a needed quest item would have been
+                    // the thing thrown away, which is the size of the behaviour being changed.
+                    sPlayerbotAIConfig.logEvent(ai,
+                        mayDestroy ? "QuestItemDestroyed" : "QuestItemKeptFromDestroy",
+                        std::to_string(item),
+                        std::string("bagSpace=") + std::to_string((uint32)AI_VALUE(uint8, "bag space")) +
+                        "|knob=" + std::to_string(mayDestroy ? 1 : 0));
+                }
+                if (!mayDestroy)
+                    continue;
+            }
 
             FindItemByIdVisitor visitor(item);
             DestroyItem(&visitor, requester);
