@@ -490,6 +490,28 @@ bool FindCorpseAction::Execute(Event& event)
     // them for 7.6-10.6 minutes each, every one of them ending at the ten-minute repop.
     bool stalledNoDisplacement = false;
 
+    // A94 (2026-10-11): a corpse that lies inside this bot's own no-output lethal spot is a
+    // corpse run that cannot end well. The revive happens inside the camp that has already
+    // killed this bot twice with nothing gained, and the mobs standing there attack it before
+    // it can walk out. Measured 2026-10-11 01:16-01:22, Warkryrzith (Dustwallow Marsh,
+    // Searing Hatchling / Searing Whelp): revive at (-4631.9,-3133.5) at 01:16:22, attacked
+    // the hatchling standing next to him at 01:16:23, dead again at 01:16:37; the same
+    // three-step repeated at 01:18:44 and 01:21:49, ten no-output LETHAL stamps in that one
+    // 100 yd cell in a single night (unreachable_targets.csv, _observe/lethal_spots.py).
+    // Take the graveyard revive the stall path below already uses instead of walking the
+    // corpse run: same free revive, just somewhere else. Grouped bots keep the old behaviour,
+    // their master decides.
+    if (!ai->HasActivePlayerMaster() &&
+        ai->IsDangerousSpotNear(corpsePos.GetMapId(), corpsePos.getX(), corpsePos.getY(), true, 80.0f))
+    {
+        if (trace::VerdictOf("corpserun") == trace::Verdict::On)
+            sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
+                "reason=lethal-corpse|dist=" + std::to_string((int)botPos.distance(corpsePos)) +
+                "|deadTime=" + std::to_string((long long)deadTime));
+        ai->DoSpecificAction("repop", Event(), true);
+        return true;
+    }
+
     //Actual mobing part.
     bool moved = false;
 
