@@ -919,7 +919,18 @@ bool StoreLootAction::IsLootAllowed(ItemQualifier& itemQualifier, PlayerbotAI *a
                 if (ai->GetMaster() && sPlayerbotAIConfig.syncQuestWithPlayer)
                     return false; //Quest is autocomplete for the bot so no item needed.
 
-                if (AI_VALUE2(uint32, "item count", proto->Name1) >= quest->ReqItemCount[i])
+                // A92 (2026-10-10): this counted by item *name*, and the "item count" value
+                // matches names as substrings (InventoryParseItems -> FindNamedItemVisitor ->
+                // strstri). Holding any other item whose name merely contains this one then
+                // satisfied the test. Measured: quest 204 Bad Medicine wants 7x 2633 Jungle
+                // Remedy; its three holders sat at 6/7 and refused the drop 94 times in one day
+                // (75 of them Jartorrn) because they also carried 50748 Outline: Jungle Remedy,
+                // so "Jungle Remedy" counted as 7+. The gate is about this objective's own
+                // progress, so read the quest counter the core completes on (m_itemcount) - the
+                // same value DropQuestAction:193 and UseItemAction:1490 consult.
+                auto const& qData = ai->GetBot()->getQuestStatusMap()[entry];
+                if (i < QUEST_ITEM_OBJECTIVES_COUNT && quest->ReqItemCount[i] &&
+                    qData.m_itemcount[i] >= quest->ReqItemCount[i])
                     return false;
             }
         }
