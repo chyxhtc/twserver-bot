@@ -101,24 +101,6 @@ static bool FindInstanceEntranceTrigger(uint32 corpseMapId, uint32 botMapId, Wor
     return outAtEntry != nullptr && outAt != nullptr;
 }
 
-// A94 (2026-10-11): is this corpse lying inside one of this bot's own no-output lethal spots?
-// The bot arms such a spot when the same killer has killed it twice inside fifteen minutes
-// without it gaining anything (PlayerbotAI::AddDangerousSpot). Reviving on a corpse inside one
-// of them puts it straight back next to the pack that just killed it: measured 2026-10-11
-// 01:16-02:04, Warkryrzith (Dustwallow Marsh, Searing Hatchling) revived at (-4631.9,-3133.5),
-// attacked the hatchling standing next to him one second later and was dead again fourteen
-// seconds after that - eleven no-output LETHAL stamps in that one 100 yd cell in a night
-// (unreachable_targets.csv, _observe/lethal_spots.py). Grouped bots keep the master-driven
-// behaviour.
-static bool CorpseInOwnLethalSpot(PlayerbotAI* ai, Player* bot, Corpse* corpse)
-{
-    if (!ai || !bot || !corpse || ai->HasActivePlayerMaster())
-        return false;
-
-    WorldPosition const spot(corpse);
-    return ai->IsDangerousSpotNear(spot.GetMapId(), spot.getX(), spot.getY(), true, 80.0f);
-}
-
 bool ReviveFromCorpseAction::Execute(Event& event)
 {
     Player* requester = event.GetOwner() ? event.GetOwner() : GetMaster();
@@ -168,26 +150,6 @@ bool ReviveFromCorpseAction::Execute(Event& event)
     // so only claim success when the bot is actually alive afterwards. On a drop
     // the corpse-run continues next tick (corpse near re-fires) instead of
     // logging a phantom revive and running the post-rez rescue for a still-dead bot.
-    // A94: the one revive that must not happen here is one on top of a camp that has already
-    // killed this bot twice for nothing. Take the graveyard revive instead - it is the same
-    // free revive, just somewhere else - and say so, so the new path is countable.
-    // Note what the module's own "repop" action does here: RepopAction is a SpiritHealerAction,
-    // and its Execute revives the ghost *where it stands* once "best graveyard" is within sight.
-    // A ghost standing on its corpse inside the camp therefore came back in place on the first
-    // cut of this fix (measured 02:25:35-02:25:50 - revive, attack the whelp next to it, dead
-    // 14 s later, for 25% durability a round). Move the ghost to the graveyard first, the way
-    // releasing spirit does, and let the normal spirit-healer flow revive it there.
-    if (CorpseInOwnLethalSpot(ai, bot, corpse))
-    {
-        if (trace::VerdictOf("corpserun") == trace::Verdict::On)
-            sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
-                "reason=lethal-corpse|stage=reclaim|dist=" + std::to_string((int)bot->GetDistance(corpse)) +
-                "|deadTime=" + std::to_string((long long)(time(nullptr) - corpse->GetGhostTime())));
-        ai->StopMoving();
-        bot->RepopAtGraveyard();
-        return true;
-    }
-
     float reclaimDist = (float)CORPSE_RECLAIM_RADIUS;
     if (!corpse->IsWithinDistInMap(bot, reclaimDist, true))
     {
@@ -259,25 +221,6 @@ bool FindCorpseAction::Execute(Event& event)
             corpseInDungeon = true;
             dungeonMapId = corpsePos.GetMapId();
         }
-    }
-
-    // A94: a corpse inside this bot's own no-output lethal spot is a corpse run that cannot end
-    // well - the revive lands inside the camp that already killed it twice for nothing, and the
-    // mobs standing there attack it before it can walk out. Take the graveyard revive instead of
-    // walking towards that corpse at all. This has to sit before the reclaim-delay wait below,
-    // which parks a ghost that is already next to its corpse and returns early.
-    // Only when the ghost is still next to that corpse: once the graveyard teleport below has
-    // moved it away, the normal spirit-healer flow must be allowed to revive it there.
-    if (CorpseInOwnLethalSpot(ai, bot, corpse) && botPos.distance(corpsePos) <= 60.0f)
-    {
-        if (trace::VerdictOf("corpserun") == trace::Verdict::On)
-            sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
-                "reason=lethal-corpse|stage=find|dist=" + std::to_string((int)botPos.distance(corpsePos)) +
-                "|deadTime=" + std::to_string((long long)deadTime));
-        // Core release-spirit semantics: move the ghost to the nearest graveyard. Not the
-        // module's "repop" action - see the note in ReviveFromCorpseAction::Execute above.
-        bot->RepopAtGraveyard();
-        return true;
     }
 
     // Bounded wait for a nearby resurrect-capable master. Past the timeout the run
