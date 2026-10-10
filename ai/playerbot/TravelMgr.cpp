@@ -473,7 +473,11 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
             {
                 context->GetValue<time_t>("manual time", "quest spot veto logged at")->Set(now);
                 sPlayerbotAIConfig.logEvent(ai, "QuestSpotVeto", std::to_string(GetQuestId()),
-                    std::to_string((int)point->GetX()) + "," + std::to_string((int)point->GetY()));
+                    // A98 probe: carry the radius this verdict used and how many spots the bot
+                    // holds, so the next line in the same case needs no second inference.
+                    std::to_string((int)point->GetX()) + "," + std::to_string((int)point->GetY()) +
+                    "|range=" + std::to_string((int)trace::IntValue("danger_quest_range", 200)) +
+                    "|spots=" + std::to_string(ai->DangerSpotCount()));
             }
             return why("dangerous-spot");
         }

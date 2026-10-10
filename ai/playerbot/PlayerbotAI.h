@@ -779,6 +779,9 @@ public:
     };
     void AddDangerousSpot(uint32 mapId, float x, float y, uint32 durationMs, bool blocksQuests = false);
     bool IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly = false, float radius = 80.0f) const;
+    // A98 probe: the fence answers "yes" in the trace and some in-range quest objectives are still
+    // accepted, so the live count of spots is needed next to both verdicts.
+    size_t DangerSpotCount() const { return dangerousSpots_.size(); }
 
     // 10-minute avoidance window after a player kill (matches the lethal-kind
     // 15-min/30-min shape, shorter because the killer is one named player).

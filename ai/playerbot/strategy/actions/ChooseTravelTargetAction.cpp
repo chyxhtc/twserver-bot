@@ -1220,6 +1220,29 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 }
 
 
+                // A98 probe (no behaviour change): a QUEST destination whose chosen point sits
+                // inside one of this bot's own live no-output lethal spots should have been
+                // refused by the fence in QuestObjectiveTravelDestination::IsActive - the same
+                // query is repeated here, so a line means the fence answered "blocked" and the
+                // destination was accepted anyway. Measured 2026-10-11: Warkryrzith's spot
+                // (-4629,-3125) vetoed at 04:16:29 and the objective point (-4703,-3203), 107
+                // yards away, was accepted at 04:23:14. Deliberately no line for the
+                // "a live spot covers the point but must not fence quests" case: that is a
+                // legitimate acceptance (a spot armed by a *progressing* death) and logging it
+                // would be one line per travel pick.
+                if (ai::QuestTravelDestination* questDest = dynamic_cast<ai::QuestTravelDestination*>(destination))
+                {
+                    float const fenceRange = (float)trace::IntValue("danger_quest_range", 200);
+                    if (ai->IsDangerousSpotNear(position->getMapId(), position->getX(), position->getY(), true, fenceRange))
+                        sPlayerbotAIConfig.logEvent(ai, "FenceMiss", destination->GetTitle(),
+                            "quest=" + std::to_string(questDest->GetQuestId()) +
+                            "|entry=" + std::to_string(destination->GetEntry()) +
+                            "|purpose=" + std::to_string((uint32)destination->GetPurpose()) +
+                            "|point=" + std::to_string((int)position->getX()) + "," + std::to_string((int)position->getY()) +
+                            "|range=" + std::to_string((int)fenceRange) +
+                            "|spots=" + std::to_string(ai->DangerSpotCount()));
+                }
+
                 target->SetTarget(destination, position);
                 hasTarget = true;
                 break;

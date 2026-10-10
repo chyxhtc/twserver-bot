@@ -1299,19 +1299,29 @@ void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durati
     dangerousSpots_.erase(std::remove_if(dangerousSpots_.begin(), dangerousSpots_.end(),
         [now](DangerousSpot const& spot) { return spot.expireMs <= now; }), dangerousSpots_.end());
 
-    for (auto& spot : dangerousSpots_)
-    {
-        float const dx = spot.x - x;
-        float const dy = spot.y - y;
-        if (spot.mapId == mapId && dx * dx + dy * dy <= 80.0f * 80.0f)
+        for (auto& spot : dangerousSpots_)
         {
-            spot.x = x;
-            spot.y = y;
-            spot.expireMs = now + durationMs;
-            spot.blocksQuests = spot.blocksQuests || blocksQuests;
-            return;
+            float const dx = spot.x - x;
+            float const dy = spot.y - y;
+            if (spot.mapId == mapId && dx * dx + dy * dy <= 80.0f * 80.0f)
+            {
+                spot.x = x;
+                spot.y = y;
+                spot.expireMs = now + durationMs;
+                spot.blocksQuests = spot.blocksQuests || blocksQuests;
+                // A98 probe (no behaviour change): the fence is visibly armed in the trace yet
+                // some in-range quest objectives are still accepted, and from outside there is no
+                // way to tell "the knob read 30 not 180", "the spot is not allowed to fence
+                // quests" and "the list was rebuilt" apart. One line per merged stamp.
+                if (trace::On("travel"))
+                    sPlayerbotAIConfig.logEvent(this, "DangerSpotAdded",
+                        std::to_string(mapId) + "|" + std::to_string((int)x) + "|" + std::to_string((int)y),
+                        "merged=1|minutes=" + std::to_string(durationMs / (MINUTE * IN_MILLISECONDS)) +
+                        "|blocks=" + std::to_string(spot.blocksQuests ? 1 : 0) +
+                        "|spots=" + std::to_string(dangerousSpots_.size()));
+                return;
+            }
         }
-    }
 
     if (dangerousSpots_.size() >= 12)
         dangerousSpots_.erase(dangerousSpots_.begin());
@@ -1323,6 +1333,14 @@ void PlayerbotAI::AddDangerousSpot(uint32 mapId, float x, float y, uint32 durati
     spot.expireMs = now + durationMs;
     spot.blocksQuests = blocksQuests;
     dangerousSpots_.push_back(spot);
+
+    // A98 probe: see the merge branch above.
+    if (trace::On("travel"))
+        sPlayerbotAIConfig.logEvent(this, "DangerSpotAdded",
+            std::to_string(mapId) + "|" + std::to_string((int)x) + "|" + std::to_string((int)y),
+            "merged=0|minutes=" + std::to_string(durationMs / (MINUTE * IN_MILLISECONDS)) +
+            "|blocks=" + std::to_string(blocksQuests ? 1 : 0) +
+            "|spots=" + std::to_string(dangerousSpots_.size()));
 }
 
 bool PlayerbotAI::IsDangerousSpotNear(uint32 mapId, float x, float y, bool questsOnly, float radius) const
