@@ -12,6 +12,7 @@
 #include "../ai/playerbot/PlayerbotAI.h"
 #include "../ai/playerbot/RandomBotFacade.h"
 #include "../ai/playerbot/PlayerbotFactory.h"
+#include "../ai/playerbot/TraceSwitch.h"
 #include "../host/BotSessionAdapter.h"
 #include "../commands/BotCommands.h"
 // pi-lens-ignore: clang:pp_file_not_found
@@ -780,6 +781,74 @@ void BotManager::SweepStrandedBots(uint32_t diff)
     if (m_strandedSweepElapsedMs < STRANDED_SWEEP_INTERVAL_MS)
         return;
     m_strandedSweepElapsedMs = 0;
+
+    // A99 probe (2026-10-11, temporary, knob-gated, no lasting behaviour). The module builds no
+    // destination for a quest's area trigger (tw_world.areatrigger_involvedrelation), which is why
+    // quest 287 (Frostmane Hold -> trigger 97) and four siblings sit at "counts met, core never
+    // flags it complete" with character_queststatus.explored = 0 in all 26 holder rows measured.
+    // Whether a bot that *does* reach the trigger gets the flag is the one unknown the whole A99
+    // feature depends on, and no holder has ever been inside the radius (0 of 26; the closest was
+    // 16.7 yd against a 9 yd radius, see _observe/triggercheck.py). So: teleport one holder onto
+    // the trigger once and read its quest status again on a later sweep.
+    //   triggerprobe=0 (default) off; 1 = run once per server start
+    // Position comes from AreaTrigger.dbc id 97 (map 0, -5660.33 755.30 389.61, radius 15); the
+    // quest status is read through the core (INCOMPLETE -> COMPLETE), so no QuestStatusData
+    // member name is needed.
+    {
+        static uint32 const kProbeQuest = 287;
+        static uint32 const kProbeTrigger = 97;
+        static float const kProbeX = -5660.33f;
+        static float const kProbeY = 755.30f;
+        static float const kProbeZ = 389.61f;
+        static uint32 const kProbeMap = 0;
+        static time_t probeTeleportedAt = 0;
+        static ObjectGuid probeBot;
+        static uint32 probeStatusBefore = 99;
+
+        if (trace::IntValue("triggerprobe", 0) != 0)
+        {
+            if (probeTeleportedAt)
+            {
+                if (time(nullptr) - probeTeleportedAt >= 60 && !probeBot.IsEmpty())
+                {
+                    if (::Player* p = sObjectAccessor.FindPlayer(probeBot))
+                        TB_LOG_BASIC("TortoiseBots: A99 triggerprobe RESULT %s quest %u status %u -> %u (COMPLETE=1 means walking onto trigger %u did flag the quest)",
+                            p->GetName(), kProbeQuest, probeStatusBefore,
+                            (uint32)p->GetQuestStatus(kProbeQuest), kProbeTrigger);
+                    else
+                        TB_LOG_BASIC("TortoiseBots: A99 triggerprobe RESULT bot offline before the second read (quest %u)", kProbeQuest);
+                    probeBot.Clear();
+                    probeTeleportedAt = 0;
+                }
+                return;
+            }
+
+            for (auto& [key, entry] : m_bots)
+            {
+                BotRecord& rec = entry.record;
+                ::Player* p = nullptr;
+                if (!rec.random || rec.lifecycle != BotLifecycle::InWorld || !rec.masterGuid.IsEmpty())
+                    continue;
+                if ((p = sObjectAccessor.FindPlayer(rec.characterGuid)) == nullptr ||
+                    !p->IsInWorld() || !p->IsAlive() || p->IsBeingTeleported() ||
+                    p->GetMap()->IsDungeon() || p->InBattleGround())
+                    continue;
+                if (p->GetQuestStatus(kProbeQuest) != QUEST_STATUS_INCOMPLETE)
+                    continue;
+
+                probeStatusBefore = (uint32)p->GetQuestStatus(kProbeQuest);
+                probeBot = p->GetObjectGuid();
+                probeTeleportedAt = time(nullptr);
+                TB_LOG_BASIC("TortoiseBots: A99 triggerprobe %s (level %u) holds quest %u with status %u; teleporting to trigger %u at %.0f %.0f %.0f map %u",
+                    p->GetName(), p->GetLevel(), kProbeQuest, probeStatusBefore, kProbeTrigger,
+                    kProbeX, kProbeY, kProbeZ, kProbeMap);
+                if (!p->TeleportTo(kProbeMap, kProbeX, kProbeY, kProbeZ, p->GetOrientation(), 0))
+                    TB_LOG_BASIC("TortoiseBots: A99 triggerprobe TeleportTo failed for %s", p->GetName());
+                break;
+            }
+        }
+    }
+
     if (!sPlayerbotAIConfig.relocateHopelessDeaths)
     {
         m_strandedSince.clear();
