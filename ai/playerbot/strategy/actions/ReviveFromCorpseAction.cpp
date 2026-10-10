@@ -171,6 +171,12 @@ bool ReviveFromCorpseAction::Execute(Event& event)
     // A94: the one revive that must not happen here is one on top of a camp that has already
     // killed this bot twice for nothing. Take the graveyard revive instead - it is the same
     // free revive, just somewhere else - and say so, so the new path is countable.
+    // Note what the module's own "repop" action does here: RepopAction is a SpiritHealerAction,
+    // and its Execute revives the ghost *where it stands* once "best graveyard" is within sight.
+    // A ghost standing on its corpse inside the camp therefore came back in place on the first
+    // cut of this fix (measured 02:25:35-02:25:50 - revive, attack the whelp next to it, dead
+    // 14 s later, for 25% durability a round). Move the ghost to the graveyard first, the way
+    // releasing spirit does, and let the normal spirit-healer flow revive it there.
     if (CorpseInOwnLethalSpot(ai, bot, corpse))
     {
         if (trace::VerdictOf("corpserun") == trace::Verdict::On)
@@ -178,7 +184,7 @@ bool ReviveFromCorpseAction::Execute(Event& event)
                 "reason=lethal-corpse|stage=reclaim|dist=" + std::to_string((int)bot->GetDistance(corpse)) +
                 "|deadTime=" + std::to_string((long long)(time(nullptr) - corpse->GetGhostTime())));
         ai->StopMoving();
-        ai->DoSpecificAction("repop", Event(), true);
+        bot->RepopAtGraveyard();
         return true;
     }
 
@@ -260,13 +266,17 @@ bool FindCorpseAction::Execute(Event& event)
     // mobs standing there attack it before it can walk out. Take the graveyard revive instead of
     // walking towards that corpse at all. This has to sit before the reclaim-delay wait below,
     // which parks a ghost that is already next to its corpse and returns early.
-    if (CorpseInOwnLethalSpot(ai, bot, corpse))
+    // Only when the ghost is still next to that corpse: once the graveyard teleport below has
+    // moved it away, the normal spirit-healer flow must be allowed to revive it there.
+    if (CorpseInOwnLethalSpot(ai, bot, corpse) && botPos.distance(corpsePos) <= 60.0f)
     {
         if (trace::VerdictOf("corpserun") == trace::Verdict::On)
             sPlayerbotAIConfig.logEvent(ai, "CorpseRunProbe",
                 "reason=lethal-corpse|stage=find|dist=" + std::to_string((int)botPos.distance(corpsePos)) +
                 "|deadTime=" + std::to_string((long long)deadTime));
-        ai->DoSpecificAction("repop", Event(), true);
+        // Core release-spirit semantics: move the ghost to the nearest graveyard. Not the
+        // module's "repop" action - see the note in ReviveFromCorpseAction::Execute above.
+        bot->RepopAtGraveyard();
         return true;
     }
 
