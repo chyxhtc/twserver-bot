@@ -596,14 +596,37 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
             int32 const presenceKnob = trace::IntValue("obj_presence_range", 0);
             if (!present && presenceKnob > (int32)sPlayerbotAIConfig.sightDistance)
             {
-                std::list<Unit*> wider;
-                PossibleTargetsValue::FindUnfriendlyUnits(bot, wider, (float)presenceKnob);
-                for (Unit* unit : wider)
-                    if (unit && unit->GetEntry() == GetEntry() && sServerFacade.IsAlive(unit))
-                    {
+                // A89 (2026-10-10): the widened scan is a real grid visit and this verdict runs on
+                // every travel search, so throttle it to one scan per 5 s per bot and reuse the
+                // last verdict in between. The state it serves is "the bot stands next to a unique
+                // destination whose mob is not in the normal 60 yard list", which for a patrolling
+                // quest mob is a standing state, not a one-off: quest 1131 Steelsnap has a
+                // 94-point creature_movement circuit (x -4898..-4509, y -1258..-922, i.e. up to
+                // 400 yards from his anchor), which is why the wowhead comments all describe
+                // waiting for him to make his round.
+                time_t const now = time(nullptr);
+                time_t const lastScan = AI_VALUE2(time_t, "manual time", "presence scan time");
+                if (!lastScan || now - lastScan >= 5)
+                {
+                    SET_AI_VALUE2(time_t, "manual time", "presence scan time", now);
+                    std::list<Unit*> wider;
+                    PossibleTargetsValue::FindUnfriendlyUnits(bot, wider, (float)presenceKnob);
+                    bool found = false;
+                    for (Unit* unit : wider)
+                        if (unit && unit->GetEntry() == GetEntry() && sServerFacade.IsAlive(unit))
+                        {
+                            found = true;
+                            break;
+                        }
+                    SET_AI_VALUE2(time_t, "manual time", "presence scan found", found ? now : (time_t)0);
+                    present = found;
+                }
+                else
+                {
+                    time_t const foundAt = AI_VALUE2(time_t, "manual time", "presence scan found");
+                    if (foundAt && now - foundAt < 5)
                         present = true;
-                        break;
-                    }
+                }
             }
 
             if (present)
