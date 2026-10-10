@@ -615,6 +615,17 @@ namespace
         { 41636, "user: source chain unresolved for this pool - the crate drops from 62298 Cutpurse Warren (rank 0, so not the elite problem) and the second source is a gossip-grant from 6229802 the module has no step for" },
         { 5386, "chain: its only source is the fixed reward of quest 5421 (RewItemId1 = 13546 Bloodbelly Fish); every holder of 5421 now sits at status 0 with 5/5 gathered, i.e. the hand-in keeps being dropped, so the reward never pays out" },
         { 207,  "user: the four Kurzen tablets come from game objects 52/54/57 and loot template 5000101; the chain is not worth chasing this round" },
+        // 2026-10-10 21:00, after the user asked why 17 and 2342 (both quest_template.Type = 81)
+        // look like perfectly normal quests. They ARE normal quests - normal DUNGEON quests:
+        // this core's QuestTypes enum (core src/game/QuestDef.h) is not the 0..5 scale the module
+        // comments assume, it is Turtle WoW's extended set
+        //   1 elite, 21 life, 41 pvp, 62 raid, 81 dungeon, 82 world event, 83 legendary, 84 escort
+        // so 81 = QUEST_TYPE_DUNGEON, and 17 Uldaman Reagent Run / 2342 Reclaimed Treasures are
+        // Uldaman dungeon quests. Nothing in the DB is wrong; the pool simply has no groups, and
+        // the A87 accept gate (which compares against QUEST_TYPE_DUNGEON = 81) already refuses
+        // them. These two entries are what releases the bots that hold them today.
+        { 17,   "dungeon: quest_template.Type = 81 = QUEST_TYPE_DUNGEON in this core (QuestDef.h); 8047 comes only from loot template 5000064, which has no spawn row here, and the pool cannot run Uldaman at all" },
+        { 2342, "dungeon: quest_template.Type = 81 = QUEST_TYPE_DUNGEON in this core (QuestDef.h); 8026 is a Uldaman drop and the pool cannot run Uldaman at all" },
     };
 }
 
