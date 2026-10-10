@@ -613,6 +613,9 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
         }
         bool ok = true;
         TravelNode* levelOffender = nullptr;
+        // A90: the hostile-town gate below used to give the destination up on the first
+        // offending waypoint instead of spending the same re-route budget the level gate uses.
+        TravelNode* townOffender = nullptr;
     // Hostile-town route leg (cheap: only the named route nodes are scanned, no
     // extra spawn-table walk beyond the per-node guard check; start/end legs and
     // the 1000 yd short-hop bypass above are untouched). Random masterless bots
@@ -668,6 +671,7 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
             if (avoidTowns && !questPassAllowed && p->IsGuardedHostileTownFor(bot))
             {
                 blocker = p->getAreaName(true, true) + " (hostile town guards)";
+                townOffender = node;
                 ok = false;
                 break;
             }
@@ -687,9 +691,22 @@ static bool RouteIsSurvivableUncached(Player* bot, WorldPosition const& start, W
             }
             return true;
         }
-        if (!levelOffender)
-            return false;   // hostile-town veto: no re-route, the knob decides
-        avoid.push_back(levelOffender);
+        // A90 (2026-10-10): the level gate above re-routes around the offending waypoint; the
+        // hostile-town gate returned false on the first such node instead. Measured
+        // 2026-10-10 15:00-22:45 (7.75 h): 490 of 1598 no-pick travel searches were decided by
+        // a hostile-town node on the route, against 198 decided by an inactive candidate and
+        // 74 by a route level veto - the largest single blocker left in the travel layer.
+        // The nodes that fire are the four neutral bruiser towns (Booty Bay, Gadgetzan,
+        // Ratchet, Everlook) and opposing-faction camps, i.e. small places the road graph can
+        // usually walk around. Spend the same bounded re-route budget trying to miss them; the
+        // bot still never steps on a guarded waypoint while any alternative exists, and the
+        // destination itself is vetted separately by IsGuardedHostileTownFor in SetBestTarget.
+        // Knob routetownavoid: 1 (default) tries the detour, 0 restores give-up-on-first-town.
+        TravelNode* const offender =
+            (townOffender && trace::IntValue("routetownavoid", 1) != 0) ? townOffender : levelOffender;
+        if (!offender)
+            return false;   // hostile-town veto, detour disabled by the knob: the knob decides
+        avoid.push_back(offender);
     }
     // Every allowed re-route still crossed a zone above the limit: this is the residue that
     // teleporting would otherwise paper over.
