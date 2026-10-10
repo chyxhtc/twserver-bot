@@ -794,6 +794,12 @@ void BotManager::SweepStrandedBots(uint32_t diff)
     // Position comes from AreaTrigger.dbc id 97 (map 0, -5660.33 755.30 389.61, radius 15); the
     // quest status is read through the core (INCOMPLETE -> COMPLETE), so no QuestStatusData
     // member name is needed.
+    //
+    // 05:45:52 first result: standing exactly on trigger 97 for five minutes did NOT flag quest
+    // 287 (status 3 -> 3). So proximity alone is not the mechanism in this core - the classic
+    // shape is the client's CMSG_AREATRIGGER packet, which a headless bot never sends. Phase 2
+    // therefore also sends that packet once, exactly the way the module already does it for
+    // player-ordered triggers (AreaTriggerAction.cpp:65-69), and reads the status again later.
     {
         static uint32 const kProbeQuest = 287;
         static uint32 const kProbeTrigger = 97;
@@ -801,27 +807,48 @@ void BotManager::SweepStrandedBots(uint32_t diff)
         static float const kProbeY = 755.30f;
         static float const kProbeZ = 389.61f;
         static uint32 const kProbeMap = 0;
-        static time_t probeTeleportedAt = 0;
+        static int probePhase = 0;      // 0 = find+teleport, 1 = send the trigger packet, 2 = read
+        static time_t probePhaseAt = 0;
         static ObjectGuid probeBot;
         static uint32 probeStatusBefore = 99;
 
         if (trace::IntValue("triggerprobe", 0) != 0)
         {
-            if (probeTeleportedAt)
+            if (probePhase == 1)
             {
-                if (time(nullptr) - probeTeleportedAt >= 60 && !probeBot.IsEmpty())
+                if (time(nullptr) - probePhaseAt >= 30 && !probeBot.IsEmpty())
                 {
                     if (::Player* p = sObjectAccessor.FindPlayer(probeBot))
-                        TB_LOG_BASIC("TortoiseBots: A99 triggerprobe RESULT %s quest %u status %u -> %u (COMPLETE=1 means walking onto trigger %u did flag the quest)",
-                            p->GetName(), kProbeQuest, probeStatusBefore,
-                            (uint32)p->GetQuestStatus(kProbeQuest), kProbeTrigger);
-                    else
-                        TB_LOG_BASIC("TortoiseBots: A99 triggerprobe RESULT bot offline before the second read (quest %u)", kProbeQuest);
-                    probeBot.Clear();
-                    probeTeleportedAt = 0;
+                    {
+                        WorldPacket packet(CMSG_AREATRIGGER);
+                        packet << (uint32)kProbeTrigger;
+                        packet.rpos(0);
+                        p->GetSession()->HandleAreaTriggerOpcode(packet);
+                        TB_LOG_BASIC("TortoiseBots: A99 triggerprobe SENT CMSG_AREATRIGGER %u for %s (status now %u)",
+                            kProbeTrigger, p->GetName(), (uint32)p->GetQuestStatus(kProbeQuest));
+                    }
+                    probePhase = 2;
+                    probePhaseAt = time(nullptr);
                 }
                 return;
             }
+            if (probePhase == 2)
+            {
+                if (time(nullptr) - probePhaseAt >= 60 && !probeBot.IsEmpty())
+                {
+                    if (::Player* p = sObjectAccessor.FindPlayer(probeBot))
+                        TB_LOG_BASIC("TortoiseBots: A99 triggerprobe RESULT %s quest %u status %u -> %u (COMPLETE=1 means the trigger packet did flag the quest; it was sent 60+ s earlier)",
+                            p->GetName(), kProbeQuest, probeStatusBefore,
+                            (uint32)p->GetQuestStatus(kProbeQuest));
+                    else
+                        TB_LOG_BASIC("TortoiseBots: A99 triggerprobe RESULT bot offline before the second read (quest %u)", kProbeQuest);
+                    probeBot.Clear();
+                    probePhase = 3;
+                }
+                return;
+            }
+            if (probePhase >= 3)
+                return;
 
             for (auto& [key, entry] : m_bots)
             {
@@ -838,7 +865,8 @@ void BotManager::SweepStrandedBots(uint32_t diff)
 
                 probeStatusBefore = (uint32)p->GetQuestStatus(kProbeQuest);
                 probeBot = p->GetObjectGuid();
-                probeTeleportedAt = time(nullptr);
+                probePhase = 1;
+                probePhaseAt = time(nullptr);
                 TB_LOG_BASIC("TortoiseBots: A99 triggerprobe %s (level %u) holds quest %u with status %u; teleporting to trigger %u at %.0f %.0f %.0f map %u",
                     p->GetName(), p->GetLevel(), kProbeQuest, probeStatusBefore, kProbeTrigger,
                     kProbeX, kProbeY, kProbeZ, kProbeMap);
