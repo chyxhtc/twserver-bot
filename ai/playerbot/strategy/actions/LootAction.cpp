@@ -905,6 +905,23 @@ bool StoreLootAction::IsLootAllowed(ItemQualifier& itemQualifier, PlayerbotAI *a
             return true;
     }
 
+    // A92 (2026-10-10): this loop used to count by item *name*, and the "item count" value
+    // matches names as substrings (InventoryParseItems -> FindNamedItemVisitor -> strstri).
+    // Holding any other item whose name merely contains this one then satisfied the test:
+    // quest 204 Bad Medicine wants 7x 2633 Jungle Remedy, and its three holders sat at 6/7 and
+    // refused the drop 94 times in one day because they also carried 50748 Outline: Jungle
+    // Remedy. The gate is about this objective's own progress, so it reads the quest counter the
+    // core completes on (m_itemcount), the same value DropQuestAction:193 and UseItemAction:1490
+    // consult.
+    // A95 (2026-10-11): the loop walks the whole quest log, so when several held quests ask for
+    // the same item the first satisfied one refused the drop even though the others still needed
+    // it. Measured: the ten Blasted Lands organ quests (2581-2586, 2601-2604) share
+    // 8391/8392/8393/8396, eight bots hold three to five of them at partial counters (Rigornar:
+    // 2581 at 3/1/1, 2583 at 1/1/1, 2585 at 1/2/1, 2601 at 1/2/0, 2603 at 2/2/0) and the four
+    // items were refused 65/40/39/33 times in one day. Refuse only when every held quest that
+    // asks for this item already has its own counter full.
+    bool askedByAQuest = false;
+    bool neededByAQuest = false;
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
         uint32 entry = GetQuestSlotIdCompat(ai->GetBot(), slot);
@@ -919,22 +936,16 @@ bool StoreLootAction::IsLootAllowed(ItemQualifier& itemQualifier, PlayerbotAI *a
                 if (ai->GetMaster() && sPlayerbotAIConfig.syncQuestWithPlayer)
                     return false; //Quest is autocomplete for the bot so no item needed.
 
-                // A92 (2026-10-10): this counted by item *name*, and the "item count" value
-                // matches names as substrings (InventoryParseItems -> FindNamedItemVisitor ->
-                // strstri). Holding any other item whose name merely contains this one then
-                // satisfied the test. Measured: quest 204 Bad Medicine wants 7x 2633 Jungle
-                // Remedy; its three holders sat at 6/7 and refused the drop 94 times in one day
-                // (75 of them Jartorrn) because they also carried 50748 Outline: Jungle Remedy,
-                // so "Jungle Remedy" counted as 7+. The gate is about this objective's own
-                // progress, so read the quest counter the core completes on (m_itemcount) - the
-                // same value DropQuestAction:193 and UseItemAction:1490 consult.
+                askedByAQuest = true;
                 auto const& qData = ai->GetBot()->getQuestStatusMap()[entry];
-                if (i < QUEST_ITEM_OBJECTIVES_COUNT && quest->ReqItemCount[i] &&
-                    qData.m_itemcount[i] >= quest->ReqItemCount[i])
-                    return false;
+                if (i >= QUEST_ITEM_OBJECTIVES_COUNT || !quest->ReqItemCount[i] ||
+                    qData.m_itemcount[i] < quest->ReqItemCount[i])
+                    neededByAQuest = true;
             }
         }
     }
+    if (askedByAQuest && !neededByAQuest)
+        return false;
 
     //if (proto->Bonding == BIND_QUEST_ITEM ||  //Still testing if it works ok without these lines.
     //    proto->Bonding == BIND_QUEST_ITEM1 || //Eventually this has to be removed.
