@@ -6,6 +6,7 @@
 #include "playerbot/strategy/generic/PullStrategy.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/strategy/values/PossibleAttackTargetsValue.h"
+#include "playerbot/TraceSwitch.h"
 
 bool DpsAssistAction::isUseful()
 {
@@ -82,7 +83,25 @@ bool AttackAnythingAction::isUseful()
         return true;
 
     if (AI_VALUE(bool, "travel target traveling") && CanFreeMoveValue::CanFreeMoveTo(ai, *travelTarget->getPosition())) //Bot is traveling
+    {
+        // A88 (2026-10-10): a mob the grind layer has ALREADY PICKED and an active quest still
+        // needs is not a distraction - the travel errand must not rob the bot of that kill.
+        //
+        // The exemption above ("attack before being attacked") only covers a mob that stands in
+        // front of the bot and is no more than three levels above it, so a quest mob a few levels
+        // below and off to the side was walked past even when the grind layer had already
+        // selected it. Measured 2026-10-10 12:16:22, Sarkhol on quest 1131 Steelsnap:
+        // GreyClear wrote reason=target entry=4548 level=30 botLevel=35 xpWorthy=1 (the grind
+        // pick) and the very next line was AttackDenied traveling|grindtarget=Steelsnap; twelve
+        // seconds later GrindFarProbe still picked 4548 at 66 yards. He never killed it, and item
+        // 5837 has zero holders server-wide.
+        // Knob attack_while_traveling_quest (default 1 = new behaviour, 0 = old).
+        if (trace::IntValue("attack_while_traveling_quest", 1) != 0 && target->GetEntry() &&
+            AI_VALUE2(bool, "need for quest", std::to_string(target->GetEntry())))
+            return true;
+
         return deny("traveling");
+    }
 
     return true;
 }

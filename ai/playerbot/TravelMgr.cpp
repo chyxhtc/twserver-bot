@@ -6,6 +6,7 @@
 
 #include "playerbot/strategy/values/SharedValueContext.h"
 #include "playerbot/strategy/values/TravelValues.h"
+#include "playerbot/strategy/values/PossibleTargetsValue.h"
 #include "Maps/PathFinder.h"
 #include "TravelNode.h"
 #include "PlayerbotAI.h"
@@ -560,11 +561,53 @@ bool QuestObjectiveTravelDestination::IsActive(Player* bot, const PlayerTravelIn
         //Only look for the target if it is unique or if we are currently working on it.
         if (IsUnique() || (target->GetStatus() == TravelStatus::TRAVEL_STATUS_WORK && target->GetEntry() == GetEntry()))
         {
-            std::list<ObjectGuid> targets = AI_VALUE(std::list<ObjectGuid>, "possible targets");
+            bool present = false;
+            std::list<ObjectGuid> const nearby = AI_VALUE(std::list<ObjectGuid>, "possible targets");
+            for (ObjectGuid const& guid : nearby)
+            {
+                if (guid.GetEntry() != GetEntry() || !guid.IsCreature())
+                    continue;
+                Creature* creature = ai->GetCreature(guid);
+                if (creature && creature->IsAlive())
+                {
+                    present = true;
+                    break;
+                }
+            }
 
-            for (auto& target : targets)
-                if (target.GetEntry() == GetEntry() && target.IsCreature() && ai->GetCreature(target) && ai->GetCreature(target)->IsAlive())
-                    return true;
+            // A88 (2026-10-10): the presence radius is a knob, not sightDistance.
+            //
+            // "possible targets" is built at sightDistance (60 yards), so a bot that has walked
+            // to within sixty yards of a single-spawn quest mob was still judged to be standing
+            // at an empty spawn whenever the mob itself stood a few yards past that line - and
+            // the destination went inactive instead of staying planned, so the existing
+            // retry/last-mile-teleport chain never got the chance to deliver the bot.
+            //
+            // Measured 2026-10-10 on quest 1131 Steelsnap (mob 4548, one spawn point in Thousand
+            // Needles, 300 s respawn): Sarkhol picked that spawn as his destination 119 times in
+            // one day, stood exactly on the spawn point at 03:30:07, was 58 yards away at
+            // 00:59:02 when the probe wrote branch=unique-not-nearby|unique=1, and the last
+            // stretch of path keeps clipping (MoveFail clipped-to-one-gap at 72-103 yards).
+            // Three holders, 0/1 for all of them, and item 5837 has zero holders server-wide.
+            //
+            // The widened scan is a direct grid visit, so it only runs for the single-spawn
+            // destinations that reach this branch while the bot is already within sightDistance
+            // of the point. obj_presence_range (hot, default 0 = old behaviour, sightDistance).
+            int32 const presenceKnob = trace::IntValue("obj_presence_range", 0);
+            if (!present && presenceKnob > (int32)sPlayerbotAIConfig.sightDistance)
+            {
+                std::list<Unit*> wider;
+                PossibleTargetsValue::FindUnfriendlyUnits(bot, wider, (float)presenceKnob);
+                for (Unit* unit : wider)
+                    if (unit && unit->GetEntry() == GetEntry() && sServerFacade.IsAlive(unit))
+                    {
+                        present = true;
+                        break;
+                    }
+            }
+
+            if (present)
+                return true;
 
             return why("unique-not-nearby");
         }
