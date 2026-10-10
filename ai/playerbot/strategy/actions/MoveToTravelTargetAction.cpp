@@ -835,6 +835,7 @@ bool MoveToTravelTargetAction::isUseful()
                     "status=" + std::to_string(t ? (uint32)t->GetStatus() : 0) +
                     "|dist=" + std::to_string(t && t->getPosition() ? (int)t->getPosition()->distance(bot) : -1) +
                     "|loot=" + (AI_VALUE(bool, "has available loot") ? "1" : "0") +
+                    "|mounted=" + (AI_VALUE2(bool, "mounted", "self target") ? "1" : "0") +
                     "|canMove=" + (AI_VALUE(bool, "can move around") ? "1" : "0") +
                     "|freeRange=" + std::to_string((int)AI_VALUE(float, "free move range")) +
                     "|forced=" + (t && t->IsForced() ? "1" : "0"));
@@ -886,7 +887,19 @@ bool MoveToTravelTargetAction::isUseful()
     if (travelPos.isDungeon() && bot->GetGroup() && bot->GetGroup()->IsLeader(bot->getObjectGuid()) && sTravelMgr.MapTransDistance(bot, travelPos, true) < sPlayerbotAIConfig.sightDistance && !AI_VALUE2(bool, "group and", "near leader"))
         return deny("dungeon-near");
 
-    if (AI_VALUE(bool, "has available loot"))
+    // A85 (2026-10-10): while the bot is MOUNTED the loot chain is deliberately suppressed -
+    // LootAvailableTrigger::IsActive() returns false on "mounted self target" (a mounted bot
+    // must not kneel for loot) - so denying travel because loot is available can never be
+    // satisfied by looting. It is a guaranteed deadlock that only ends when the corpse ages
+    // out (180 s) or something else dismounts the bot, and measured on the night of 10-10 the
+    // loot gate was the pool's most common travel refusal (~324 rows/hour) with a 25.8 minute
+    // worst case. Reading the same predicate the loot trigger reads makes the two agree: a
+    // mounted bot travels, and the corpse stays on the loot stack for its full TTL, so it is
+    // still picked up if the bot dismounts nearby.
+    bool const lootGateApplies = AI_VALUE(bool, "has available loot") &&
+        !AI_VALUE2(bool, "mounted", "self target");
+
+    if (lootGateApplies)
     {
         LootObjectStack* const lootStack = AI_VALUE(LootObjectStack*, "available loot");
         LootObject lootObject = lootStack->GetLoot(sPlayerbotAIConfig.lootDistance);
