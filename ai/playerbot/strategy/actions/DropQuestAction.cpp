@@ -580,6 +580,41 @@ namespace
         // Release condition: the module learns to use a quest-provided item on the object that
         // summons the objective (the same shape as the A60 batch).
         { 5381, "script: the Demon Box (13542) only drops from Demon Spirit (11876), which has no spawn row and is summoned by using the crystal in Thunder Axe Fortress (gameobject_scripts 11894); the module has no use-object-to-summon step" },
+        // A87 (2026-10-10, user decision): the elite / dungeon batch. The user pointed at 547
+        // ("this is an elite quest, 17 bots are stuck on it, blacklist it, and it should have been
+        // caught by the elite/dungeon filter we already have") and asked for the rest of the list.
+        // Checked each one against the world DB:
+        //   547  Type 1; 3693 comes only from the four Dun Garok elites (2344/2345/2346 rank 1,
+        //        14275 rank 2) - 17 holders, no progress for a whole day.
+        //   197  Type 1; 3877 comes only from Tethis (730, rank 1, level 43) at -100.
+        //   5151 Type 1; 12946 comes only from the Enraged Panther (10992, rank 1) at -100.
+        //   41671 Type 1; the objective is The Wailing Nun (62268, rank 1).
+        //   115  Type 1; 1261 comes from Blackrock Shadowcasters (436, rank 1).
+        //   169  Type 1; 3633 comes from Gath'Ilzogg (334, rank 1).
+        //   255  Type 1; kill objectives are Mo'grosh ogres 1178/1179/1180, all rank 1.
+        //   303  Type 1; kill objectives are Dark Iron dwarves 1051-1054, all rank 1.
+        //   629  Type 1; 4094 comes from loot template 5000101, which has no spawn row at all.
+        //   1424 Type 1; 6175 comes from loot template 5000125, which has no spawn row at all.
+        // The same batch added the accept-side gate (AcceptQuestAction, knob questtype_gate), so
+        // future elite/dungeon quests are refused before they ever reach the log; these entries are
+        // what releases the bots that already hold them.
+        // Release condition for the whole elite group: the pool gains grouping, or the module
+        // learns to solo an elite that is far below the bot (the A86 knob is already in the tree
+        // and off by default). For 629/1424 a spawn row for the loot template is also needed.
+        { 547,  "elite: quest flagged elite; 3693 comes only from the four Dun Garok elites (2344/2345/2346 rank 1, 14275 rank 2), the pool has no groups, and the camp is a hostile-guard town as well" },
+        { 197,  "elite: quest flagged elite; 3877 comes only from Tethis (730, rank 1 elite, level 43) at -100" },
+        { 5151, "elite: quest flagged elite; 12946 comes only from the Enraged Panther (10992, rank 1 elite) at -100" },
+        { 41671, "elite: quest flagged elite; its kill objective is The Wailing Nun (62268, rank 1 elite)" },
+        { 115,  "elite: quest flagged elite; 1261 comes from Blackrock Shadowcasters (436, rank 1 elite)" },
+        { 169,  "elite: quest flagged elite; 3633 comes from Gath'Ilzogg (334, rank 1 elite)" },
+        { 255,  "elite: quest flagged elite; the kill objectives are Mo'grosh ogres 1178/1179/1180, all rank 1" },
+        { 303,  "elite: quest flagged elite; the kill objectives are Dark Iron dwarves 1051-1054, all rank 1" },
+        { 629,  "elite + no spawn: quest flagged elite, and 4094 comes from loot template 5000101 which has no spawn row in the world" },
+        { 1424, "elite + no spawn: quest flagged elite, and 6175 comes from loot template 5000125 which has no spawn row in the world" },
+        // The three the user named that are not elite-flagged:
+        { 41636, "user: source chain unresolved for this pool - the crate drops from 62298 Cutpurse Warren (rank 0, so not the elite problem) and the second source is a gossip-grant from 6229802 the module has no step for" },
+        { 5386, "chain: its only source is the fixed reward of quest 5421 (RewItemId1 = 13546 Bloodbelly Fish); every holder of 5421 now sits at status 0 with 5/5 gathered, i.e. the hand-in keeps being dropped, so the reward never pays out" },
+        { 207,  "user: the four Kurzen tablets come from game objects 52/54/57 and loot template 5000101; the chain is not worth chasing this round" },
     };
 }
 

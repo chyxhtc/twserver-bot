@@ -146,6 +146,31 @@ bool AcceptAllQuestsAction::ProcessQuest(Player* requester, Quest const* quest, 
         return false;
     }
 
+    // A87 (2026-10-10, user decision): elite / dungeon / raid quests are group content, and this
+    // pool has no groups at all (tw_char.group_member is empty), so can-fight-elite and
+    // can-fight-boss are false for every bot. The travel layer already refuses every destination
+    // such a quest needs (TravelMgr reads the same two predicates), but nothing refused the
+    // ACCEPT - so the quest went into the log, could never progress, and sat on the stuck list
+    // until some other rule threw it away. Measured 2026-10-10: ten quests with
+    // quest_template.Type = 1 were on the stuck list at once (115, 169, 197, 255, 303, 547, 629,
+    // 1424, 5151, 41671), held by forty-odd bots; 547 Humbert's Sword alone had 17 holders at 0/1
+    // for a whole day, which is what the user pointed at. This is the rule that was supposed to
+    // exist: it now lives on the accept side too.
+    // Knob questtype_gate (bot_diag.conf, default 1); 0 restores the old behaviour live.
+    if (trace::IntValue("questtype_gate", 1) != 0)
+    {
+        uint32 const questType = quest->GetType();
+        bool const groupContent =
+            (questType == QUEST_TYPE_ELITE && !AI_VALUE(bool, "can fight elite")) ||
+            ((questType == QUEST_TYPE_DUNGEON || questType == QUEST_TYPE_RAID) &&
+             !AI_VALUE(bool, "can fight boss"));
+        if (groupContent)
+        {
+            traceGate("group-content", "|type=" + std::to_string(questType));
+            return false;
+        }
+    }
+
     // Quest-log upkeep for masterless random bots (donor IsQuestWorthDoing
     // idea, own code): skip grey quests unless the reward is worth it. Grey is
     // the core's quest colour, fixed at BOT_GREY_QUEST_LEVEL_DIFF levels below the bot.
