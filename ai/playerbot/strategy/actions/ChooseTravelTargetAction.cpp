@@ -1243,6 +1243,47 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                             "|spots=" + std::to_string(ai->DangerSpotCount()));
                 }
 
+                // A98b fix (2026-10-11): both danger fences are evaluated inside the destination's
+                // IsActive, and both ask GetClosestPoint(bot) - the destination's *nearest* point.
+                // The travel layer, however, goes to the point this search picked (the nearest one
+                // inside the current distance partition), and for a destination with several spawn
+                // points those are not always the same one. Only the picked point decides whether
+                // the bot walks into the camp.
+                //
+                // Measured 2026-10-11 05:13:21 with the FenceMiss probe (Warkryrzith, live
+                // no-output spot at (-4631,-3133), spots=1): the search picked (-4859,-3172) for
+                // quest 1169's objective 2 - 231 yd from the spot, well inside the 400 yd quest
+                // fence - while the fence had looked at the destination's closest point
+                // (-4964,-3371), 409 yd away, one yard outside it. The destination was accepted
+                // and he walked back into the camp that had killed him 21 times.
+                // Knob fence_point_exact (default 1 = re-check on the picked point, 0 = old).
+                if (!target->IsForced() && position && trace::IntValue("fence_point_exact", 1) != 0)
+                {
+                    bool const isQuestPoint = dynamic_cast<ai::QuestTravelDestination*>(destination) != nullptr;
+                    bool const isGrindPoint = dynamic_cast<ai::GrindTravelDestination*>(destination) != nullptr;
+                    if (isQuestPoint || isGrindPoint)
+                    {
+                        // Same semantics as the two fences: quest objectives (and only the
+                        // no-output spots) get danger_quest_range, grind points the plain 80 yd.
+                        float const fenceRadius = isQuestPoint
+                            ? (float)trace::IntValue("danger_quest_range", 200) : 80.0f;
+                        if (ai->IsDangerousSpotNear(position->getMapId(), position->getX(),
+                                position->getY(), isQuestPoint, fenceRadius))
+                        {
+                            if (trace::On("travel"))
+                                sPlayerbotAIConfig.logEvent(ai, "FenceMissRefused", destination->GetTitle(),
+                                    "entry=" + std::to_string(destination->GetEntry()) +
+                                    "|purpose=" + std::to_string((uint32)destination->GetPurpose()) +
+                                    "|point=" + std::to_string((int)position->getX()) + "," +
+                                    std::to_string((int)position->getY()) +
+                                    "|range=" + std::to_string((int)fenceRadius) +
+                                    "|spots=" + std::to_string(ai->DangerSpotCount()));
+                            reject("dangerous-spot-point");
+                            continue;
+                        }
+                    }
+                }
+
                 target->SetTarget(destination, position);
                 hasTarget = true;
                 break;
