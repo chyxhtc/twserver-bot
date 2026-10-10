@@ -1332,6 +1332,13 @@ namespace ai
             if (!sPlayerbotAIConfig.botQuestLogUpkeep || !bot ||
                 ai->HasActivePlayerMaster() || !sRandomBotFacade.IsRandomBot(bot))
                 return false;
+            // A96 follow-up (2026-10-11): the residue drain stopped at ten rows because this
+            // trigger only fires when the log is nearly full, and those holders had three or more
+            // free slots. An elite/dungeon/raid quest the pool can never finish is dead weight at
+            // any free-slot count, and the accept-side gate means it can never be re-taken, so let
+            // the cleanup run for it directly. Same policy knob (questtype_gate) as the action.
+            if (HasGroupContentQuest())
+                return true;
             if (AI_VALUE(uint8, "free quest log slots") > 2)
                 return false;
             // CleanQuestLogAction found nothing droppable recently: back off
@@ -1343,6 +1350,30 @@ namespace ai
         }
 
     private:
+        // Mirrors the group-content rule in CleanQuestLogAction::IsDroppable (and the accept gate):
+        // elite without a group, or dungeon/raid without a boss-capable group.
+        bool HasGroupContentQuest()
+        {
+            if (trace::IntValue("questtype_gate", 1) == 0)
+                return false;
+            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            {
+                uint32 questId = GetQuestSlotIdCompat(bot, slot);
+                QuestStatus status = questId ? bot->GetQuestStatus(questId) : QUEST_STATUS_NONE;
+                if (!questId || (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE))
+                    continue;
+                Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+                if (!quest || quest->GetRequiredClasses() != 0)
+                    continue;
+                uint32 const questType = quest->GetType();
+                if ((questType == QUEST_TYPE_ELITE && !AI_VALUE(bool, "can fight elite")) ||
+                    ((questType == QUEST_TYPE_DUNGEON || questType == QUEST_TYPE_RAID) &&
+                     !AI_VALUE(bool, "can fight boss")))
+                    return true;
+            }
+            return false;
+        }
+
         // Cheap pre-scan mirroring CleanQuestLogAction::IsDroppable (same
         // predicate shape): class quests never droppable, level-0/scaling
         // never grey, money shortfall never a drop reason, INCOMPLETE deliver
