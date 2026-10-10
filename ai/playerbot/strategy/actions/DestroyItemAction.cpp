@@ -43,6 +43,17 @@ bool SmartDestroyItemAction::TrimBulkNoUsePiles()
     std::list<uint32> ids = AI_VALUE2(std::list<uint32>, "inventory item ids",
         "usage " + std::to_string((uint8)ItemUsage::ITEM_USAGE_NONE));
 
+    // A100 (2026-10-11): under bag pressure one stack is enough. The rule below keeps two
+    // stacks of every no-use stackable, and the bags fill with *variety* rather than with one
+    // hoard: the live inventory on 2026-10-11 held 100 stacks of Mageweave Cloth, 91 of Silk
+    // Cloth, 222 of Long Soft Tail and 125 of Soft Bushy Tail across 40-47 bots (i.e. the
+    // classic two-per-bot), while 53% of that day's loot probes reported a needed quest item
+    // with no stack space at all. Knobs: trim_keep_stacks (default 2, the old behaviour) and
+    // trim_keep_stacks_full (default 1) used once the bags are 90% full.
+    uint32 const keepStacks = (AI_VALUE(uint8, "bag space") >= 90)
+        ? (uint32)std::max(1, trace::IntValue("trim_keep_stacks_full", 1))
+        : (uint32)std::max(1, trace::IntValue("trim_keep_stacks", 2));
+
     for (uint32 itemId : ids)
     {
         if (HAS_AI_VALUE2("force item usage", itemId))
@@ -56,7 +67,7 @@ bool SmartDestroyItemAction::TrimBulkNoUsePiles()
         ai->InventoryIterateItems(&visitor, IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
         std::list<Item*> found = visitor.GetResult();
 
-        if (found.size() <= 2)
+        if (found.size() <= keepStacks)
             continue;
 
         uint32 kept = 0;
@@ -66,7 +77,7 @@ bool SmartDestroyItemAction::TrimBulkNoUsePiles()
             if (!item)
                 continue;
 
-            if (kept++ < 2)
+            if (kept++ < keepStacks)
                 continue;
 
             bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
