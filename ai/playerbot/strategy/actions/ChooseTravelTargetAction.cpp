@@ -873,6 +873,31 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
         ++rejections[why];
         if (currentDestination && rejectionEntries[why].size() < 8)
             rejectionEntries[why].push_back(currentDestination->GetEntry());
+
+        // A123 (2026-10-12): name the gate that refuses a GATHER candidate while a goal window is
+        // open. Every layer above is now fixed - the pool is compared by its nearest spawn outside
+        // an enemy zone (A116), only pools whose loot can raise the skill are offered (A120), and the
+        // window outranks vendor/mail/grind (A119/A121/A122) - yet the pilots' lists still end with
+        // gather candidates offered and none taken (GoalPrefer dropped=0|left=3 and left=9, no
+        // TravelTarget row after), and the end-of-search summary does not fire for those searches, so
+        // the refusing gate has never been named. One row per bot per entry per reason per five
+        // minutes.
+        if (currentDestination && econgoal::Active(bot->GetGUIDLow()) &&
+            dynamic_cast<GatherTravelDestination*>(currentDestination) != nullptr)
+        {
+            time_t const now = time(nullptr);
+            std::string const probeKey = "gatherrej::" +
+                std::to_string(currentDestination->GetEntry()) + "::" + why;
+            time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
+            if (!lastProbe || now - lastProbe >= 5 * MINUTE)
+            {
+                SET_AI_VALUE2(time_t, "manual time", probeKey, now);
+                sPlayerbotAIConfig.logEvent(ai, "GatherCandidateReject",
+                    std::to_string(currentDestination->GetEntry()) + "|" + why,
+                    "considered=" + std::to_string(considered) +
+                        "|purpose=" + std::to_string((uint32)currentDestination->GetPurpose()));
+            }
+        }
     };
     auto const rejectionDetail = [&]()
     {
