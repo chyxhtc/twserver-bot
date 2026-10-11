@@ -494,7 +494,17 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
         return ai->DoSpecificAction("use", Event("do loot", chat->formatQItem(lootObject.reqItem) + " " + chat->formatGameobject(go)));
     }
 
-    return ai->CastSpell(spellId, bot);
+    // A117 (2026-10-12): this path logged only "go-open-spell" - that the bot is ABOUT to cast -
+    // and never the result, while the other path already logs the spell, the lock, the distance and
+    // a casted flag. Measured tonight on the herbalism pilot: five plain go-open-spell rows against
+    // a live Bloodpetal Sprout (entry 164958) in ninety seconds, no LootResponse, no loot row - the
+    // bot stands at the node and nothing lands. Without the flag the two very different stories
+    // ("the core refuses the cast" and "the cast goes out and no loot window answers it") look
+    // identical. The flag is what tells them apart, and it is one line.
+    bool const openCasted = ai->CastSpell(spellId, bot);
+    LootTrace(bot, ai, lootObject.guid,
+        std::string("go-open-spell-result-casted") + (openCasted ? "1" : "0"));
+    return openCasted;
 }
 
 uint32 OpenLootAction::GetOpeningSpell(LootObject& lootObject)
