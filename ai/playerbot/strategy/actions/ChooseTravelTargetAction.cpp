@@ -1147,21 +1147,33 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             // only happens when that candidate exists (goalNearby), so a bot is never left with
             // nothing to do by this rule; if the candidate later fails, the next scan sees the full
             // list again.
+            //
+            // A125b (2026-10-12): "never left with nothing" was wrong once A125's hold could erase
+            // without a candidate present in this scan. Measured 07:17:41 on Tharuputarr:
+            // GoalPrefer dropped=32|left=0|held=1 - every candidate gone, so the scan had no
+            // destination at all and the bot parked until the next one. Count the survivors first
+            // and skip the erasure when it would empty the list; the hold then simply has no effect
+            // for that scan, which is the safe direction.
             uint8 const bagUsed = AI_VALUE(uint8, "bag space");
             bool const bagsNearlyFull = bagUsed >= 80;
-            ordered.erase(std::remove_if(ordered.begin(), ordered.end(),
-                [bagsNearlyFull](OrderedCandidate const& candidate)
-                {
-                    if (!candidate.destination)
-                        return false;
-                    TravelDestinationPurpose const purpose = candidate.destination->GetPurpose();
-                    if (purpose == TravelDestinationPurpose::Grind)
-                        return true;
-                    if (!bagsNearlyFull && purpose == TravelDestinationPurpose::Vendor)
-                        return true;
-                    return ((uint32)purpose & ((uint32)TravelDestinationPurpose::QuestAllObjective |
-                        (uint32)TravelDestinationPurpose::GenericRpg)) != 0;
-                }), ordered.end());
+            auto const standsDown = [bagsNearlyFull](OrderedCandidate const& candidate)
+            {
+                if (!candidate.destination)
+                    return false;
+                TravelDestinationPurpose const purpose = candidate.destination->GetPurpose();
+                if (purpose == TravelDestinationPurpose::Grind)
+                    return true;
+                if (!bagsNearlyFull && purpose == TravelDestinationPurpose::Vendor)
+                    return true;
+                return ((uint32)purpose & ((uint32)TravelDestinationPurpose::QuestAllObjective |
+                    (uint32)TravelDestinationPurpose::GenericRpg)) != 0;
+            };
+            size_t survivors = 0;
+            for (auto const& candidate : ordered)
+                if (!standsDown(candidate))
+                    ++survivors;
+            if (survivors > 0)
+                ordered.erase(std::remove_if(ordered.begin(), ordered.end(), standsDown), ordered.end());
             sPlayerbotAIConfig.logEvent(ai, "GoalPrefer", econgoal::SkillLabel(preferSkill),
                 "dropped=" + std::to_string(before - ordered.size()) +
                 "|range=" + std::to_string(goalPreferRange) +
