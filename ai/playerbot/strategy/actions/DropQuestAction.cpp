@@ -510,6 +510,18 @@ namespace
         { 55210, "craft: needs 3575 Iron Bar x16 (smelting/mining only); 7191 Fused Wiring drops and 3466 Strong Flux has 100+ vendors" },
         { 565,   "craft: 3719 Hillman's Cloak is leatherworking 3760 only, no bot has it" },
         { 6571,  "craft: its 16742 comes only from quest 6581, which is itself craft-gated" },
+        // 2026-10-11 12:10, found by walking the high-retry list (same-day objective travel
+        // attempts) against the world DB. Quest 40359 Mechaflame's Bargain (Turtle custom,
+        // 404 on wowhead) needs 10559 Mithril Tube x1, 3860 Mithril Bar x4, 1529 Jade x2 and
+        // 60510 Arcanist Sovatir's Torn Notes x1. 10559 has no creature/gameobject/vendor row
+        // at all - engineering only - and 3860 is a smelting product (mining). The single holder
+        // (Tharuputarr) has no mining/engineering/blacksmithing at any skill (his character_skills
+        // rows are weapon skills plus alchemy/herbalism/first aid/cooking/fishing at rank 4-5),
+        // and no bot in the pool can craft either item, so the module can never plan it.
+        // 1529 Jade does drop widely, so the blocker is the two crafted items.
+        // Release condition: a bot actually levels mining+engineering to the recipes, or the
+        // auction-house buy path lands so it can simply buy a Mithril Tube (same release as 515).
+        { 40359, "craft: needs 10559 Mithril Tube (engineering only, 0 loot/0 vendor) and 3860 Mithril Bar x4 (smelting/mining); the only holder has neither profession and no bot can craft them" },
         { 1195,  "two-hop: empty phial drops from 4054, use it to fill; no plan and no fill spot in DB" },
         { 40536, "script token 60382: credit is a scripted NPC beaten to half health (issue A47)" },
         { 40567, "script token 60391: credit is gossip option 1 on Bert Mano (issue A47)" },
