@@ -1068,6 +1068,40 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             uint32 const partition = candidate.partition;
             currentDestination = destination;
             ++considered;
+
+            // A120 (2026-10-12): a gathering pool is only worth walking to if its loot can raise the
+            // skill - and that is decided by item class, not by the lock. Measured tonight from
+            // tw_world: Silverleaf (1617) pays 765 Silverleaf (class 7, trade goods) plus a quest
+            // sample, Earthroot pays 2449 (7), Peacebloom's loot pays 2447 (7), Copper Vein pays
+            // copper ore and gems (7) alongside quest items - while Plant Bundle (17282) pays ONLY
+            // 5437 Bathran's Hair (class 12), Bloodpetal Sprout (164958) pays 11315 (12), and Violet
+            // Tragan (141853) pays 8526 (12). The last three are quest plants: gathering them raises
+            // nothing, which is why yesterday's 79 successful Bloodpetal harvests left herbalism at
+            // 4, and why the A113 camping run at Violet Tragan was futile. Knob gather_skill_loot
+            // (default 0 = off; 1 = a gather candidate must have at least one class 7 item).
+            if (!target->IsForced() && trace::IntValue("gather_skill_loot", 0) != 0 &&
+                dynamic_cast<GatherTravelDestination*>(destination) != nullptr)
+            {
+                bool skillLoot = false;
+                for (uint32 lootItem : AI_VALUE2(std::list<uint32>, "entry loot list", destination->GetEntry()))
+                {
+                    ItemPrototype const* proto = sObjectMgr.GetItemPrototype(lootItem);
+                    if (proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
+                    {
+                        skillLoot = true;
+                        break;
+                    }
+                }
+
+                if (!skillLoot)
+                {
+                    ai->TellDebug(requester, "Skipping " + destination->GetTitle() +
+                        " - its loot cannot raise a gathering skill", "debug travel");
+                    reject("gather-no-skill-loot");
+                    continue;
+                }
+            }
+
             if (!target->IsForced() && isActive.find(destination) != isActive.end() && !isActive[destination])
             {
                 reject("inactive-cached");
