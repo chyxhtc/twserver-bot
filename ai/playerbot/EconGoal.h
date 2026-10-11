@@ -113,8 +113,14 @@ namespace econgoal
         return it == Store().end() ? nullptr : &it->second;
     }
 
+    // Both of these ask the knob first: switching goalworker off has to end an open window, or
+    // the bot would stay on the economy profile (quests stripped) with nothing left to close it.
+    // The goal itself stays in the store, so switching the knob back on resumes it - and if its
+    // time box has run out by then the manager closes it as expired on the next tick.
     inline bool Active(uint32 guidLow)
     {
+        if (!Enabled())
+            return false;
         Goal const* goal = Find(guidLow);
         return goal && goal->skill != 0;
     }
@@ -124,6 +130,8 @@ namespace econgoal
     // one skill and nothing else.
     inline uint32 SkillOf(uint32 guidLow)
     {
+        if (!Enabled())
+            return 0;
         Goal const* goal = Find(guidLow);
         return goal ? goal->skill : 0;
     }
