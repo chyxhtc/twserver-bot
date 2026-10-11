@@ -404,6 +404,67 @@ Unit* GrindTargetValue::FindTargetForGrinding(int assistCount)
             continue;
         }
 
+        // A104 (2026-10-11): honour the reach action's give-up list here too.
+        //
+        // ReachTargetAction puts a hostile target it cannot close on for 15 s on the
+        // "unreachable targets" list, and its kind on "unreachable entries", for five
+        // minutes. The first loop above reads "possible attack targets" (built from
+        // "attackers") and therefore inherits AttackersValue::IgnoreTarget, so it goes quiet
+        // - but this loop reads "possible targets" directly and did not, so the give-up was
+        // undone by the very next pick. Measured 2026-10-11 16:22:11-16:30:33: Shorpulog
+        // stood at (-6642,-1243) and logged the same MoveFail pair every 20 s for nine
+        // minutes with XpGainAction at zero, while unreachable_targets.csv held exactly one
+        // give-up row for him (16:22:27, Dark Iron Slaver, 35 yd, nolos). The candidate
+        // survived the pathfind check below through A80's "a quest target one step away is
+        // kept" branch, so nothing bounded the retry.
+        //
+        // Same two maps and the same exception as AttackersValue::IgnoreTarget: a creature
+        // that is attacking the bot in line of sight is reachable (or will come to us) and is
+        // never skipped. Expired stamps are erased on the way past, as they are there.
+        // Hot knob grind_respect_unreachable (default 1, 0 = the old behaviour).
+        if (trace::IntValue("grind_respect_unreachable", 1) != 0)
+        {
+            uint32 const nowMs = WorldTimer::getMSTime();
+            bool givenUp = false;
+
+            std::map<ObjectGuid, uint32>& gone =
+                context->GetValue<std::map<ObjectGuid, uint32>&>("unreachable targets")->Get();
+            auto const gi = gone.find(unit->getObjectGuid());
+            if (gi != gone.end())
+            {
+                if (nowMs < gi->second)
+                {
+                    if (unit->GetVictim() != bot || !bot->IsWithinLOSInMap(unit, true))
+                        givenUp = true;
+                }
+                else
+                    gone.erase(gi);
+            }
+
+            if (!givenUp && unit->IsCreature())
+            {
+                std::map<uint32, uint32>& kinds =
+                    context->GetValue<std::map<uint32, uint32>&>("unreachable entries")->Get();
+                auto const ki = kinds.find(unit->GetEntry());
+                if (ki != kinds.end())
+                {
+                    if (nowMs < ki->second)
+                    {
+                        if (unit->GetVictim() != bot || !bot->IsWithinLOSInMap(unit, true))
+                            givenUp = true;
+                    }
+                    else
+                        kinds.erase(ki);
+                }
+            }
+
+            if (givenUp)
+            {
+                logGrind(unit, "ignored (given up on: no headway to it in 15 s).");
+                continue;
+            }
+        }
+
         if (!AttackersValue::IsValid(unit, bot, nullptr, false, false))
         {
             logGrind(unit, "ignored (is pet or evading/unkillable).");
