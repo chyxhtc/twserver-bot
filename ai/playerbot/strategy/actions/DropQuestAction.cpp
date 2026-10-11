@@ -573,6 +573,23 @@ namespace
         // Release condition: the module learns to open a quest-granted container (that also unblocks
         // the granted-transform family), and the follow-ups are re-entered before they turn grey.
         { 6543, "chain: needs the quest-granted 16783 Bundle of Reports opened for 16746, then three level 19-25 follow-ups (6545/6546/6547) hand in 16746 and reward the Updates; the module cannot open a granted container and the follow-ups are grey for these bots (16746 never obtained once in the pool)" },
+        // 2026-10-11 13:20, four more from the same sweep, each with its own evidence.
+        // 2242 Destiny Calls: 7737 Sethir's Journal has exactly one source row anywhere -
+        // pickpocketing_loot_template entry 6909 (Sethir the Ancient, a level 12 satyr) at -100.
+        // The wowhead top comment says the same ("you need to pick his pocket using stealth").
+        // The module reads pickpocket tables when it indexes item sources (LootValues.cpp:158) but
+        // has no pickpocket ACTION, so the quest looks sourceable and can never be finished.
+        { 2242, "pickpocket: 7737 Sethir's Journal comes only from pickpocketing_loot_template 6909 (Sethir the Ancient) at -100; the module indexes pickpocket tables but has no pickpocket action" },
+        // 3520 Screecher Spirits: the kill objective is creature 8612 Screecher Spirit, which has
+        // no spawn row anywhere. The bramble the quest hands over (10699) carries on-use spell
+        // 12699, and the comment section explains the real step - kill a screecher and use the
+        // bramble on it to capture the spirit. That is the same missing "use the quest item to
+        // summon/capture the objective" step the module already blacklists 348/851/881/5381 for.
+        { 3520, "use-item: the target creature 8612 has no spawn row; the quest grants 10699 (on-use spell 12699) and the spirit is captured by using it, a step the module does not have" },
+        // 2987 / 1027: pure content gaps - the only source object has no spawn row at all.
+        { 2987, "content: 9463 Gordunni Cobalt comes only from gameobject 144064 (loot 100), which has 0 spawn rows in the gameobject table" },
+        { 1027, "content: 5519 Iron Pommel comes only from gameobject 19021, which has 0 spawn rows in the gameobject table" },
+        { 41667, "content: 41735 Enchanted Horse Shoes is a gossip-grant from creature 59138, which has no creature_template row and no spawn row at all" },
         { 1195,  "two-hop: empty phial drops from 4054, use it to fill; no plan and no fill spot in DB" },
         { 40536, "script token 60382: credit is a scripted NPC beaten to half health (issue A47)" },
         { 40567, "script token 60391: credit is gossip option 1 on Bert Mano (issue A47)" },
