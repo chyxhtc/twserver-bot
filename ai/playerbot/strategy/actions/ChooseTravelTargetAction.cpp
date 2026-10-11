@@ -1091,6 +1091,25 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
 
             if (target->IsForced() || (isActive[destination] = destination->IsActive(bot, PlayerTravelInfo(bot))))
             {
+                // A110 (2026-10-12): a gather destination is one ENTRY - all the spawns of one
+                // node type - and its candidate point is whatever this search picked, which for an
+                // entry spread over a continent is not necessarily the spawn nearest the bot.
+                // Measured tonight: a skill-4 herbalist standing in Durotar had Silverleaf (-1617,
+                // 423 spawns world-wide, 143 of them inside Durotar) rejected wholesale as
+                // "enemy-home-zone", while a single-spawn Peacebloom (-1724/-3724) five thousand
+                // yards away was accepted - so the window walked half a continent and never
+                // gathered once. Point the candidate at the destination's own closest point before
+                // the static gates run, so both the gates and the travel consider the spawn the bot
+                // would really go to (same "judge the point you travel to" rule as A98b's fence).
+                // Hot knob gather_point_nearest (default 1, 0 = old behaviour).
+                if (!target->IsForced() && position &&
+                    dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
+                    trace::IntValue("gather_point_nearest", 1) != 0)
+                {
+                    if (WorldPosition* nearest = destination->GetClosestPoint(WorldPosition(bot)))
+                        position = nearest;
+                }
+
                 // Checked after IsActive so the area lookup only happens for
                 // the point that was actually selected.
                 if (!target->IsForced() && position)
@@ -1099,6 +1118,26 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - enemy home zone", "debug travel");
                         reject("enemy-home-zone");
+                        // A110 probe: name the point that was refused and the point the destination
+                        // would have used, so "the entry is bad" and "the point picked was bad" can
+                        // be told apart. One row per bot per entry per 30 minutes.
+                        if (auto* gather = dynamic_cast<GatherTravelDestination*>(destination))
+                        {
+                            (void)gather;
+                            time_t const now = time(nullptr);
+                            std::string const probeKey = "gatherpointreject::" + std::to_string(destination->GetEntry());
+                            time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
+                            if (!lastProbe || now - lastProbe >= 30 * MINUTE)
+                            {
+                                SET_AI_VALUE2(time_t, "manual time", probeKey, now);
+                                WorldPosition* nearest = destination->GetClosestPoint(WorldPosition(bot));
+                                sPlayerbotAIConfig.logEvent(ai, "GatherPointReject",
+                                    std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                    "picked=" + std::to_string((int)position->getX()) + "," + std::to_string((int)position->getY()) +
+                                    "|nearest=" + (nearest ? std::to_string((int)nearest->getX()) + "," + std::to_string((int)nearest->getY()) : "none") +
+                                    "|nearestDist=" + (nearest ? std::to_string((int)nearest->distance(bot)) : "-1"));
+                            }
+                        }
                         // A8: static verdicts (enemy home zone, hostile-town guards, isolated customs
                         // zones) can never change for this bot, so a completed quest whose taker sits
                         // behind one of them is dead weight. Measured 2026-10-04 17:03-17:13: 5921/5922
