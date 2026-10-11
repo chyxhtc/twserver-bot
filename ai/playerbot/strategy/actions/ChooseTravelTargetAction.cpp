@@ -1100,7 +1100,30 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 break;
             }
 
-        if (goalNearby)
+        // A125 (2026-10-12): the window's own candidate flickers between scans, so the window does too.
+        // Measured on Tharuputarr between 06:45 and 06:58: gather destination at 06:45:01, Grind at
+        // 06:56:13, gather destination again at 06:57:33. The gates that decide whether the pool is
+        // offered (a live object nearby, a route without hostile town guards) say yes in one scan and
+        // no in the next, and every scan that says no hands the hour back to grinding - which is the
+        // opposite of what the user defined a window to be (one hour on one skill). So once the goal
+        // has had a real candidate, keep the window focused for goal_focus_hold_min minutes even while
+        // the candidate is momentarily absent. If it stays absent that long, the bot is released to
+        // the ordinary candidate list again, so this can never park a bot for a whole window.
+        // Knob goal_focus_hold_min, default 0 = off (the old behaviour, byte for byte).
+        int32 const holdMinutes = trace::IntValue("goal_focus_hold_min", 0);
+        time_t holdUntil = (time_t)AI_VALUE2(time_t, "manual time", "goal focus hold until");
+        time_t const focusNow = time(nullptr);
+        if (holdMinutes > 0)
+        {
+            if (goalNearby)
+                SET_AI_VALUE2(time_t, "manual time", "goal focus hold until",
+                    focusNow + (time_t)holdMinutes * MINUTE);
+            else if (holdUntil && holdUntil <= focusNow)
+                SET_AI_VALUE2(time_t, "manual time", "goal focus hold until", (time_t)0);
+        }
+        bool const focused = goalNearby || (holdMinutes > 0 && holdUntil > focusNow);
+
+        if (focused)
         {
             size_t const before = ordered.size();
             // A121 (2026-10-12): dropping grinding was not enough. Measured right after A119 went
@@ -1143,7 +1166,8 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 "dropped=" + std::to_string(before - ordered.size()) +
                 "|range=" + std::to_string(goalPreferRange) +
                 "|left=" + std::to_string(ordered.size()) +
-                "|bags=" + std::to_string((uint32)bagUsed));
+                "|bags=" + std::to_string((uint32)bagUsed) +
+                "|held=" + std::to_string(goalNearby ? 0 : 1));
         }
     }
 
