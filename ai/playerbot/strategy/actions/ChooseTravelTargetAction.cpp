@@ -1325,6 +1325,65 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         position = nearest;
                 }
 
+                // A126 (2026-10-12): the gate above the loop judges a gathering destination by its
+                // ENTRY (some spawn of this node type is alive inside the bot's sight) while the point
+                // this candidate travels to is one static spawn, and whether that spawn is an active
+                // object is decided by the gameobject pool: in Tirisfal, 25 of the 51 Peacebloom
+                // spawns, 25 of 69 Silverleaf, 15 of 32 Earthroot and 15 of 45 Copper Vein are up at
+                // once. The work phase then needs the object itself within interaction distance, so a
+                // point that happens to be inactive is a dead end that A113 can only wait out.
+                // Measured on the four goal pilots: every herb/vein work probe today was
+                // seen=0|best=none, while other bots' probes see live objects of other entries at
+                // 7-18 yards - the probe works, the waited-at points are simply not up.
+                // So when the bot can see a live object of this very entry, travel to THAT spawn:
+                // ask the destination for its own point nearest the object and accept it only when it
+                // really sits on the object (<= 2 yards). The point belongs to the destination, so
+                // nothing here can dangle - never hand TravelTarget a stack WorldPosition.
+                // Hot knob gather_point_live (0 = off, ships off; 1 = judge and travel by the live spawn).
+                if (!target->IsForced() && position &&
+                    trace::IntValue("gather_point_live", 0) != 0 &&
+                    dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
+                    destination->GetEntry() < 0)
+                {
+                    uint32 const liveEntry = (uint32)(-destination->GetEntry());
+                    GameObject* bestGo = nullptr;
+                    float bestGoDist = -1.0f;
+                    for (ObjectGuid const& guid : AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los"))
+                    {
+                        GameObject* go = ai->GetGameObject(guid);
+                        if (!go || go->GetEntry() != liveEntry || go->GetMapId() != bot->GetMapId())
+                            continue;
+                        float const dist = bot->GetDistance(go);
+                        if (bestGoDist < 0.0f || dist < bestGoDist)
+                        {
+                            bestGo = go;
+                            bestGoDist = dist;
+                        }
+                    }
+
+                    if (bestGo)
+                    {
+                        WorldPosition const livePos(bestGo);
+                        WorldPosition* livePoint = destination->GetClosestPoint(livePos);
+                        if (livePoint && livePoint->getMapId() == livePos.getMapId() &&
+                            livePoint->distance(livePos) <= 2.0f)
+                        {
+                            position = livePoint;
+                            time_t const now = time(nullptr);
+                            std::string const probeKey = "gatherpointlive::" + std::to_string(destination->GetEntry());
+                            time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
+                            if (!lastProbe || now - lastProbe >= 5 * MINUTE)
+                            {
+                                SET_AI_VALUE2(time_t, "manual time", probeKey, now);
+                                sPlayerbotAIConfig.logEvent(ai, "GatherPointLive",
+                                    std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                    "objectDist=" + std::to_string((int)bestGoDist) +
+                                    "|botToPoint=" + std::to_string((int)bot->GetDistance(livePoint->getX(), livePoint->getY(), livePoint->getZ())));
+                            }
+                        }
+                    }
+                }
+
                 // Checked after IsActive so the area lookup only happens for
                 // the point that was actually selected.
                 if (!target->IsForced() && position)
