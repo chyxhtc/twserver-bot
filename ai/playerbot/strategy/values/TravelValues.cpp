@@ -290,11 +290,25 @@ bool NeedTravelPurposeValue::Calculate()
             return true;
         break;
     case TravelDestinationPurpose::Vendor:
+    {
+        // A122 (2026-10-12): the purpose relevance table (TravelStrategy.cpp) puts AH 6.95,
+        // Vendor 6.94, Repair 6.93, Mail 6.79/6.6 and "should get money" grinding 6.77 ahead of
+        // EVERY gathering purpose at 6.5. The purpose race is therefore decided before any
+        // candidate filtering can matter: measured right after A119+A120+A121 went live, 117
+        // travel-target picks produced not one gathering purpose and the four pilots walked to
+        // vendors instead. So while a window is running the vendor purpose stands down - unless the
+        // bags are nearly full (bag space >= 80), which is exactly the case A109 kept vendors for:
+        // junk, ammo, repairs. Knob: goal_prefer_range (0 = off, same knob as A119/A121).
+        if (econgoal::Active(bot->GetGUIDLow()) && trace::IntValue("goal_prefer_range", 0) > 0 &&
+            AI_VALUE(uint8, "bag space") < 80)
+            return false;
+
         if (AI_VALUE2(bool, "group or", "should sell,can sell,following party"))
             return true;
         if (AI_VALUE2(bool, "has strategy", "free") && AI_VALUE(bool, "should sell") && AI_VALUE(bool, "can sell"))
             return true;
         break;
+    }
     case TravelDestinationPurpose::AH:
     {
         // A109 (2026-10-12): a goal window must not spend itself walking to the auction house.
@@ -366,6 +380,10 @@ bool NeedTravelPurposeValue::Calculate()
     case TravelDestinationPurpose::Boss:
         return AI_VALUE(bool, "can fight boss");
     case TravelDestinationPurpose::Mail:
+        // A122: mail sits at 6.6, also above gathering's 6.5, so it can steal the same race. Mail
+        // survives 30 days by design, so a window may safely skip it.
+        if (econgoal::Active(bot->GetGUIDLow()) && trace::IntValue("goal_prefer_range", 0) > 0)
+            return false;
         return AI_VALUE(bool, "can get mail") && AI_VALUE(bool, "should get mail");
     case TravelDestinationPurpose::Explore:
         return ai->HasStrategy("explore", BotState::BOT_STATE_NON_COMBAT);
