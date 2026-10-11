@@ -1046,16 +1046,31 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
         if (goalNearby)
         {
             size_t const before = ordered.size();
+            // A121 (2026-10-12): dropping grinding was not enough. Measured right after A119 went
+            // live: 117 travel-target picks in six minutes across the four pilots, and NOT ONE was a
+            // gathering purpose - they were Vendor (6), Grind (4) and city (2). The pilot whose
+            // goal candidate really was inside goal_prefer_range (Tharuputarr, 04:12:31,
+            // dropped=0|left=4) still walked to a vendor. So while a window is running and its own
+            // skill has a candidate in range, vendor trips step aside too - but only while the bags
+            // have room: A109's reason for keeping vendors (junk, ammo, repairs) still holds when a
+            // bot is nearly full, so that case keeps them. Knob: the same goal_prefer_range.
+            uint8 const bagUsed = AI_VALUE(uint8, "bag space");
+            bool const bagsNearlyFull = bagUsed >= 80;
             ordered.erase(std::remove_if(ordered.begin(), ordered.end(),
-                [](OrderedCandidate const& candidate)
+                [bagsNearlyFull](OrderedCandidate const& candidate)
                 {
-                    return candidate.destination &&
-                        candidate.destination->GetPurpose() == TravelDestinationPurpose::Grind;
+                    if (!candidate.destination)
+                        return false;
+                    TravelDestinationPurpose const purpose = candidate.destination->GetPurpose();
+                    if (purpose == TravelDestinationPurpose::Grind)
+                        return true;
+                    return !bagsNearlyFull && purpose == TravelDestinationPurpose::Vendor;
                 }), ordered.end());
             sPlayerbotAIConfig.logEvent(ai, "GoalPrefer", econgoal::SkillLabel(preferSkill),
                 "dropped=" + std::to_string(before - ordered.size()) +
                 "|range=" + std::to_string(goalPreferRange) +
-                "|left=" + std::to_string(ordered.size()));
+                "|left=" + std::to_string(ordered.size()) +
+                "|bags=" + std::to_string((uint32)bagUsed));
         }
     }
 
