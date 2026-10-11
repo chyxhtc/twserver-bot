@@ -13,6 +13,7 @@
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/EconGoal.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/QuestGreyRule.h"
 #include "Database/DBCStore.h"
@@ -1014,6 +1015,49 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
     uint32 const lastPartition = partitionedList.empty() ? 0 : std::prev(partitionedList.end())->first;
 
     scanTimer.candidates = (uint32)ordered.size();
+
+    // A119 (2026-10-12): a goal window still loses its own destination to grinding. Measured after
+    // A116 put sane candidates in front of it: the herbalism pilot walked to a 947 yd Peacebloom
+    // pool, arrived within 50 yd, then wandered off to grind grey mobs 180 yd away - so even a
+    // window whose candidate is nearby and correct spends its hour on whatever is closest, and a
+    // node that is not up yet never gets waited for. With the knob on, if the goal's own purpose
+    // has a candidate within goal_prefer_range, grinding destinations are dropped from this scan's
+    // candidate list (vendor/repair/quest stay: bags, repairs and the quest line still matter).
+    // Knob goal_prefer_range (0 = off, ships off; 1000 is the natural value to try).
+    int32 const goalPreferRange = trace::IntValue("goal_prefer_range", 0);
+    if (goalPreferRange > 0 && econgoal::Active(bot->GetGUIDLow()))
+    {
+        uint32 const preferSkill = econgoal::SkillOf(bot->GetGUIDLow());
+        TravelDestinationPurpose const preferPurpose =
+            preferSkill == SKILL_HERBALISM ? TravelDestinationPurpose::GatherHerbalism :
+            preferSkill == SKILL_MINING ? TravelDestinationPurpose::GatherMining :
+            preferSkill == SKILL_SKINNING ? TravelDestinationPurpose::GatherSkinning :
+            TravelDestinationPurpose::None;
+
+        bool goalNearby = false;
+        for (auto& candidate : ordered)
+            if (candidate.destination && candidate.destination->GetPurpose() == preferPurpose &&
+                candidate.distance <= (float)goalPreferRange)
+            {
+                goalNearby = true;
+                break;
+            }
+
+        if (goalNearby)
+        {
+            size_t const before = ordered.size();
+            ordered.erase(std::remove_if(ordered.begin(), ordered.end(),
+                [](OrderedCandidate const& candidate)
+                {
+                    return candidate.destination &&
+                        candidate.destination->GetPurpose() == TravelDestinationPurpose::Grind;
+                }), ordered.end());
+            sPlayerbotAIConfig.logEvent(ai, "GoalPrefer", econgoal::SkillLabel(preferSkill),
+                "dropped=" + std::to_string(before - ordered.size()) +
+                "|range=" + std::to_string(goalPreferRange) +
+                "|left=" + std::to_string(ordered.size()));
+        }
+    }
 
     for (auto& candidate : ordered)
     {
