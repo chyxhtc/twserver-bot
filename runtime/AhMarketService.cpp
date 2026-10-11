@@ -11,6 +11,7 @@
 #include "../ai/playerbot/strategy/values/BudgetValues.h"
 #include "../ai/playerbot/WorldPosition.h"
 #include "../ai/playerbot/GuidPosition.h"
+#include "../ai/playerbot/TraceSwitch.h"
 
 #include "AuctionHouse/AuctionHouseMgr.h"
 #include "ObjectMgr.h"
@@ -1254,7 +1255,17 @@ void AhMarketService::FinishPass()
 
 void AhMarketService::Update(uint32_t diff)
 {
-    if (!sPlayerbotAIConfig.ahMarketEnabled)
+    // 2026-10-11 (level-60 economy prep): AiPlayerbot.AhMarketEnabled is read once at startup,
+    // so a stocking trial meant editing the config and restarting mangosd both to open and to
+    // close the window. The hot three-state key "ahmarket" in bot_diag.conf now overrides it in
+    // both directions (Unset falls back to the config), so the pilot can be switched on for a
+    // bounded window and switched off again without touching the running world. With no key in
+    // the file the behaviour is exactly the config value, i.e. off for this pool.
+    ai::trace::Verdict const ahHot = ai::trace::VerdictOf("ahmarket");
+    bool const ahMarketOn =
+        (ahHot == ai::trace::Verdict::On) ||
+        (ahHot == ai::trace::Verdict::Unset && sPlayerbotAIConfig.ahMarketEnabled);
+    if (!ahMarketOn)
         return;
     if (!sPlayerbotAIConfig.enabled || !sPlayerbotAIConfig.randomBotAutologin)
         return;
