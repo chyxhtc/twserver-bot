@@ -636,6 +636,19 @@ namespace
         // Spyglass after a full day. Release condition: 18960's drop rate is re-checked against
         // the core, or the user reopens it.
         { 7728, "user: wowhead comments call the two Dark Iron drops a time sink or bugged (only ~5 Steamsmith spawns; 30-40 kills with no Tuyere; an hour of group farming with nothing); 18959/18960 do exist at -25 from 5840/8566 but only 4 of 13 holders ever got the Tuyere and none the Spyglass" },
+        // 2026-10-11 11:00, user pointed at the same page shape again: give up on 7722 too.
+        // The objective is not an elite-flagged quest (quest_template.Type = 0), but the
+        // Secret Plans sit on one fixed game object (179826, a single spawn at
+        // -6631.6,-1225.4 in Searing Gorge) deep inside the Cauldron's Slag Pit, behind
+        // Overseer Maltorius and past the Dark Iron Taskmasters/Slavers and Obsidion. The
+        // wowhead comments describe the run as sneak-in-and-dash-out past elites, which is
+        // exactly what this pool cannot do: it has no groups, and Karwarn already died three
+        // times at (-6700,-1300) to Overseer Maltorius in the lethal-spot tally. In tw_char
+        // 7722 has 12 holder rows and only one rewarded, the rest parked at 0/1.
+        // Release condition: the pool gains the ability to fight or skip through an elite
+        // camp (grouping, or the A86 solo-elite knob for far-below-level mobs), or the user
+        // reopens it.
+        { 7722, "user: the Secret Plans (18922) sit on one fixed object (179826) deep in the Cauldron's Slag Pit past Overseer Maltorius and the Dark Iron elite camp; wowhead comments describe it as a sneak-past-elites run, the pool has no groups, Karwarn already died to Maltorius 3 times there, and 11 of 12 holders sit at 0/1" },
     };
 }
 

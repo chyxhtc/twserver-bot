@@ -2,6 +2,7 @@
 #include "TravelValues.h"
 #include "playerbot/TravelMgr.h"
 #include "playerbot/QuestGreyRule.h"
+#include "playerbot/TraceSwitch.h"
 #include "QuestValues.h"
 #include "SharedValueContext.h"
 #include "BudgetValues.h"
@@ -305,11 +306,26 @@ bool NeedTravelPurposeValue::Calculate()
     case TravelDestinationPurpose::GatherSkinning:
     case TravelDestinationPurpose::GatherMining:
     case TravelDestinationPurpose::GatherHerbalism:
+    {
         // Gathering trips walk a bot to a node, and the node is often inside a
         // mob camp: unlike a player, a bot does not clear the camp first (only
         // stealthed classes could work around it). Turning this off leaves
         // grinding and questing as the only travel purposes.
-        if (!sPlayerbotAIConfig.gatherTravelEnabled)
+        //
+        // 2026-10-11 (next-phase economy prep): this used to read only the global
+        // AiPlayerbot.GatherTravelEnabled, so a pilot that wanted gathering for one or two
+        // bots had to switch it on for the whole pool. It now follows the same shape as
+        // travelgrind: a per-bot arm wins, and the hot bot_diag.conf key gathertravel
+        // overrides both directions live (Unset falls through to the arm/config), so the
+        // level-60 production trial can be scoped to a named bot without a restart. With
+        // no arm and no hot key the answer is still exactly the global config, i.e. off
+        // for this pool - wiring this in changes no behaviour on its own.
+        ai::trace::Verdict const gatherHot = ai::trace::VerdictOf("gathertravel");
+        if (gatherHot == ai::trace::Verdict::Off)
+            return false;
+        if (gatherHot == ai::trace::Verdict::Unset &&
+            !sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "gather",
+                sPlayerbotAIConfig.gatherTravelEnabled ? 1 : 0))
             return false;
 
         skill = gatheringSkills.at(purpose);
@@ -319,6 +335,7 @@ bool NeedTravelPurposeValue::Calculate()
         }
 
         return false;
+    }
     case TravelDestinationPurpose::Boss:
         return AI_VALUE(bool, "can fight boss");
     case TravelDestinationPurpose::Mail:
