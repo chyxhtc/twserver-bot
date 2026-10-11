@@ -3241,6 +3241,7 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
                             (uint32)TravelDestinationPurpose::GatherSkinning)) != 0;
         TravelPoint cleanPoint(dest, sTravelMgr.nullWorldPosition, 0.0f);
         float cleanDistance = FLT_MAX;
+        uint32 cleanPartition = 0;
 
         // Quest destinations keep their cross-continent handling (they can trigger a
         // transfer); everything else is filtered here.
@@ -3307,6 +3308,47 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
             {
                 cleanDistance = distance;
                 cleanPoint = TravelPoint(dest, position, distance);
+                cleanPartition = pointRange.first;
+            }
+        }
+
+        // A116 second half: the point above is the nearest spawn inside the nearest distance band,
+        // and a clean spawn often sits in a farther band - in the measured case both near spawns
+        // were inside an enemy home zone and the nearest clean one was thousands of yards further
+        // out. Walk the remaining bands outward for a clean spawn. Capped at four extra bands, so a
+        // pool spread over a continent cannot turn one candidate into a dozen world queries.
+        if (cleanGatherPoint && std::get<2>(cleanPoint) <= 0)
+        {
+            std::vector<uint32> remaining;
+            for (uint32 const band : distancePartitions)
+                if (band > pointRange.first)
+                    remaining.push_back(band);
+
+            for (int attempt = 0; attempt < 4 && !remaining.empty() && std::get<2>(cleanPoint) <= 0; ++attempt)
+            {
+                std::pair<uint32, std::vector<WorldPosition*>> range = dest->GetClosestPartition(center, remaining);
+                if (!range.first)
+                    break;
+
+                float best = FLT_MAX;
+                for (WorldPosition* candidatePoint : range.second)
+                {
+                    if (!candidatePoint || candidatePoint->IsEnemyHomeZoneFor(info.GetTeam()))
+                        continue;
+                    if (IsOtherContinent(center.GetMapId(), candidatePoint->getMapId()))
+                        continue;
+                    if (!IsLocationLevelValid(*candidatePoint, info, purposeFlag, grindZoneFloor))
+                        continue;
+                    float const candidateDistance = candidatePoint->distance(center);
+                    if (candidateDistance > maxDistance || candidateDistance >= best)
+                        continue;
+                    best = candidateDistance;
+                    cleanPoint = TravelPoint(dest, candidatePoint, candidateDistance);
+                    cleanPartition = range.first;
+                }
+
+                for (auto it = remaining.begin(); it != remaining.end(); )
+                    it = (*it == range.first) ? remaining.erase(it) : ++it;
             }
         }
 
@@ -3315,7 +3357,8 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
 
         if (std::get<2>(point) > 0)
         {
-            uint32 partitionKey = pointRange.first;
+            uint32 partitionKey = (cleanGatherPoint && cleanPartition && std::get<2>(cleanPoint) > 0)
+                ? cleanPartition : pointRange.first;
 
             // Quest-hub preference. A quest destination that sits in a hub with quests
             // for this bot's level band competes as if it were closer, so a town is
