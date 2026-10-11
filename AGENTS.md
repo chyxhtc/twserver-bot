@@ -4,6 +4,12 @@
 
 It is a hobby project built for its owner and interested players: pragmatic, small, working changes beat ceremony.
 
+## Communication (owner is a Chinese-speaking WoW player)
+
+- Name game content in Chinese, not by id or English name alone: quests, spells, items, creatures, NPCs, maps, zones, dungeons, classes. Write the Chinese name first and add the id or English name in brackets on first mention as the unique key; use the Chinese name only after that. Keep the source term only where there is no accepted Chinese name, and say what it is.
+- When a technical phrasing is needed, also explain the background the way a WoW player understands it: first what the player sees in game and where they run into it, then the technical detail. Event type codes, DB table and column names, function names and config keys are supplementary, never a substitute for the scene — say which in-game action or visible symptom they correspond to.
+- Self-check: someone who plays WoW but does not read code must be able to say what this is in the game after reading the background part.
+
 ## Product direction
 
 - **Gameplay/AI gold standard: mod-playerbots.** When behaviour can be better, port the modern mod-playerbots behaviour adapted to 1.12 rather than the older shyalya/cmangos lineage this module partly inherited.
