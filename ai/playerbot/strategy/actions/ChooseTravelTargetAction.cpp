@@ -1102,7 +1102,14 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 // the static gates run, so both the gates and the travel consider the spawn the bot
                 // would really go to (same "judge the point you travel to" rule as A98b's fence).
                 // Hot knob gather_point_nearest (default 1, 0 = old behaviour).
+                // A116 interaction (2026-10-12): with gather_pool_nearest_clean on, the candidate's
+                // point is already "this pool's nearest spawn outside an enemy home zone", chosen in
+                // the partition build. Overwriting it here with GetClosestPoint - which is the
+                // nearest spawn overall, enemy zone or not - would put the refused spawn straight
+                // back and the gate would refuse the pool again, wasting A116 entirely. So when
+                // A116 is on this substitution stands down and the partition's choice is trusted.
                 if (!target->IsForced() && position &&
+                    trace::IntValue("gather_pool_nearest_clean", 0) == 0 &&
                     dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
                     trace::IntValue("gather_point_nearest", 1) != 0)
                 {
