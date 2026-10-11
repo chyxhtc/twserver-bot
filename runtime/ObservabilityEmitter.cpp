@@ -764,6 +764,35 @@ void ObservabilityEmitter::Update(uint32 diff)
                 track.stationaryMovementMs = 0;
                 track.stuckReported = false;
             }
+
+            // A103 probe (2026-10-11, record only): the falling flag gates CanMove(), so a bot
+            // flagged as falling with a ready travel target stops moving entirely - measured
+            // 5024 TravelMoveImpossible rows in a day, 4656 of them with falling=1, on all 50
+            // bots, in bursts up to ~3 minutes (~42 bot-hours, ~5% of pool time). A78's watchdog
+            // clears the flag once the bot also stops displacing, which answers "is it stuck"
+            // but not "who set it again": 4656 rows against 795 clears. This records the 0 -> 1
+            // transition with the context that should name the source (a jump, a knock-back, or a
+            // landing that never arrived), once per bot per 30 s.
+            bool const fallingNow = bot->IsFalling();
+            if (fallingNow && !track.wasFalling &&
+                (track.lastFallStartReportMs == 0 || nowMs - track.lastFallStartReportMs >= 30000))
+            {
+                track.lastFallStartReportMs = nowMs;
+                TravelTarget* ft = ai->GetAiObjectContext()
+                    ->GetValue<TravelTarget*>("travel target")->Get();
+                std::ostringstream fss;
+                fss << "motion=" << (uint32)bot->GetMotionMaster()->GetCurrentMovementGeneratorType()
+                    << "|jump=" << (ai->IsJumping() ? 1 : 0)
+                    << "|z=" << (int)bot->GetPositionZ()
+                    << "|travel=" << (ft ? (uint32)ft->GetStatus() : 0)
+                    << "|dist=" << (ft && ft->getPosition() ? (int)ft->getPosition()->distance(bot) : -1)
+                    << "|lastAction=" << (track.lastActionName.size() > 48
+                                          ? track.lastActionName.substr(0, 48) : track.lastActionName);
+                sPlayerbotAIConfig.logEvent(ai, "FallStartProbe",
+                    ai->IsJumping() ? "jumping" : "falling", fss.str());
+            }
+            track.wasFalling = fallingNow;
+
             track.lastX = bot->GetPositionX();
             track.lastY = bot->GetPositionY();
             track.lastZ = bot->GetPositionZ();

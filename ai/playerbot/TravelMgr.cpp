@@ -12,6 +12,7 @@
 #include "PlayerbotAI.h"
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/QuestGreyRule.h"
 #include "ObjectAccessor.h"
 
 using namespace ai;
@@ -241,6 +242,20 @@ bool QuestRelationTravelDestination::IsActive(Player* bot, const PlayerTravelInf
 
     if (GetRelation() == 0)
     {
+        // A103 (2026-10-11): a quest-giver destination must not be offered for a quest the
+        // accept gate will refuse anyway. The value below only asks the core ("can accept quest
+        // npc::14624"), and the core does not know about the module's blacklist - so after 7722
+        // was blacklisted, Shorpulog kept walking to giver 14624, opened its menu every 20 s and
+        // had 7722 refused by QuestAcceptGate 17 times that day while standing in a pocket with
+        // no usable grind target (that is what the platform's output-stall bucket was showing).
+        // Each destination carries exactly one quest, so this only removes the dead giver.
+        if (char const* blackReason = questgrey::QuestBlacklistReason(
+                sObjectMgr.GetQuestTemplate(GetQuestId())))
+        {
+            (void)blackReason;
+            return false;
+        }
+
         if (!bot->GetMap()->IsContinent() && (GetClosestPoint(bot)->GetMapId() != bot->GetMapId())) //This gives issues for bot->CanTakeQuest so stop here.
             return false;
 

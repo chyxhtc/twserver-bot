@@ -91,6 +91,12 @@ public:
         uint32 unreachableDurationMs = 0;
         bool unreachableReported = false;
         uint32 lastUnreachableReportMs = 0;
+
+        // A103 probe: the last IsFalling() reading, plus the throttle for the 0 -> 1
+        // transition row. The flag gates CanMove(), so knowing who sets it again after
+        // A78's watchdog clears it is what the next fix needs.
+        bool wasFalling = false;
+        uint32 lastFallStartReportMs = 0;
     };
 
 public:
