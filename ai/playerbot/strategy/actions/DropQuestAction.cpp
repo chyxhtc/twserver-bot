@@ -742,6 +742,52 @@ char const* QuestBlacklistReason(Quest const* quest)
     for (BlacklistEntry const& entry : questBlacklist)
         if (entry.questId == quest->GetQuestId())
             return entry.reason;
+
+    // A106 (2026-10-11): the "repeatable turn-in with nothing in it" shape.
+    //
+    // The user pointed at 889 Spirit of the Wind and asked whether it gets repeated. It does, and
+    // it is not alone: Mangletooth (3430) hands out six repeatable quests that all eat the same
+    // Blood Shard (5075) and pay a bot nothing it can use - 889 (10 shards -> spell 16618) plus
+    // 5042/5043/5044/5045/5046 (4 shards each -> one buff spell apiece). Measured before the fix:
+    // Sarkhol completed 889 on 10-09 15:37:31 and re-accepted it in the same second (that is the
+    // repeatable re-take), then it was dropped as hand-in-unreachable:889 two minutes later; on
+    // 10-10 the pair generated 162 objective trips for it, today another 18, and both still hold
+    // it (9/10 and 5/10) because the last shards cannot be looted (LootSkipNeed
+    // reason=no-lootable-flag, the A44 core shape). It is also what keeps entry 3430 at the top
+    // of the platform's inactive-candidate list - ~1600 tokens a day.
+    //
+    // The rule is deliberately narrower than "repeatable": the whole payout has to be a spell -
+    // no xp, no money now or at max level, no item, no choice, no reputation, no mail - and the
+    // quest must not lead anywhere (NextQuestId == 0) and must not be a class quest. In this
+    // world that is 11 quests: 889, 3421, 3503, 3567, 5042-5046, 7429, 40004. Nothing of value is
+    // being thrown away: the module already refuses to learn spells from repeatable quests
+    // (AutoLearnSpellAction::LearnQuestSpells returns early on IsRepeatable), and 7429 is a
+    // dungeon quest the A87 gate refuses anyway. Hot knob blacklist_repeatable_noreward
+    // (default 1, 0 = the old behaviour).
+    if (trace::IntValue("blacklist_repeatable_noreward", 1) != 0 &&
+        quest->IsRepeatable() &&
+        quest->GetRequiredClasses() == 0 &&
+        quest->GetRewXP() == 0 &&
+        quest->GetRewOrReqMoney() == 0 &&
+        quest->GetRewMoneyMaxLevel() == 0 &&
+        (quest->GetRewSpell() || quest->GetRewSpellCast()) &&
+        quest->GetRewMailTemplateId() == 0 &&
+        quest->GetNextQuestId() == 0)
+    {
+        bool material = false;
+        for (uint8 i = 0; i < QUEST_REWARDS_COUNT && !material; ++i)
+            material = quest->RewItemId[i] != 0;
+        for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT && !material; ++i)
+            material = quest->RewChoiceItemId[i] != 0;
+        for (uint8 i = 0; i < QUEST_REPUTATIONS_COUNT && !material; ++i)
+            material = quest->RewRepFaction[i] != 0 && quest->RewRepValue[i] != 0;
+
+        if (!material)
+            return "repeatable turn-in whose only payout is a spell (0 xp, 0 money, no item, "
+                "no reputation); the module never learns spells from a repeatable quest, so a bot "
+                "gains nothing and only re-walks the same objective";
+    }
+
     return nullptr;
 }
 }} // namespace ai::questgrey
