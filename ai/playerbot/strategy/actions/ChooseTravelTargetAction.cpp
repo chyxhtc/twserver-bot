@@ -1352,6 +1352,41 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             travelPurposeName,
             std::to_string(considered) + "|" + (hasTarget ? "picked" : "none") + "|" + out.str() +
             "|rej=" + rejectionDetail());
+
+        // A112 probe (2026-10-12): a goal window can only gather from destinations the travel
+        // search was actually offered, and the summary above only describes the purpose that WON.
+        // Measured tonight on the economy pilot: a window ran for twenty minutes, picked a vendor
+        // 38 yards away, and logged no gather row at all - which leaves two very different stories
+        // ("no node was on offer" vs "a node was on offer and something closer won") looking
+        // identical in the logs. This row separates them: how many gathering destinations were in
+        // the ordered candidate list, how far the nearest one was, and what the search took
+        // instead. Read-only, no behaviour.
+        {
+            uint32 gatherOffered = 0;
+            float gatherNearest = -1.0f;
+            for (auto& candidate : ordered)
+            {
+                if (!candidate.destination)
+                    continue;
+
+                TravelDestinationPurpose const candidatePurpose = candidate.destination->GetPurpose();
+                if (candidatePurpose != TravelDestinationPurpose::GatherHerbalism &&
+                    candidatePurpose != TravelDestinationPurpose::GatherMining &&
+                    candidatePurpose != TravelDestinationPurpose::GatherSkinning)
+                    continue;
+
+                ++gatherOffered;
+                if (gatherNearest < 0.0f || candidate.distance < gatherNearest)
+                    gatherNearest = candidate.distance;
+            }
+
+            sPlayerbotAIConfig.logEvent(ai, "GatherOfferScan",
+                travelPurposeName,
+                "offered=" + std::to_string(gatherOffered) +
+                "|nearest=" + (gatherNearest < 0.0f ? std::string("none") : std::to_string((int)gatherNearest)) +
+                "|all=" + std::to_string(ordered.size()) +
+                "|picked=" + (hasTarget ? std::to_string((int)target->Distance(bot)) : std::string("-1")));
+        }
     }
 
     return hasTarget;
