@@ -3346,7 +3346,20 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
         (purposeFlag & ((uint32)TravelDestinationPurpose::QuestGiver |
                         (uint32)TravelDestinationPurpose::QuestTaker |
                         (uint32)TravelDestinationPurpose::QuestAllObjective)) != 0;
-    if (pointMap.empty() && probeTotal && questPurposeSearch)
+    // A115 (2026-10-12): the same counters answer tonight's open question on the GATHER side.
+    // Measured: the herbalism pilot's scans report all=323 candidates and offered=0 gathering
+    // destinations, and A113 (which widens the IsActive acceptance) never fires for him - so the
+    // herb pools are dropped before the candidate list, somewhere in this build. Until now the
+    // per-reason line below only ran for quest purposes, which left "no partition", "no usable
+    // point" and "rejected by level / distance / continent" indistinguishable on the gather side.
+    // Widening the condition costs one line per empty gather search, and only economy-window bots
+    // ever run one.
+    bool const gatherPurposeSearch =
+        (purposeFlag & ((uint32)TravelDestinationPurpose::GatherHerbalism |
+                        (uint32)TravelDestinationPurpose::GatherMining |
+                        (uint32)TravelDestinationPurpose::GatherSkinning |
+                        (uint32)TravelDestinationPurpose::GatherFishing)) != 0;
+    if (pointMap.empty() && probeTotal && (questPurposeSearch || gatherPurposeSearch))
     {
         std::string questIds;
         for (int32 entry : entries)
@@ -3355,8 +3368,9 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
                 questIds += ",";
             questIds += std::to_string(entry);
         }
-        sLog.outBasic("PARTPROBE: %s level %u quest=%s, %u destinations, none survived - %u had no partition, %u no usable point; points rejected: %u by level, %u by distance, %u on the other continent (max allowed %.0f, farthest seen %u)",
-            destinations.front()->GetShortName().c_str(), info.GetLevel(), questIds.empty() ? "-" : questIds.c_str(),
+        sLog.outBasic("PARTPROBE: %s level %u purpose=%u quest=%s, %u destinations, none survived - %u had no partition, %u no usable point; points rejected: %u by level, %u by distance, %u on the other continent (max allowed %.0f, farthest seen %u)",
+            destinations.front()->GetShortName().c_str(), info.GetLevel(), purposeFlag,
+            questIds.empty() ? "-" : questIds.c_str(),
             probeTotal, probeNoPartition, probeNoPoint,
             probeRejectLevel, probeRejectDistance, probeRejectContinent, maxDistance, probeFarthest);
     }
