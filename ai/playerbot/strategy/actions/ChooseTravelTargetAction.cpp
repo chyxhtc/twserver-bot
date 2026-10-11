@@ -835,6 +835,36 @@ static bool RouteIsSurvivable(Player* bot, WorldPosition* position, std::string&
     return ok;
 }
 
+// A120c (2026-10-12): one place decides whether a gathering pool can raise the skill, so the two
+// users of that answer cannot disagree.
+//   - A120 uses it in the candidate loop, where the answer also writes the reject reason
+//     (gather-no-skill-loot) and the A123 probe row.
+//   - A119 uses it when it asks whether the running window's own skill has a candidate in range,
+//     BEFORE dropping grinding/vendor candidates from the list.
+// Without the second use the window is fooled: measured 05:42, Warkryrzith's GoalPrefer fired with
+// dropped=0|left=2 (so A119 believed a herbalism candidate was in range), A120 then rejected both
+// candidates as quest-item-only plants, and he walked to a city instead of gathering. The knob
+// returns true (no opinion) when it is off, which keeps the old behaviour byte for byte.
+static bool GatherLootCanRaiseSkill(ai::TravelDestination* destination)
+{
+    if (ai::trace::IntValue("gather_skill_loot", 0) == 0)
+        return true;
+
+    ai::TravelDestinationPurpose const purpose = destination->GetPurpose();
+    if (purpose != ai::TravelDestinationPurpose::GatherHerbalism &&
+        purpose != ai::TravelDestinationPurpose::GatherMining)
+        return true; // skinning and everything else are not judged here (see A120b)
+
+    for (uint32 lootItem : GAI_VALUE2(std::list<uint32>, "entry loot list", destination->GetEntry()))
+    {
+        ItemPrototype const* proto = sObjectMgr.GetItemPrototype(lootItem);
+        if (proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
+            return true;
+    }
+
+    return false;
+}
+
 bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* target, PartitionedTravelList& partitionedList, bool onlyActive)
 {
     bool distanceCheck = true;
@@ -1062,7 +1092,9 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
         bool goalNearby = false;
         for (auto& candidate : ordered)
             if (candidate.destination && candidate.destination->GetPurpose() == preferPurpose &&
-                candidate.distance <= (float)goalPreferRange)
+                candidate.distance <= (float)goalPreferRange &&
+                GatherLootCanRaiseSkill(candidate.destination)) // A120c: do not be fooled by a pool
+                                                                 // this same filter is about to reject
             {
                 goalNearby = true;
                 break;
@@ -1138,29 +1170,14 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             // nothing, which is why yesterday's 79 successful Bloodpetal harvests left herbalism at
             // 4, and why the A113 camping run at Violet Tragan was futile. Knob gather_skill_loot
             // (default 0 = off; 1 = a gather candidate must have at least one class 7 item).
-            if (!target->IsForced() && trace::IntValue("gather_skill_loot", 0) != 0 &&
+            if (!target->IsForced() &&
                 dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
-                (destination->GetPurpose() == TravelDestinationPurpose::GatherHerbalism ||
-                 destination->GetPurpose() == TravelDestinationPurpose::GatherMining))
+                !GatherLootCanRaiseSkill(destination))
             {
-                bool skillLoot = false;
-                for (uint32 lootItem : GAI_VALUE2(std::list<uint32>, "entry loot list", destination->GetEntry()))
-                {
-                    ItemPrototype const* proto = sObjectMgr.GetItemPrototype(lootItem);
-                    if (proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
-                    {
-                        skillLoot = true;
-                        break;
-                    }
-                }
-
-                if (!skillLoot)
-                {
-                    ai->TellDebug(requester, "Skipping " + destination->GetTitle() +
-                        " - its loot cannot raise a gathering skill", "debug travel");
-                    reject("gather-no-skill-loot");
-                    continue;
-                }
+                ai->TellDebug(requester, "Skipping " + destination->GetTitle() +
+                    " - its loot cannot raise a gathering skill", "debug travel");
+                reject("gather-no-skill-loot");
+                continue;
             }
 
             if (!target->IsForced() && isActive.find(destination) != isActive.end() && !isActive[destination])
