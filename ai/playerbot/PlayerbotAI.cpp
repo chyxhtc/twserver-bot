@@ -834,6 +834,42 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         }
     }
 
+    // A111 second half (2026-10-12): the stall guard above wants the bot standing still and out
+    // of combat, but tonight's environment deaths are not all of that shape. The sixteen deaths
+    // of the night cluster in named wet or molten places - The Slag Pit in Searing Gorge twice,
+    // Un'Goro Crater four times (one of them The Marshlands), Camp E'thok in Thousand Needles
+    // twice, Bael Modan / Southern Barrens twice, Flaxwhisker Front in Dustwallow, Bloodvenom
+    // Post in Felwood, Ashenvale, Tel'Abim - and several came seconds after an attack (a
+    // Bloodpetal Lasher, a Highvale Gorilla, a Galak Marauder), so the bot was fighting in lava
+    // or shallow water rather than idling in it. A bot standing in liquid with its health falling
+    // has to reach dry ground whether or not it is moving, so this half fires on the health
+    // instead of on the displacement. Knob water_lowhp_pct (0 = off, ships off; 40-50 is the
+    // range to try). It shares the 180 s stamp with the stall guard, so one bad spot cannot be
+    // rescued twice in a row. Note the open question: whether lava reports as water - the probe
+    // row's position will show it, which is one reason to run this knob only after the first
+    // probe read.
+    {
+        int32 const lowHpPct = trace::IntValue("water_lowhp_pct", 0);
+        if (lowHpPct > 0 && (bot->IsInWater() || sServerFacade.IsUnderwater(bot)) &&
+            (int32)GetHealthPercent() < lowHpPct &&
+            sRandomBotFacade.GetValue(bot, "water stall rescue") == 0)
+        {
+            WorldPosition dry(bot);
+            if (dry.ClosestCorrectPoint(400.0f, 40.0f, bot->GetInstanceId()) &&
+                bot->TeleportTo(dry.getMapId(), dry.getX(), dry.getY(), dry.getZ(), bot->GetOrientation(), 0))
+            {
+                sRandomBotFacade.SetValue(bot, "water stall rescue", 1, {}, 180);
+                sPlayerbotAIConfig.logEvent(this, "WaterLowHpRescue",
+                    std::to_string((uint32)GetHealthPercent()) + "%",
+                    "dist=" + std::to_string((int)bot->GetDistance(dry.getX(), dry.getY(), dry.getZ())) +
+                        "|from=" + std::to_string((int)bot->GetPositionX()) + "|" +
+                        std::to_string((int)bot->GetPositionY()) + "|" + std::to_string((int)bot->GetPositionZ()) +
+                        "|to=" + std::to_string((int)dry.getX()) + "|" + std::to_string((int)dry.getY()) +
+                        "|" + std::to_string((int)dry.getZ()));
+            }
+        }
+    }
+
     // A107 (2026-10-11): the economy goal layer (see playerbot/EconGoal.h).
     //
     // A quest is a goal the game hands out; gathering and crafting are goals somebody has to
