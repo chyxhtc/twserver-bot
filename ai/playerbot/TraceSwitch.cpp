@@ -153,4 +153,16 @@ int IntValue(std::string const& key, int fallback)
         return fallback;
     return (int)parsed;
 }
+
+std::string StringValue(std::string const& key, std::string const& fallback)
+{
+    // Same refresh trick as IntValue: this key is not a category, so the call only brings the
+    // cached copy up to date before the lookup.
+    VerdictOf("__knob__");
+
+    auto const it = rawValues.find(key);
+    if (it == rawValues.end())
+        return fallback;
+    return it->second;
+}
 }}

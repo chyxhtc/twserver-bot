@@ -3,6 +3,7 @@
 #include "playerbot/TravelMgr.h"
 #include "playerbot/QuestGreyRule.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/Econ60Rule.h"
 #include "QuestValues.h"
 #include "SharedValueContext.h"
 #include "BudgetValues.h"
@@ -323,9 +324,13 @@ bool NeedTravelPurposeValue::Calculate()
         ai::trace::Verdict const gatherHot = ai::trace::VerdictOf("gathertravel");
         if (gatherHot == ai::trace::Verdict::Off)
             return false;
+        // A105: a bot on the post-level-60 profile gathers too. It is a third source next to
+        // the arm and the global config, and it sits below an explicit gathertravel value so
+        // writing gathertravel=0 still silences the whole pool (including the 60s).
         if (gatherHot == ai::trace::Verdict::Unset &&
             !sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "gather",
-                sPlayerbotAIConfig.gatherTravelEnabled ? 1 : 0))
+                sPlayerbotAIConfig.gatherTravelEnabled ? 1 : 0) &&
+            !econ60::Wanted((int)bot->GetLevel()))
             return false;
 
         skill = gatheringSkills.at(purpose);

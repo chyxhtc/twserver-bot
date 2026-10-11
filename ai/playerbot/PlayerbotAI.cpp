@@ -10,6 +10,7 @@
 
 #include "playerbot/AiFactory.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/Econ60Rule.h"
 
 #include "../../runtime/ObservabilityEmitter.h"
 #include "../../runtime/BotActivityLease.h"
@@ -723,6 +724,47 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                         "|motion=" + std::to_string((uint32)bot->GetMotionMaster()->GetCurrentMovementGeneratorType()));
                 }
             }
+        }
+    }
+
+    // A105 (2026-10-11): the post-level-60 profile switch (see playerbot/Econ60Rule.h).
+    //
+    // The economy chain is off in this deployment because it fought the leveling mainline; at
+    // level 60 that conflict ends and the plan is to hand the maxed bots to the production
+    // trial. AiPlayerbot.BotArms is read once at startup, so a bot that dings 60 while online
+    // would keep the leveling profile until the next restart - this block is the hot,
+    // level-gated counterpart: econ60 / econ60_level / econ60_nc / econ60_off_nc in
+    // bot_diag.conf, all defaulting to today's behaviour.
+    //
+    // Applied on the transition only (one ChangeStrategy per bot per flip, nothing per tick),
+    // remembered per bot below, and the reverse string is applied when the knob goes back to 0
+    // or the bot drops under the threshold - so the switch is testable in both directions
+    // without a rebuild. Every flip writes one Econ60Switched row naming the delta that ran.
+    {
+        static std::map<uint32, uint32> econSwitched;
+        uint32 const econGuid = bot->GetGUIDLow();
+        bool const econWanted = econ60::Wanted((int)bot->GetLevel());
+        bool const econHave = econSwitched.find(econGuid) != econSwitched.end();
+
+        if (econWanted && !econHave)
+        {
+            std::string const nc = econ60::Nc();
+            ChangeStrategy(nc, BotState::BOT_STATE_NON_COMBAT);
+            econSwitched[econGuid] = (uint32)bot->GetLevel();
+            sPlayerbotAIConfig.logEvent(this, "Econ60Switched",
+                "on|level=" + std::to_string((uint32)bot->GetLevel()) +
+                "|threshold=" + std::to_string(econ60::Level()),
+                "nc=" + nc);
+        }
+        else if (!econWanted && econHave)
+        {
+            std::string const nc = econ60::OffNc();
+            ChangeStrategy(nc, BotState::BOT_STATE_NON_COMBAT);
+            econSwitched.erase(econGuid);
+            sPlayerbotAIConfig.logEvent(this, "Econ60Switched",
+                "off|level=" + std::to_string((uint32)bot->GetLevel()) +
+                "|threshold=" + std::to_string(econ60::Level()),
+                "nc=" + nc);
         }
     }
 

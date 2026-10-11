@@ -54,6 +54,12 @@ namespace ai { namespace trace
     // key is missing or not a number. Also re-read on the same 2 s timestamp check.
     int IntValue(std::string const& key, int fallback);
 
+    // Text setting from the same file, e.g. "econ60_nc=+gather,+rpg craft". Returns fallback
+    // when the key is missing. NOTE: the reload lowercases every value (it was written for the
+    // on/off categories), and everything from a # to the end of the line is dropped, so a
+    // string knob must be lowercase and must not contain #.
+    std::string StringValue(std::string const& key, std::string const& fallback);
+
     // Force a re-read on the next call (used by tests and by the startup banner).
     void Invalidate();
 }}
