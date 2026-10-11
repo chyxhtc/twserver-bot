@@ -43,17 +43,36 @@ namespace econgoal
     inline int  CooldownMinutes() { return trace::IntValue("goal_cooldown_min", 10); }
     inline std::string Pilot()    { return trace::StringValue("goal_pilot", std::string()); }
 
-    // The diag file lowercases every value, so the pilot name is compared that way.
+    // The diag file lowercases every value, so pilot names are compared that way and the knob
+    // accepts a comma-separated list (one pilot per experiment, or a few during an overnight run).
     inline bool NameIsPilot(std::string const& botName)
     {
-        std::string const pilot = Pilot();
-        if (pilot.empty() || botName.size() != pilot.size())
+        std::string const pilots = Pilot();
+        if (pilots.empty() || botName.empty())
             return false;
 
-        for (size_t i = 0; i < pilot.size(); ++i)
-            if ((char)std::tolower((unsigned char)botName[i]) != pilot[i])
-                return false;
-        return true;
+        std::string lowered;
+        for (char c : botName)
+            lowered += (char)std::tolower((unsigned char)c);
+
+        size_t start = 0;
+        while (start <= pilots.size())
+        {
+            size_t const comma = pilots.find(',', start);
+            std::string name = pilots.substr(start, comma == std::string::npos
+                ? std::string::npos : comma - start);
+
+            size_t const first = name.find_first_not_of(" \t");
+            size_t const last = name.find_last_not_of(" \t");
+            name = (first == std::string::npos) ? std::string() : name.substr(first, last - first + 1);
+
+            if (!name.empty() && name == lowered)
+                return true;
+            if (comma == std::string::npos)
+                break;
+            start = comma + 1;
+        }
+        return false;
     }
 
     inline bool WorkerFor(int botLevel, std::string const& botName)

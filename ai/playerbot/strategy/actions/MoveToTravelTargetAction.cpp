@@ -687,6 +687,68 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 }
             }
 
+            // A108 (2026-10-12): the rescue above helps when the DESTINATION is the problem.
+            // This one covers the bot itself sitting on a cell the navmesh cannot path out of.
+            // Measured overnight (2026-10-12 00:34-00:39): Tharuputarr swimming off Durotar's
+            // coast at z = -2 got pathPoints = 1 for EVERY destination, so each freshly picked
+            // target was dropped the moment it was picked - the retry count climbed 22 -> 50 in
+            // four minutes while the pick/drop pair repeated every six seconds and he never
+            // moved a yard. Two things keep such a bot frozen indefinitely: the pool's "breath"
+            // cheat stops him drowning, and TryRandomTeleport only runs at login, so nothing
+            // else would ever have freed him.
+            //
+            // Trigger: the move retry budget is already spent (we are inside that branch) AND
+            // the bot has not displaced for travel_stuck_sec. Action: teleport to the nearest
+            // walkable ground polygon - ClosestCorrectPoint includes NAV_GROUND and excludes
+            // NAV_WATER / steep ground, so it answers "the land nearest to me" - then keep the
+            // target (retry reset) so the bot retries the leg from a place it can move from.
+            // Rate-limited by the same per-bot "last mile teleport" stamp (5 min), so a
+            // genuinely bad spot cannot turn into a teleport loop.
+            // Hot knobs: travel_stuck_unstick (default 0 = off), travel_stuck_sec (default 45).
+            if (trace::IntValue("travel_stuck_unstick", 0) != 0 &&
+                !bot->IsInCombat() && LastMileAllowed(bot) &&
+                sRandomBotFacade.GetValue(bot, "last mile teleport") == 0)
+            {
+                struct StuckRescueMark { float x = 0.0f; float y = 0.0f; float z = 0.0f; uint32 sinceMs = 0; };
+                static std::map<uint32, StuckRescueMark> stuckRescueMarks;
+                StuckRescueMark& mark = stuckRescueMarks[bot->GetGUIDLow()];
+
+                uint32 const stuckNowMs = WorldTimer::getMSTime();
+                float const stuckMoved = std::fabs(mark.x - bot->GetPositionX()) +
+                    std::fabs(mark.y - bot->GetPositionY()) + std::fabs(mark.z - bot->GetPositionZ());
+                int32 const stuckSec = trace::IntValue("travel_stuck_sec", 45);
+
+                if (!mark.sinceMs || stuckMoved > 3.0f)
+                {
+                    mark.x = bot->GetPositionX();
+                    mark.y = bot->GetPositionY();
+                    mark.z = bot->GetPositionZ();
+                    mark.sinceMs = stuckNowMs;
+                }
+                else if (stuckSec > 0 &&
+                    WorldTimer::getMSTimeDiff(mark.sinceMs, stuckNowMs) >= (uint32)stuckSec * 1000)
+                {
+                    WorldPosition rescue(bot);
+                    if (rescue.ClosestCorrectPoint(400.0f, 40.0f, bot->GetInstanceId()))
+                    {
+                        float const rescueDistance = botLocation.distance(rescue);
+                        if (bot->TeleportTo(rescue.getMapId(), rescue.getX(), rescue.getY(), rescue.getZ(),
+                                bot->GetOrientation(), 0))
+                        {
+                            sRandomBotFacade.SetValue(bot, "last mile teleport", 1, {}, 300);
+                            sPlayerbotAIConfig.logEvent(ai, "TravelStuckUnstuck",
+                                std::to_string((int32)rescueDistance),
+                                std::to_string((int32)rescue.getX()) + "|" + std::to_string((int32)rescue.getY()) +
+                                    "|" + std::to_string((int32)rescue.getZ()) +
+                                    "|stuckSec=" + std::to_string(stuckSec));
+                            stuckRescueMarks.erase(bot->GetGUIDLow());
+                            target->SetRetry(true, 0);
+                            return true;
+                        }
+                    }
+                }
+            }
+
             ai->TellDebug(ai->GetMaster(), "The target is unreachable, dropping it so other travel still works.", "debug travel");
             // Six failed moves in a row means this spot is effectively
             // unreachable from here (no path, other continent, geometry).

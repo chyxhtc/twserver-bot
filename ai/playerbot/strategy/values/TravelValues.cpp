@@ -296,11 +296,25 @@ bool NeedTravelPurposeValue::Calculate()
             return true;
         break;
     case TravelDestinationPurpose::AH:
+    {
+        // A109 (2026-10-12): a goal window must not spend itself walking to the auction house.
+        // Measured 00:47-00:49 on the goal layer's new pilot: the window opened at 00:47:05
+        // (herbalism 5 -> 30) and the travel layer immediately committed him to an AH leg 3.5k
+        // yards away (TravelMoveFailed purpose=1024 = AH, dist 3783 -> 3466), and the first pilot
+        // spent his hour the same way - so the window produced no gathering at all. This phase is
+        // meant to be gather/craft first and trading later (经济系统-阶段1-现状与试点计划.md 第六节),
+        // so while a goal is open the auction purpose stays closed. Vendor selling is untouched:
+        // those trips are short, they clear the bags and they buy ammo/food, so a window that
+        // gathers for an hour still gets rid of its junk. Hot knob goal_no_ah (default 1).
+        if (econgoal::Active(bot->GetGUIDLow()) && trace::IntValue("goal_no_ah", 1) != 0)
+            return false;
+
         if (AI_VALUE2(bool, "group or", "should ah sell,can ah sell,following party"))
             return true;
         if (AI_VALUE2(bool, "has strategy", "free") && AI_VALUE(bool, "should ah sell") && AI_VALUE(bool, "can ah sell"))
             return true;
         break;
+    }
     case TravelDestinationPurpose::GatherFishing:
         if (!AI_VALUE2(bool, "has strategy", "tfish"))
             return false;
