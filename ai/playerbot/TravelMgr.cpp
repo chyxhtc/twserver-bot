@@ -221,6 +221,18 @@ bool QuestRelationTravelDestination::IsPossible(const PlayerTravelInfo& info) co
     WorldPosition* point = GetClosestPoint(info.getPosition());
     if (point)
     {
+
+        // A114 (2026-10-12): the quest and grind sides already refuse destinations behind an
+        // instance portal (A87's gate, mirrored to the quest log by A96) - the gathering side
+        // never got that gate. Measured tonight: the herbalism pilot's 01:55:58 pick was
+        // "Wailing Caverns|-13891|-672|-2006", a herb node inside the instance, which a random
+        // bot cannot walk to at all. Reject a destination whose own point sits in a dungeon the
+        // bot is not standing in; a bot inside that dungeon keeps its candidates. Knob
+        // gather_no_instance (0 = off, ships off with the rest of tonight's changes).
+        if (trace::IntValue("gather_no_instance", 0) != 0 &&
+            point->getMapId() != info.getPosition().getMapId() && point->isDungeon())
+            return false;
+
         int32 destAreaLevel = point->GetAreaLevel();
         if (destAreaLevel > 0 && destAreaLevel > (int32)info.GetLevel() + AreaLevelMargin())
             return false;
