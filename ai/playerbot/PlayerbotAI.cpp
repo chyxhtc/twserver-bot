@@ -728,6 +728,112 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         }
     }
 
+    // A111 (2026-10-12): a bot that swims into open water and cannot get out dies of fatigue.
+    // That is tonight's single biggest death cause in the pool (ten "Environment" deaths between
+    // 00:00 and 01:13, more than any mob), and it landed on both economy pilots while they were
+    // walking to a gather node - which is why it belongs to this layer and not to the travel one.
+    //
+    // The mechanics that ought to save such a bot do not apply: the "breath" cheat covers
+    // drowning, not fatigue; TryRandomTeleport runs at login only; the A78 fall watchdog wants a
+    // falling/jumping flag; and the four travel watchdogs (A34/A79/A50/A91) plus A108's rescue
+    // all want a live or just-dropped travel target, while a bot gathering or grinding in the
+    // water holds neither.
+    //
+    // Measured on the pilot (Ashenvale, Thistlefur camp, gathering from a Plant Bundle):
+    // 01:12:28 "move to travel target impossible rooted" with canMove=-1, moving=0, then
+    // BotDeath "Environment" at the same spot nine seconds later; thirteen minutes earlier the
+    // same bot had died the same way out at sea with "no destination". A bot standing still in
+    // open water is not a bot at rest - it is a bot losing health.
+    //
+    // Trigger: the bot is in water, has not displaced three-dimensionally for
+    // water_stall_rescue_sec, and is not in combat. Action: teleport to the nearest walkable
+    // ground (ClosestCorrectPoint includes NAV_GROUND and excludes NAV_WATER / steep ground) and
+    // log WaterStallRescue with how long it had been stuck. Rate limited per bot by its own
+    // stamp, and it stands down while A108's rescue stamp is fresh, so one stall cannot be
+    // rescued twice. Hot knob water_stall_rescue_sec (0 = off, this version ships off). While the
+    // knob is off the same trigger logs WaterStallProbe at most once per thirty minutes per bot,
+    // so the false positive rate can be read before it is switched on.
+    {
+        struct WaterStallMark
+        {
+            uint32 sinceMs = 0;
+            float x = 0.0f;
+            float y = 0.0f;
+            float z = 0.0f;
+            uint32 lastLogMs = 0;
+        };
+        static std::map<uint32, WaterStallMark> waterStallMarks;
+
+        int32 const waterStallSec = trace::IntValue("water_stall_rescue_sec", 0);
+        bool const inWater = bot->IsInWater() || sServerFacade.IsUnderwater(bot);
+
+        if (!inWater || bot->IsInCombat())
+            waterStallMarks.erase(bot->GetGUIDLow());
+        else
+        {
+            WaterStallMark& mark = waterStallMarks[bot->GetGUIDLow()];
+
+            uint32 const waterNowMs = WorldTimer::getMSTime();
+            float const wx = bot->GetPositionX();
+            float const wy = bot->GetPositionY();
+            float const wz = bot->GetPositionZ();
+            float const waterMoved = std::fabs(wx - mark.x) + std::fabs(wy - mark.y) + std::fabs(wz - mark.z);
+
+            if (!mark.sinceMs || waterMoved > 3.0f)
+            {
+                mark.sinceMs = waterNowMs;
+                mark.x = wx;
+                mark.y = wy;
+                mark.z = wz;
+            }
+            else
+            {
+                uint32 const waterStuckSec = WorldTimer::getMSTimeDiff(mark.sinceMs, waterNowMs) / 1000;
+                int32 const waterTriggerSec = waterStallSec > 0 ? waterStallSec : 20;
+
+                if (waterStuckSec >= (uint32)waterTriggerSec &&
+                    sRandomBotFacade.GetValue(bot, "last mile teleport") == 0)
+                {
+                    if (waterStallSec <= 0)
+                    {
+                        if (!mark.lastLogMs ||
+                            WorldTimer::getMSTimeDiff(mark.lastLogMs, waterNowMs) >= 30 * 60000)
+                        {
+                            mark.lastLogMs = waterNowMs;
+                            sPlayerbotAIConfig.logEvent(this, "WaterStallProbe",
+                                std::to_string(waterStuckSec) + "s",
+                                "x=" + std::to_string((int32)wx) + "|y=" + std::to_string((int32)wy) +
+                                    "|z=" + std::to_string((int32)wz) +
+                                    "|hp=" + std::to_string((uint32)GetHealthPercent()));
+                        }
+                    }
+                    else if (sRandomBotFacade.GetValue(bot, "water stall rescue") == 0)
+                    {
+                        WorldPosition land(bot);
+                        if (land.ClosestCorrectPoint(400.0f, 40.0f, bot->GetInstanceId()))
+                        {
+                            float const landDistance = bot->GetDistance(land.getX(), land.getY(), land.getZ());
+                            if (bot->TeleportTo(land.getMapId(), land.getX(), land.getY(), land.getZ(),
+                                    bot->GetOrientation(), 0))
+                            {
+                                sRandomBotFacade.SetValue(bot, "water stall rescue", 1, {}, 180);
+                                sPlayerbotAIConfig.logEvent(this, "WaterStallRescue",
+                                    std::to_string(waterStuckSec) + "s",
+                                    "dist=" + std::to_string((int32)landDistance) +
+                                        "|from=" + std::to_string((int32)wx) + "|" + std::to_string((int32)wy) +
+                                        "|" + std::to_string((int32)wz) +
+                                        "|to=" + std::to_string((int32)land.getX()) + "|" +
+                                        std::to_string((int32)land.getY()) + "|" + std::to_string((int32)land.getZ()) +
+                                        "|hp=" + std::to_string((uint32)GetHealthPercent()));
+                                waterStallMarks.erase(bot->GetGUIDLow());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // A107 (2026-10-11): the economy goal layer (see playerbot/EconGoal.h).
     //
     // A quest is a goal the game hands out; gathering and crafting are goals somebody has to
