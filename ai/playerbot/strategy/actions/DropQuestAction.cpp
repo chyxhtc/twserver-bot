@@ -522,6 +522,22 @@ namespace
         // Release condition: a bot actually levels mining+engineering to the recipes, or the
         // auction-house buy path lands so it can simply buy a Mithril Tube (same release as 515).
         { 40359, "craft: needs 10559 Mithril Tube (engineering only, 0 loot/0 vendor) and 3860 Mithril Bar x4 (smelting/mining); the only holder has neither profession and no bot can craft them" },
+        // 2026-10-11 12:30, from the same high-retry pass. Quest 466 Search for Incendicite was
+        // listed as "already fixed" by A61 (the destination index learned the negated game-object
+        // guid), but the quest still cannot finish and the wowhead comment section explains why:
+        // the Incendicite Mineral Vein (1610/1667, loot 5000080, 3340 at 100%) is a MINING node
+        // and needs Mining 65 - the top comment says exactly that ("the necessity of mining skill
+        // 65 prevents some from making use of this cave"). Measured: the only two holders are
+        // Ghaemaepor (engineering 4, no mining) and Khorfush (skinning 5, no mining); the pool's
+        // best mining skill is 10. The loot path says so too - every attempt logs AddLootGo
+        // 1610 is-loot-possible-false, because IsLootPossible requires HasSkill(SKILL_MINING)
+        // for a mining node. The only other source is 1111 Leech Stalker / 1112 Leech Widow /
+        // 4040 Cave Stalker at 0.18/0.21/0.27 - about 3000 kills for the six ore. 3340 has never
+        // been taken from loot in bot_trace (0 item-take rows today). Ghaemaepor made 144 trips
+        // to the vein today for nothing.
+        // Release condition: a bot actually reaches Mining 65 (the profession phase), or the
+        // auction-house buy path makes the ore purchasable.
+        { 466, "profession: the Incendicite Mineral Vein (1610/1667) is a mining node that needs Mining 65; neither holder has mining (the pool's best is 10), IsLootPossible returns false for mining nodes without the skill, and the only other source is 0.18-0.27% off three low mobs" },
         { 1195,  "two-hop: empty phial drops from 4054, use it to fill; no plan and no fill spot in DB" },
         { 40536, "script token 60382: credit is a scripted NPC beaten to half health (issue A47)" },
         { 40567, "script token 60391: credit is gossip option 1 on Bert Mano (issue A47)" },
