@@ -3226,6 +3226,22 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     {
         TravelPoint point(dest, sTravelMgr.nullWorldPosition, 0.0f);
 
+        // A116 (2026-10-12): a gather pool is judged by ONE point - the one picked below - and if
+        // that point happens to sit in an enemy home zone the whole pool is refused, so the search
+        // falls back to a spawn on the far side of the world. Measured at 02:22:48 on the
+        // herbalism pilot: four gather candidates, the nearest two (Peacebloom 810 yd, Silverleaf
+        // 918 yd) refused as enemy-home-zone, and the only survivor 9544 yd away in Tirisfal
+        // Glades. With the knob on, a gather pool keeps the nearest of its spawns that is NOT in
+        // an enemy home zone instead of its nearest spawn overall. Knob gather_pool_nearest_clean
+        // (0 = off, ships off).
+        bool const cleanGatherPoint =
+            trace::IntValue("gather_pool_nearest_clean", 0) != 0 &&
+            (purposeFlag & ((uint32)TravelDestinationPurpose::GatherHerbalism |
+                            (uint32)TravelDestinationPurpose::GatherMining |
+                            (uint32)TravelDestinationPurpose::GatherSkinning)) != 0;
+        TravelPoint cleanPoint(dest, sTravelMgr.nullWorldPosition, 0.0f);
+        float cleanDistance = FLT_MAX;
+
         // Quest destinations keep their cross-continent handling (they can trigger a
         // transfer); everything else is filtered here.
         bool const questDestination = dynamic_cast<QuestTravelDestination*>(dest) != nullptr;
@@ -3285,7 +3301,17 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
                 minDistance = distance;
                 point = TravelPoint(dest, position, distance);
             }
+
+            if (cleanGatherPoint && distance < cleanDistance &&
+                !position->IsEnemyHomeZoneFor(info.GetTeam()))
+            {
+                cleanDistance = distance;
+                cleanPoint = TravelPoint(dest, position, distance);
+            }
         }
+
+        if (cleanGatherPoint && std::get<2>(cleanPoint) > 0)
+            point = cleanPoint; // A116: this pool's nearest spawn outside an enemy home zone
 
         if (std::get<2>(point) > 0)
         {
