@@ -1289,11 +1289,16 @@ void AhMarketService::Update(uint32_t diff)
     }
 
     // 2. Real-inventory seller loop
-    uint32 intervalMs = sPlayerbotAIConfig.ahMarketInterval * 1000;
-    if (intervalMs < 1000)
-        intervalMs = 1000;
-    if (intervalMs > 3600000)
-        intervalMs = 3600000;
+    // Cadence knobs are hot too (bot_diag.conf ahmarket_interval / ahmarket_batch), so a
+    // stocking trial can be made productive for a bounded window without a restart. Both
+    // keep the service's own hard bounds; the defaults are exactly the aiplayerbot.conf
+    // values, so leaving the keys out changes nothing.
+    int intervalSecs = ai::trace::IntValue("ahmarket_interval", (int)sPlayerbotAIConfig.ahMarketInterval);
+    if (intervalSecs < 5)
+        intervalSecs = 5;
+    if (intervalSecs > 3600)
+        intervalSecs = 3600;
+    uint32 intervalMs = (uint32)intervalSecs * 1000;
 
     m_elapsedMs += diff;
     if (m_elapsedMs < intervalMs)
@@ -1325,7 +1330,7 @@ void AhMarketService::Update(uint32_t diff)
     if (eligible.empty())
         return;
 
-    uint32 batch = sPlayerbotAIConfig.ahMarketBatchSize;
+    uint32 batch = (uint32)ai::trace::IntValue("ahmarket_batch", (int)sPlayerbotAIConfig.ahMarketBatchSize);
     if (!batch)
         batch = 1;
     if (batch > 5)
