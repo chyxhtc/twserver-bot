@@ -838,7 +838,15 @@ bool CleanQuestLogAction::IsDroppable(Quest const* quest, QuestStatus status, bo
 
     if (status == QUEST_STATUS_INCOMPLETE)
     {
-        if (classQuest)
+        // 2026-10-11: a blacklisted class quest is the one exception to the protection above.
+        // The blacklist is an explicit "this module provably cannot finish it today" decision,
+        // and every other rule in this function skips class quests on purpose - so without this
+        // a blacklisted class quest keeps its log slot forever. Measured on 2242 Destiny Calls
+        // (RequiredClasses = 8, rogue) held by two level-50 rogues: its objective item 7737 is
+        // pickpocket-only, the blacklist entry landed at deploy-20261011-1300, and the quest did
+        // not drain while every non-class entry of the same batch did. With the list switched off
+        // (bot_diag.conf questblacklist=0) the reason is null and class quests stay protected.
+        if (classQuest && !questgrey::QuestBlacklistReason(quest))
             return false;
         // A quest whose entire objective is a set of items the module cannot source anywhere
         // is unroutable: it never gets a destination, so the bot can never finish it, and it
