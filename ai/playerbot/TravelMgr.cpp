@@ -12,6 +12,7 @@
 #include "PlayerbotAI.h"
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/EconGoal.h"
 #include "playerbot/QuestGreyRule.h"
 #include "ObjectAccessor.h"
 
@@ -1187,6 +1188,54 @@ bool GatherTravelDestination::IsActive(Player* bot, const PlayerTravelInfo& info
                 for (auto& target : targets)
                     if (target.GetEntry() == GetEntry())
                         return true;
+            }
+
+            // A113 (2026-10-12): the spawn test above only runs while the bot is already inside
+            // this destination's own area (IsOut false) - and that is precisely the case a goal
+            // window cares about. Measured tonight: the economy pilot stood 57/80/108 yd from
+            // Peacebloom spawns in Tirisfal, nothing of that node type was up, so every local
+            // herb was judged inactive, the window had no gather candidate for half an hour and
+            // the travel layer spent it on vendors; the only plant still offered to him was a
+            // quest object on the other continent (a node area far enough away that IsOut skips
+            // the spawn test entirely). The asymmetry is what sends gatherers across the world:
+            // near nodes must be up right now, far ones need not be.
+            //
+            // With the knob on, a bot that is running a goal window for this very skill keeps the
+            // destination when the node's own nearest spawn point sits within
+            // goal_spawn_wait_range: it walks there and waits for the respawn instead of leaving.
+            // Knob goal_spawn_wait_range (0 = off, ships off) - it is left off so the A112
+            // GatherOfferScan probe can first measure the untouched baseline.
+            uint32 const goalSkill = econgoal::SkillOf(bot->GetGUIDLow());
+            if (goalSkill)
+            {
+                uint32 const purposeSkill =
+                    GetPurpose() == TravelDestinationPurpose::GatherHerbalism ? SKILL_HERBALISM :
+                    GetPurpose() == TravelDestinationPurpose::GatherMining ? SKILL_MINING :
+                    GetPurpose() == TravelDestinationPurpose::GatherSkinning ? SKILL_SKINNING : 0;
+                int32 const waitRange = trace::IntValue("goal_spawn_wait_range", 0);
+
+                if (waitRange > 0 && purposeSkill == goalSkill)
+                {
+                    WorldPosition botPos(bot);
+                    WorldPosition* nearestSpawn = GetClosestPoint(botPos);
+                    if (nearestSpawn && nearestSpawn->distance(botPos) <= (float)waitRange)
+                    {
+                        static std::map<std::string, uint32> waitProbeStamps;
+                        std::string const probeKey = std::to_string(bot->GetGUIDLow()) + "|" + std::to_string(GetEntry());
+                        uint32 const nowMs = WorldTimer::getMSTime();
+                        uint32& lastProbeMs = waitProbeStamps[probeKey];
+                        if (!lastProbeMs || WorldTimer::getMSTimeDiff(lastProbeMs, nowMs) >= 30 * MINUTE * 1000)
+                        {
+                            lastProbeMs = nowMs;
+                            sPlayerbotAIConfig.logEvent(ai, "GoalSpawnWait",
+                                std::to_string(GetEntry()) + "|" + GetTitle(),
+                                "dist=" + std::to_string((int)nearestSpawn->distance(botPos)) +
+                                    "|range=" + std::to_string(waitRange) +
+                                    "|skill=" + econgoal::SkillLabel(goalSkill));
+                        }
+                        return true;
+                    }
+                }
             }
 
             return false;
