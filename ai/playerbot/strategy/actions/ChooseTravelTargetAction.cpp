@@ -1109,6 +1109,25 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             currentDestination = destination;
             ++considered;
 
+            // A120b (2026-10-12 05:30): two corrections to A120 after the night's crash, both proven
+            // from the crash stacks and the framework source rather than by guessing.
+            //   1. The value lives in the SHARED context. Every other caller of "entry loot list"
+            //      (LootObjectStack, LootAction, LootValues itself) uses GAI_VALUE2. A120 used
+            //      AI_VALUE2, which asks the bot's own context: getUntypedValue() finds no such
+            //      name there, the cast yields null, and the macro's ->Get() dereferences it.
+            //      Disassembling the crashing builds puts the faulting instruction on exactly that
+            //      dereference (SetBestTarget+0x2805 in the 04:07 build, +0x28e5 in the 04:30
+            //      build, both right after a GetValue<std::list<uint32>> call). That is the whole
+            //      accident: 18 restarts between 04:12 and 04:52, one every time a scan met its
+            //      first gathering candidate, and none after both knobs were written back to 0,
+            //      because the guard short-circuits before this block.
+            //   2. Skinning stays out of the filter. A herbalism or mining pool is a game object and
+            //      its entry is already the signed game-object entry (negative, e.g. -1617 for
+            //      Silverleaf), which is exactly how the drop map keys game-object loot - so the
+            //      qualifier needs no sign flip. A skinning pool is a creature whose loot sits in
+            //      the skinning table, which the corpse drop map does not carry, so filtering it
+            //      here would silently reject every skinning candidate.
+            //
             // A120 (2026-10-12): a gathering pool is only worth walking to if its loot can raise the
             // skill - and that is decided by item class, not by the lock. Measured tonight from
             // tw_world: Silverleaf (1617) pays 765 Silverleaf (class 7, trade goods) plus a quest
@@ -1120,10 +1139,12 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             // 4, and why the A113 camping run at Violet Tragan was futile. Knob gather_skill_loot
             // (default 0 = off; 1 = a gather candidate must have at least one class 7 item).
             if (!target->IsForced() && trace::IntValue("gather_skill_loot", 0) != 0 &&
-                dynamic_cast<GatherTravelDestination*>(destination) != nullptr)
+                dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
+                (destination->GetPurpose() == TravelDestinationPurpose::GatherHerbalism ||
+                 destination->GetPurpose() == TravelDestinationPurpose::GatherMining))
             {
                 bool skillLoot = false;
-                for (uint32 lootItem : AI_VALUE2(std::list<uint32>, "entry loot list", destination->GetEntry()))
+                for (uint32 lootItem : GAI_VALUE2(std::list<uint32>, "entry loot list", destination->GetEntry()))
                 {
                     ItemPrototype const* proto = sObjectMgr.GetItemPrototype(lootItem);
                     if (proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
