@@ -743,7 +743,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     {
         static std::map<uint32, uint32> econSwitched;
         uint32 const econGuid = bot->GetGUIDLow();
-        bool const econWanted = econ60::Wanted((int)bot->GetLevel());
+        bool const econWanted = econ60::Wanted((int)bot->GetLevel(), bot->GetName());
         bool const econHave = econSwitched.find(econGuid) != econSwitched.end();
 
         if (econWanted && !econHave)

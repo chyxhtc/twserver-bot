@@ -2,6 +2,7 @@
 
 #include "playerbot/TraceSwitch.h"
 
+#include <cctype>
 #include <string>
 
 // A105: the post-level-60 profile switch, in one place.
@@ -22,6 +23,10 @@
 //   econ60         0 = off (default). 1 = every bot at or above econ60_level switches to the
 //                  economy profile; switching the key back to 0 undoes it.
 //   econ60_level   level threshold, default 60.
+//   econ60_pilot   one bot name that takes the profile immediately whatever its level, so one
+//                  character can be observed (and fixed) before the rest arrive. Empty by
+//                  default. The file lowercases values, so the comparison here is
+//                  case-insensitive.
 //   econ60_nc      strategy delta applied on the way in. Default is the economy arm:
 //                  +gather,+rpg craft,+rpg vendor
 //                  Quests are deliberately left alone - a level-60 bot with no open quests has
@@ -44,10 +49,38 @@ namespace econ60
         return trace::IntValue("econ60", 0) != 0;
     }
 
-    // True when this bot should be running the economy profile.
-    inline bool Wanted(int botLevel)
+    inline std::string Pilot()
     {
-        return Enabled() && botLevel >= Level();
+        return trace::StringValue("econ60_pilot", std::string());
+    }
+
+    // Case-insensitive, because the diag file lowercases every value on load.
+    inline bool NameIsPilot(std::string const& botName)
+    {
+        std::string const pilot = Pilot();
+        if (pilot.empty() || botName.size() != pilot.size())
+            return false;
+
+        for (size_t i = 0; i < pilot.size(); ++i)
+        {
+            if ((char)std::tolower((unsigned char)botName[i]) != pilot[i])
+                return false;
+        }
+        return true;
+    }
+
+    // True when this bot should be running the economy profile.
+    inline bool Wanted(int botLevel, std::string const& botName)
+    {
+        if (!Enabled())
+            return false;
+
+        // The pilot goes first whatever its level, so one character can be watched - and
+        // repaired - tonight while the rest wait for the threshold.
+        if (NameIsPilot(botName))
+            return true;
+
+        return botLevel >= Level();
     }
 
     inline std::string Nc()

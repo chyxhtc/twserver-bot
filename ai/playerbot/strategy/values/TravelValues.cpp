@@ -330,7 +330,7 @@ bool NeedTravelPurposeValue::Calculate()
         if (gatherHot == ai::trace::Verdict::Unset &&
             !sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "gather",
                 sPlayerbotAIConfig.gatherTravelEnabled ? 1 : 0) &&
-            !econ60::Wanted((int)bot->GetLevel()))
+            !econ60::Wanted((int)bot->GetLevel(), bot->GetName()))
             return false;
 
         skill = gatheringSkills.at(purpose);
