@@ -767,7 +767,13 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         int32 const waterStallSec = trace::IntValue("water_stall_rescue_sec", 0);
         bool const inWater = bot->IsInWater() || sServerFacade.IsUnderwater(bot);
 
-        if (!inWater || bot->IsInCombat())
+        // A111 safety (2026-10-12, found while reviewing the block before switching it on): a bot
+        // riding a boat across the sea stands on a deck whose terrain is water, does not move for
+        // minutes and is not in combat - exactly the shape this guard is looking for. Rescue it
+        // and it gets teleported off the ship onto whatever shore is nearest. Bots really do ride
+        // transports (see the boarding/jumping-off logic below), so a transport passenger is never
+        // a swimmer in trouble.
+        if (!inWater || bot->IsInCombat() || bot->GetTransport())
             waterStallMarks.erase(bot->GetGUIDLow());
         else
         {
@@ -850,7 +856,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // probe read.
     {
         int32 const lowHpPct = trace::IntValue("water_lowhp_pct", 0);
-        if (lowHpPct > 0 && (bot->IsInWater() || sServerFacade.IsUnderwater(bot)) &&
+        if (lowHpPct > 0 && !bot->GetTransport() && (bot->IsInWater() || sServerFacade.IsUnderwater(bot)) &&
             (int32)GetHealthPercent() < lowHpPct &&
             sRandomBotFacade.GetValue(bot, "water stall rescue") == 0)
         {
