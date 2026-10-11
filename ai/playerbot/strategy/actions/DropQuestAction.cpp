@@ -626,6 +626,16 @@ namespace
         // them. These two entries are what releases the bots that hold them today.
         { 17,   "dungeon: quest_template.Type = 81 = QUEST_TYPE_DUNGEON in this core (QuestDef.h); 8047 comes only from loot template 5000064, which has no spawn row here, and the pool cannot run Uldaman at all" },
         { 2342, "dungeon: quest_template.Type = 81 = QUEST_TYPE_DUNGEON in this core (QuestDef.h); 8026 is a Uldaman drop and the pool cannot run Uldaman at all" },
+        // 2026-10-11 09:20, user decision after reading the wowhead comments: give up on 7728.
+        // The two Dark Iron drops exist in the DB (18959 from 5840 Dark Iron Steamsmith at -25,
+        // 6 spawns; 18960 from 8566 Dark Iron Lookout at -25, 6 spawns) but the comment section
+        // is unanimous that the quest is a time sink or outright broken: the top comment counts
+        // only five or six Steamsmith spawns and several readers report killing 30-40 of them
+        // for no Tuyere, or farming an hour in a group with nothing. In the pool it matches:
+        // 13 holders, all at status 3, four hold the Tuyere and not one has ever seen the
+        // Spyglass after a full day. Release condition: 18960's drop rate is re-checked against
+        // the core, or the user reopens it.
+        { 7728, "user: wowhead comments call the two Dark Iron drops a time sink or bugged (only ~5 Steamsmith spawns; 30-40 kills with no Tuyere; an hour of group farming with nothing); 18959/18960 do exist at -25 from 5840/8566 but only 4 of 13 holders ever got the Tuyere and none the Spyglass" },
     };
 }
 
