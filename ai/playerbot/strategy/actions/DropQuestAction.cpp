@@ -558,6 +558,21 @@ namespace
         { 6421, "area trigger: lands on AreaTrigger 2946; same A99 family" },
         { 40972, "script token: the objective is creature 60046 quest_40972_dummy_triger, a template with no spawn row anywhere (A47 family)" },
         { 40354, "script token: the objective is creature 60354 quest_40354_dummy_triger, a template with no spawn row anywhere (A47 family)" },
+        // 2026-10-11 12:50, 6543 The Warsong Reports - the chain was traced end to end:
+        // accept 6543 (Kadrak 8582) -> the quest hands over 16783 Bundle of Reports -> opening it
+        // yields 16746 Warsong Report (item_loot_template 16783 -> 16746 at 100) -> three follow-up
+        // quests 6545/6546/6547 (Warsong Runner/Outrider/Scout NPCs 12863/12864/12862, all with a
+        // spawn row) each require 16746 and reward 16764/16765/16763 -> back to Kadrak.
+        // Two blockers, and the first one is a module capability gap:
+        //   (a) the module never opens a quest-granted container to reach the item a quest needs -
+        //       ItemUsageValue::ItemCreatedFrom() is an empty stub and nothing reverse-maps
+        //       item_loot_template; measured: nobody in the pool has ever held 16746 (0 item-take
+        //       rows in bot_trace), nor 16783/16764/16763/16765 in character_inventory.
+        //   (b) the three follow-ups are level 19-25 and grey for the level-49 holder, so even with
+        //       (a) fixed the accept-side grey gate would refuse to re-enter the chain.
+        // Release condition: the module learns to open a quest-granted container (that also unblocks
+        // the granted-transform family), and the follow-ups are re-entered before they turn grey.
+        { 6543, "chain: needs the quest-granted 16783 Bundle of Reports opened for 16746, then three level 19-25 follow-ups (6545/6546/6547) hand in 16746 and reward the Updates; the module cannot open a granted container and the follow-ups are grey for these bots (16746 never obtained once in the pool)" },
         { 1195,  "two-hop: empty phial drops from 4054, use it to fill; no plan and no fill spot in DB" },
         { 40536, "script token 60382: credit is a scripted NPC beaten to half health (issue A47)" },
         { 40567, "script token 60391: credit is gossip option 1 on Bert Mano (issue A47)" },
