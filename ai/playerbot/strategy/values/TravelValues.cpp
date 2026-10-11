@@ -4,6 +4,7 @@
 #include "playerbot/QuestGreyRule.h"
 #include "playerbot/TraceSwitch.h"
 #include "playerbot/Econ60Rule.h"
+#include "playerbot/EconGoal.h"
 #include "QuestValues.h"
 #include "SharedValueContext.h"
 #include "BudgetValues.h"
@@ -324,13 +325,20 @@ bool NeedTravelPurposeValue::Calculate()
         ai::trace::Verdict const gatherHot = ai::trace::VerdictOf("gathertravel");
         if (gatherHot == ai::trace::Verdict::Off)
             return false;
+        // A107: while a goal window is open it raises exactly one gathering skill, so the other
+        // gathering purposes stay closed. That is what makes the window measurable - without it a
+        // "raise herbalism" goal would happily send the bot to a mining node it also has room in.
+        uint32 const goalSkill = econgoal::SkillOf(bot->GetGUIDLow());
+        if (goalSkill && gatheringSkills.at(purpose) != goalSkill)
+            return false;
         // A105: a bot on the post-level-60 profile gathers too. It is a third source next to
         // the arm and the global config, and it sits below an explicit gathertravel value so
         // writing gathertravel=0 still silences the whole pool (including the 60s).
         if (gatherHot == ai::trace::Verdict::Unset &&
             !sPlayerbotAIConfig.GetBotArmInt(bot->GetGUIDLow(), "gather",
                 sPlayerbotAIConfig.gatherTravelEnabled ? 1 : 0) &&
-            !econ60::Wanted((int)bot->GetLevel(), bot->GetName()))
+            !econ60::Wanted((int)bot->GetLevel(), bot->GetName()) &&
+            !econgoal::Active(bot->GetGUIDLow()))
             return false;
 
         skill = gatheringSkills.at(purpose);

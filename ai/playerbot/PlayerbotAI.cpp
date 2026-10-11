@@ -11,6 +11,7 @@
 #include "playerbot/AiFactory.h"
 #include "playerbot/TraceSwitch.h"
 #include "playerbot/Econ60Rule.h"
+#include "playerbot/EconGoal.h"
 
 #include "../../runtime/ObservabilityEmitter.h"
 #include "../../runtime/BotActivityLease.h"
@@ -727,6 +728,106 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         }
     }
 
+    // A107 (2026-10-11): the economy goal layer (see playerbot/EconGoal.h).
+    //
+    // A quest is a goal the game hands out; gathering and crafting are goals somebody has to
+    // CHOOSE. Nothing chose one: the gather travel only asked "is this skill below its cap" and
+    // the craft action shuffled the known recipes at random, so an hour on the economy profile
+    // moved no skill at all (measured 2026-10-11 on the pilot: herbalism 4 -> 4, alchemy 5 -> 5,
+    // and he spent the hour walking to a vendor and the auction house).
+    //
+    // One goal owns a window. While it runs, the quest side stays off (the same strip the
+    // level-60 profile applies, so the two lines are never mixed and a window can be attributed),
+    // NeedTravelPurposeValue narrows the gathering purposes to that one skill, and when the goal
+    // ends - reached, expired, or the knob switched off - the window closes and the bot goes back
+    // to the quest line for goal_cooldown_min. Every transition leaves one trace row.
+    if (econgoal::WorkerFor((int)bot->GetLevel(), bot->GetName()))
+    {
+        uint32 const goalNowMs = WorldTimer::getMSTime();
+        econgoal::Goal& goal = econgoal::For(bot->GetGUIDLow());
+
+        if (goal.skill)
+        {
+            uint32 const current = bot->GetSkillValue(goal.skill);
+            bool const reached = current >= goal.targetValue;
+            bool const expired = econgoal::TimeReached(goal.startedMs + goal.durationMs, goalNowMs);
+
+            if (reached || expired)
+            {
+                sPlayerbotAIConfig.logEvent(this, "EconGoalEnded",
+                    std::string(reached ? "done" : "expired") +
+                    "|skill=" + econgoal::SkillLabel(goal.skill) +
+                    "|from=" + std::to_string(goal.fromValue) +
+                    "|target=" + std::to_string(goal.targetValue) +
+                    "|now=" + std::to_string(current),
+                    "minutes=" + std::to_string((goalNowMs - goal.startedMs) / 60000));
+                goal.skill = 0;
+                goal.nextGoalAfterMs = goalNowMs + (uint32)std::max(1, econgoal::CooldownMinutes()) * 60000;
+            }
+            else
+            {
+                // One progress row per goal per ten minutes: enough to see whether the window is
+                // moving while it runs, cheap enough to leave on.
+                static std::map<uint32, uint32> goalProgressMs;
+                uint32& lastGoalMs = goalProgressMs[bot->GetGUIDLow()];
+                if (!lastGoalMs || econgoal::TimeReached(lastGoalMs + 10 * 60000, goalNowMs))
+                {
+                    lastGoalMs = goalNowMs;
+                    sPlayerbotAIConfig.logEvent(this, "EconGoalProgress",
+                        "skill=" + std::string(econgoal::SkillLabel(goal.skill)) +
+                        "|from=" + std::to_string(goal.fromValue) +
+                        "|target=" + std::to_string(goal.targetValue) +
+                        "|now=" + std::to_string(current),
+                        "minutes=" + std::to_string((goalNowMs - goal.startedMs) / 60000));
+                }
+            }
+        }
+        else if (!goal.nextGoalAfterMs || econgoal::TimeReached(goal.nextGoalAfterMs, goalNowMs))
+        {
+            // The gathering skill furthest below its own cap. A bot with no such profession (a
+            // warrior carrying blacksmithing and engineering) has no candidate and simply stays
+            // on the quest line: GetSkillMax is 0 for it, which is the same check that keeps a
+            // bot away from nodes it cannot harvest.
+            uint32 bestSkill = 0;
+            uint32 bestGap = 0;
+            uint32 bestMax = 0;
+
+            for (uint32 skill : econgoal::GatherSkills())
+            {
+                uint32 const maxSkill = std::min(bot->GetSkillMax(skill), bot->GetSkillMaxForLevel(bot));
+                uint32 const value = bot->GetSkillValue(skill);
+                if (!maxSkill || value >= maxSkill)
+                    continue;
+                if (maxSkill - value > bestGap)
+                {
+                    bestGap = maxSkill - value;
+                    bestSkill = skill;
+                    bestMax = maxSkill;
+                }
+            }
+
+            if (bestSkill)
+            {
+                goal.skill = bestSkill;
+                goal.fromValue = bot->GetSkillValue(bestSkill);
+                goal.targetValue = std::min(goal.fromValue + (uint32)std::max(1, econgoal::Step()), bestMax);
+                goal.startedMs = goalNowMs;
+                goal.durationMs = (uint32)std::max(1, econgoal::Minutes()) * 60000;
+                goal.nextGoalAfterMs = 0;
+                sPlayerbotAIConfig.logEvent(this, "EconGoalSet",
+                    "skill=" + std::string(econgoal::SkillLabel(bestSkill)) +
+                    "|from=" + std::to_string(goal.fromValue) +
+                    "|target=" + std::to_string(goal.targetValue) +
+                    "|max=" + std::to_string(bestMax),
+                    "minutes=" + std::to_string(econgoal::Minutes()));
+            }
+            else
+            {
+                goal.nextGoalAfterMs = goalNowMs + (uint32)std::max(1, econgoal::CooldownMinutes()) * 60000;
+            }
+        }
+    }
+
     // A105 (2026-10-11): the post-level-60 profile switch (see playerbot/Econ60Rule.h).
     //
     // The economy chain is off in this deployment because it fought the leveling mainline; at
@@ -743,7 +844,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     {
         static std::map<uint32, uint32> econSwitched;
         uint32 const econGuid = bot->GetGUIDLow();
-        bool const econWanted = econ60::Wanted((int)bot->GetLevel(), bot->GetName());
+        // A107: an open goal window runs the same profile (economy on, quest side off), which is
+        // what keeps the two lines from mixing inside one window.
+        bool const econWanted = econ60::Wanted((int)bot->GetLevel(), bot->GetName()) ||
+            econgoal::Active(econGuid);
         bool const econHave = econSwitched.find(econGuid) != econSwitched.end();
 
         if (econWanted && !econHave)
