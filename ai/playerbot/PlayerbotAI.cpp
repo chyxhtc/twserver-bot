@@ -816,7 +816,16 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                     else if (sRandomBotFacade.GetValue(bot, "water stall rescue") == 0)
                     {
                         WorldPosition land(bot);
-                        if (land.ClosestCorrectPoint(400.0f, 40.0f, bot->GetInstanceId()))
+                        // A111 tuning (2026-10-12, after the first burst of hits): most hits were
+                        // bots standing in knee-deep water where the nearest walkable ground is the
+                        // spot they already occupy - the teleport moved them 0-9 yards and changed
+                        // nothing, once every three minutes per bot. A rescue only means something
+                        // when the dry ground is somewhere else, so require that distance.
+                        // Knob water_rescue_min_dist (default 25 yards, 0 = rescue regardless).
+                        int32 const minRescueDist = trace::IntValue("water_rescue_min_dist", 25);
+                        if (land.ClosestCorrectPoint(400.0f, 40.0f, bot->GetInstanceId()) &&
+                            (minRescueDist <= 0 ||
+                             bot->GetDistance(land.getX(), land.getY(), land.getZ()) >= (float)minRescueDist))
                         {
                             float const landDistance = bot->GetDistance(land.getX(), land.getY(), land.getZ());
                             if (bot->TeleportTo(land.getMapId(), land.getX(), land.getY(), land.getZ(),
@@ -861,7 +870,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             sRandomBotFacade.GetValue(bot, "water stall rescue") == 0)
         {
             WorldPosition dry(bot);
+            // Same tuning as the stall guard above: a landing spot where the bot already stands is
+            // a no-op, so require the dry ground to be at least this far. Knob default 25 yards.
+            int32 const minRescueDist = trace::IntValue("water_rescue_min_dist", 25);
             if (dry.ClosestCorrectPoint(400.0f, 40.0f, bot->GetInstanceId()) &&
+                (minRescueDist <= 0 ||
+                 bot->GetDistance(dry.getX(), dry.getY(), dry.getZ()) >= (float)minRescueDist) &&
                 bot->TeleportTo(dry.getMapId(), dry.getX(), dry.getY(), dry.getZ(), bot->GetOrientation(), 0))
             {
                 sRandomBotFacade.SetValue(bot, "water stall rescue", 1, {}, 180);
