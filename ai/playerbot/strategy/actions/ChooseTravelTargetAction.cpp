@@ -1111,6 +1111,19 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             // skill has a candidate in range, vendor trips step aside too - but only while the bags
             // have room: A109's reason for keeping vendors (junk, ammo, repairs) still holds when a
             // bot is nearly full, so that case keeps them. Knob: the same goal_prefer_range.
+            //
+            // A124 (2026-10-12): the quest line and city errands leak through the same window, and the
+            // measured cases are the ones that cost the hour. 06:39:00 Tharuputarr was standing 47
+            // yards from a Peacebloom pool (A113 keeping it as a destination because the node was not
+            // up yet, GoWorkProbe seen=0); he then picked a quest objective in Stranglethorn Vale and
+            // teleported to another continent, and the window ended without a single gather. 05:42:29
+            // Warkryrzith, whose nearby herbs are all in enemy territory, walked to a city. Both are
+            // purposes the user's own definition of a goal window excludes - a window exists to spend
+            // one hour on one skill, not to run quests - so while the goal's own skill has a candidate
+            // in range, quest-objective and generic-rpg candidates stand down as well. The erasure
+            // only happens when that candidate exists (goalNearby), so a bot is never left with
+            // nothing to do by this rule; if the candidate later fails, the next scan sees the full
+            // list again.
             uint8 const bagUsed = AI_VALUE(uint8, "bag space");
             bool const bagsNearlyFull = bagUsed >= 80;
             ordered.erase(std::remove_if(ordered.begin(), ordered.end(),
@@ -1121,7 +1134,10 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     TravelDestinationPurpose const purpose = candidate.destination->GetPurpose();
                     if (purpose == TravelDestinationPurpose::Grind)
                         return true;
-                    return !bagsNearlyFull && purpose == TravelDestinationPurpose::Vendor;
+                    if (!bagsNearlyFull && purpose == TravelDestinationPurpose::Vendor)
+                        return true;
+                    return ((uint32)purpose & ((uint32)TravelDestinationPurpose::QuestAllObjective |
+                        (uint32)TravelDestinationPurpose::GenericRpg)) != 0;
                 }), ordered.end());
             sPlayerbotAIConfig.logEvent(ai, "GoalPrefer", econgoal::SkillLabel(preferSkill),
                 "dropped=" + std::to_string(before - ordered.size()) +
