@@ -538,6 +538,26 @@ namespace
         // Release condition: a bot actually reaches Mining 65 (the profession phase), or the
         // auction-house buy path makes the ore purchasable.
         { 466, "profession: the Incendicite Mineral Vein (1610/1667) is a mining node that needs Mining 65; neither holder has mining (the pool's best is 10), IsLootPossible returns false for mining nodes without the skill, and the only other source is 0.18-0.27% off three low mobs" },
+        // 2026-10-11 12:35, the A99 family (area-trigger objectives), plus the last two of the
+        // A47 dummy-trigger family. Recorded here so the freed quest-log slots are explained.
+        //
+        // A99: these five quests finish on an area trigger (areatrigger_involvedrelation:
+        // 287 -> 97, 25 -> 2926, 455 -> 175, 503 -> 178, 6421 -> 2946). The mechanism was probed
+        // twice in both directions: phase 1 teleported a quest-287 holder onto trigger 97 and let
+        // him stand there five minutes, phase 2 additionally sent CMSG_AREATRIGGER the way the
+        // module's own AreaTriggerAction does. Status stayed 3 -> 3 both times, and
+        // tw_world.scripted_areatrigger has no rows for any of the five. The whole character
+        // database has explored=1 on only two quests (590 x6 and 938 x1), i.e. the flag hardly
+        // ever fires here. Today the five hold 28 quest-log slots (287 x8, 503 x8, 25 x6, 455 x3,
+        // 6421 x3) and 27 of them already carry the item/count progress, so they are pure churn.
+        // Release condition: the core or content side makes these triggers flag the quests.
+        { 287,  "area trigger: lands on AreaTrigger 97; A99 teleported a holder onto it for five minutes and also re-sent CMSG_AREATRIGGER, status stayed 3 -> 3 (issue A99)" },
+        { 25,   "area trigger: lands on AreaTrigger 2926; same A99 family (only 2 quests in the whole character DB ever got explored=1)" },
+        { 455,  "area trigger: lands on AreaTrigger 175; same A99 family" },
+        { 503,  "area trigger: lands on AreaTrigger 178; 7 of its 8 holders already hold the Rusted Iron Key and cannot finish; same A99 family" },
+        { 6421, "area trigger: lands on AreaTrigger 2946; same A99 family" },
+        { 40972, "script token: the objective is creature 60046 quest_40972_dummy_triger, a template with no spawn row anywhere (A47 family)" },
+        { 40354, "script token: the objective is creature 60354 quest_40354_dummy_triger, a template with no spawn row anywhere (A47 family)" },
         { 1195,  "two-hop: empty phial drops from 4054, use it to fill; no plan and no fill spot in DB" },
         { 40536, "script token 60382: credit is a scripted NPC beaten to half health (issue A47)" },
         { 40567, "script token 60391: credit is gossip option 1 on Bert Mano (issue A47)" },
