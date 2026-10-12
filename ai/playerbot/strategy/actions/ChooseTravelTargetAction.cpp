@@ -1119,10 +1119,39 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
             preferSkill == SKILL_SKINNING ? TravelDestinationPurpose::GatherSkinning :
             TravelDestinationPurpose::None;
 
+        // A128b (2026-10-12): A128 moves the skill's own-zone candidates to the front, but A119 then
+        // still measured "is my own candidate nearby" against goal_prefer_range - so a candidate the
+        // window deliberately chose to travel to (1.3k-8.1k yards, see A127d) left goalNearby false,
+        // the window released, and the very next scan sent the pilot off to grind or a vendor.
+        // Measured 09:38-09:43, Tuzarurth's picks alternated Grind (Burning Steppes) / gather
+        // (Redridge, 1000+ yards) / Grind (Blasted Lands) inside one window. So a candidate inside the
+        // configured zone list counts as "my own skill has somewhere to go" however far it is: the
+        // window then holds through the one long trip instead of oscillating, which is what makes the
+        // relocation in A128 actually usable.
+        std::string preferredZones = trace::StringValue("gather_zones", "");
+        std::transform(preferredZones.begin(), preferredZones.end(), preferredZones.begin(),
+            [](unsigned char c) { return (char)std::tolower(c); });
+        bool const zonePreferOn = trace::IntValue("gather_zone_prefer", 0) != 0 && !preferredZones.empty();
+
+        auto const inPreferredZone = [&](OrderedCandidate const& candidate)
+        {
+            if (!zonePreferOn || !candidate.destination ||
+                candidate.destination->GetPurpose() != preferPurpose ||
+                candidate.destination->GetEntry() >= 0)
+                return false;
+            WorldPosition* point = candidate.destination->GetClosestPoint(WorldPosition(bot));
+            if (!point)
+                return false;
+            std::string zone = point->GetAreaName(false, true);
+            std::transform(zone.begin(), zone.end(), zone.begin(),
+                [](unsigned char c) { return (char)std::tolower(c); });
+            return preferredZones.find(zone) != std::string::npos;
+        };
+
         bool goalNearby = false;
         for (auto& candidate : ordered)
             if (candidate.destination && candidate.destination->GetPurpose() == preferPurpose &&
-                candidate.distance <= (float)goalPreferRange &&
+                (candidate.distance <= (float)goalPreferRange || inPreferredZone(candidate)) &&
                 GatherLootCanRaiseSkill(candidate.destination)) // A120c: do not be fooled by a pool
                                                                  // this same filter is about to reject
             {
@@ -1223,36 +1252,15 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
         // is left exactly as it was, so this cannot strand a bot.
         // Knobs: gather_zone_prefer (0 = off) and gather_zones (comma separated zone names, matched
         // case-insensitively; the switch file lowercases every value, hence the lowering here).
-        if (trace::IntValue("gather_zone_prefer", 0) != 0)
+        if (zonePreferOn)
         {
-            std::string zoneList = trace::StringValue("gather_zones", "");
-            if (!zoneList.empty())
+            size_t const preferred = (size_t)std::count_if(ordered.begin(), ordered.end(), inPreferredZone);
+            if (preferred > 0 && preferred < ordered.size())
             {
-                std::transform(zoneList.begin(), zoneList.end(), zoneList.begin(),
-                    [](unsigned char c) { return (char)std::tolower(c); });
-
-                auto const inPreferredZone = [&](OrderedCandidate const& candidate)
-                {
-                    if (!candidate.destination || candidate.destination->GetPurpose() != preferPurpose ||
-                        candidate.destination->GetEntry() >= 0)
-                        return false;
-                    WorldPosition* point = candidate.destination->GetClosestPoint(WorldPosition(bot));
-                    if (!point)
-                        return false;
-                    std::string zone = point->GetAreaName(false, true);
-                    std::transform(zone.begin(), zone.end(), zone.begin(),
-                        [](unsigned char c) { return (char)std::tolower(c); });
-                    return zoneList.find(zone) != std::string::npos;
-                };
-
-                size_t const preferred = (size_t)std::count_if(ordered.begin(), ordered.end(), inPreferredZone);
-                if (preferred > 0 && preferred < ordered.size())
-                {
-                    std::stable_partition(ordered.begin(), ordered.end(), inPreferredZone);
-                    sPlayerbotAIConfig.logEvent(ai, "GatherZonePrefer", econgoal::SkillLabel(preferSkill),
-                        "preferred=" + std::to_string((uint32)preferred) +
-                        "|candidates=" + std::to_string((uint32)ordered.size()));
-                }
+                std::stable_partition(ordered.begin(), ordered.end(), inPreferredZone);
+                sPlayerbotAIConfig.logEvent(ai, "GatherZonePrefer", econgoal::SkillLabel(preferSkill),
+                    "preferred=" + std::to_string((uint32)preferred) +
+                    "|candidates=" + std::to_string((uint32)ordered.size()));
             }
         }
     }
