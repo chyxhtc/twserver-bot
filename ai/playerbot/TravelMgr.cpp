@@ -1224,7 +1224,19 @@ bool GatherTravelDestination::IsActive(Player* bot, const PlayerTravelInfo& info
                     GetPurpose() == TravelDestinationPurpose::GatherHerbalism ? SKILL_HERBALISM :
                     GetPurpose() == TravelDestinationPurpose::GatherMining ? SKILL_MINING :
                     GetPurpose() == TravelDestinationPurpose::GatherSkinning ? SKILL_SKINNING : 0;
-                int32 const waitRange = trace::IntValue("goal_spawn_wait_range", 0);
+                // A151 (2026-10-13): the range that decides whether a gather destination is KEPT (the
+                // bot walks there and waits for the node) was the same knob the local hop uses, so it
+                // could not be widened without making hops absurd - they are different questions. A hop
+                // moves between neighbouring spawns of one cluster; "keep this entry" is about reaching
+                // the zone that has the content at all. Measured 02:30-02:40: three of the four
+                // herbalism pilots sat in zones whose only herbalism candidates were quest plants,
+                // while the pools that can actually raise the skill (Silverleaf 1617, Peacebloom 1618,
+                // Earthroot 1619 - the only herb entries with spawns in the whole database) were
+                // thousands of yards away and therefore judged inactive. Knob goal_spawn_keep_range
+                // (0 = fall back to the hop knob, so the old behaviour is one value away).
+                int32 waitRange = trace::IntValue("goal_spawn_keep_range", 0);
+                if (waitRange <= 0)
+                    waitRange = trace::IntValue("goal_spawn_wait_range", 0);
 
                 if (waitRange > 0 && purposeSkill == goalSkill)
                 {
