@@ -1460,10 +1460,20 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         // (position within 40 yards) never fired and no GatherPointSweep/Skip row
                         // appeared. Compare against the destination's own closest point instead.
                         WorldPosition* reached = destination->GetClosestPoint(WorldPosition(bot));
+                        // A127e (2026-10-12): the sweep must not wait for a scan that happens to run
+                        // while the bot is standing on the point. The A127d read-out shows the scans
+                        // that do run come from far away (reachedDist 1040-7282 yards: the bot is on
+                        // its way), so the 40-yard "arrived" gate kept this branch silent even though
+                        // the pilots do reach their pools. Split the two ideas: being anywhere inside
+                        // goal_spawn_wait_range of the pool is enough to ROTATE the point, while a
+                        // strike (a point that cannot be gathered at) still requires really standing
+                        // there (40 yards) so that a point is not blamed for a bot that never came.
+                        bool const inPoolArea = reached && reached->getMapId() == bot->GetMapId() &&
+                            reached->distance(bot) <= (float)waitRange;
                         bool const atPool = reached && reached->getMapId() == bot->GetMapId() &&
                             reached->distance(bot) <= 40.0f;
                         if (trace::IntValue("gather_point_sweep", 0) != 0 && sweepMinutes > 0 &&
-                            waitRange > 0 && econgoal::Active(bot->GetGUIDLow()) && atPool)
+                            waitRange > 0 && econgoal::Active(bot->GetGUIDLow()) && inPoolArea)
                         {
                             // A127b (2026-10-12, from the user's own play experience): a node that cannot
                             // be gathered at is not a node to stand on. Herbs grow on high ground where the
@@ -1488,7 +1498,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                             if (gatherPointStrikes.size() > 20000)
                                 gatherPointStrikes.clear();
                             auto& strike = gatherPointStrikes[strikeKey];
-                            if (!strike.second || now - strike.second >= MINUTE)
+                            if (atPool && (!strike.second || now - strike.second >= MINUTE))
                             {
                                 strike.second = now;
                                 ++strike.first;
