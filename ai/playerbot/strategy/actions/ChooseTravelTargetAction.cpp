@@ -2538,7 +2538,24 @@ bool RequestTravelTargetAction::Execute(Event& event)
     if (leavingOutgrown && actionPurpose == TravelDestinationPurpose::Grind)
         outgrownFloor = (int32)bot->GetLevel() - 5;
 
-    *AI_VALUE(FutureDestinations*, "future travel destinations") = std::async((sPlayerbotAIConfig.asyncTravelPartitions ? std::launch::async : std::launch::deferred), [partitions = travelPartitions, travelInfo = PlayerTravelInfo(bot), center, purpose = actionPurpose, outgrownFloor]() { return sTravelMgr.GetPartitions(center, partitions, travelInfo, (uint32)purpose, {}, true, 10000.0f, outgrownFloor); });
+    // A148 (2026-10-13): a gather window may look past its own neighbourhood. The fences around the
+    // low-level zones are leveling policy - keep bots questing at their own level - and the user's own
+    // rule for professions is explicit: a low gathering skill is raised in the zone that has that
+    // content, a max-level bot is free to travel there, and a gather window runs no quests anyway.
+    // Measured 01:10-01:16: the first skinning pilot (Sarkhol, skinning 5, window running) sat in a
+    // custom zone whose ten kilometre neighbourhood holds no skinning pool at all, so every scan fell
+    // back to Vendor errands (GatherOfferScan for GatherSkinning offered=0, TravelTarget Vendor four
+    // yards away) and the hour went by without a single beast; the mining pilot only found veins after
+    // his window had already walked him from Un'Goro to The Barrens. The partition table already
+    // carries bands out to 500 km, so the ten kilometre cap was the only thing in the way.
+    uint32 const gatherPurposeFlags = (uint32)TravelDestinationPurpose::GatherHerbalism |
+        (uint32)TravelDestinationPurpose::GatherMining |
+        (uint32)TravelDestinationPurpose::GatherSkinning |
+        (uint32)TravelDestinationPurpose::GatherFishing;
+    bool const windowGatherReach =
+        ((uint32)actionPurpose & gatherPurposeFlags) != 0 && econgoal::Active(bot->GetGUIDLow());
+
+    *AI_VALUE(FutureDestinations*, "future travel destinations") = std::async((sPlayerbotAIConfig.asyncTravelPartitions ? std::launch::async : std::launch::deferred), [partitions = travelPartitions, travelInfo = PlayerTravelInfo(bot), center, purpose = actionPurpose, outgrownFloor, windowGatherReach]() { return sTravelMgr.GetPartitions(center, partitions, travelInfo, (uint32)purpose, {}, true, windowGatherReach ? 1000000.0f : 10000.0f, outgrownFloor); });
 
     AI_VALUE(TravelTarget*, "travel target")->SetStatus(TravelStatus::TRAVEL_STATUS_PREPARE);
     SET_AI_VALUE2(std::string, "manual string", "future travel purpose", getQualifier());
