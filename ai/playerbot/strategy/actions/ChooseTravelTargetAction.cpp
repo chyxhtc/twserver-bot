@@ -1849,7 +1849,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         if (point->IsEnemyHomeZoneFor(bot->GetTeam()))
                             return true;
                         if (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
-                            point->IsGuardedHostileTownFor(bot))
+                            point->IsGuardedHostileTownFor(bot, 200.0f))
                             return true;
                         AreaTableEntry const* pointArea = point->GetArea();
                         uint32 const pointZoneId = pointArea ? (pointArea->ZoneId ? pointArea->ZoneId : pointArea->Id) : 0;
@@ -1944,8 +1944,19 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     // only; owned/alt bots obey their player. Enemy home zones are
                     // already skipped above; this covers contested-zone towns
                     // (Splintertree, Booty Bay, Southshore, Menethil...).
+                    //
+                    // A150 (2026-10-13): a gather window keeps a wider clearance. Measured 02:03:23,
+                    // the herbalism pilot Warkryrzith - sent to an Elwynn Forest Peacebloom spawn by the
+                    // now world-wide gather reach - was killed by a Stormwind City Guard. The sixty
+                    // yards this gate uses is measured against guard *spawn rows*, and a patrolling
+                    // guard walks well past that. A gather point is worth far less than the walk back
+                    // from a graveyard, so inside a window a gather destination has to clear two
+                    // hundred yards; outside windows the old radius stands.
+                    float const guardRadius =
+                        (dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
+                         econgoal::Active(bot->GetGUIDLow())) ? 200.0f : 60.0f;
                     if (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
-                        position->IsGuardedHostileTownFor(bot))
+                        position->IsGuardedHostileTownFor(bot, guardRadius))
                     {
                         // A59: a destination that exists because an active quest asks for it
                         // (a kill objective or the looter of a quest item) is exempt under the
