@@ -1383,6 +1383,40 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 // gather_sweep_min (default 3).
                 bool const gatherDest = dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
                     destination->GetEntry() < 0;
+
+                // A127d (2026-10-12): the sweep/blacklist branch below did not fire although both
+                // pilots were standing 31/33 yards from a dead spawn of their own pool with
+                // GoWorkProbe seen=0, so name the precondition that fails instead of guessing again.
+                // One row per bot per entry per five minutes; it also stays useful as a read-out of
+                // why the window is waiting.
+                if (!target->IsForced() && gatherDest &&
+                    (trace::IntValue("gather_point_live", 0) != 0 ||
+                     trace::IntValue("gather_point_sweep", 0) != 0))
+                {
+                    time_t const diagNow = time(nullptr);
+                    std::string const diagKey = "gatherpointdiag::" + std::to_string(destination->GetEntry());
+                    time_t const diagLast = AI_VALUE2(time_t, "manual time", diagKey);
+                    if (!diagLast || diagNow - diagLast >= 5 * MINUTE)
+                    {
+                        SET_AI_VALUE2(time_t, "manual time", diagKey, diagNow);
+                        WorldPosition* diagReached = destination->GetClosestPoint(WorldPosition(bot));
+                        uint32 const diagEntry = (uint32)(-destination->GetEntry());
+                        std::list<ObjectGuid> const diagNearest =
+                            AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los");
+                        GameObject* diagLive = GatherNearestLiveObject(ai, bot, diagEntry, diagNearest);
+                        sPlayerbotAIConfig.logEvent(ai, "GatherPointDiag",
+                            std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                            "positionNull=" + std::to_string(position ? 0 : 1) +
+                            "|active=" + std::to_string(econgoal::Active(bot->GetGUIDLow()) ? 1 : 0) +
+                            "|reachedDist=" + std::to_string(diagReached ? (int)diagReached->distance(bot) : -1) +
+                            "|sameMap=" + std::to_string(diagReached && diagReached->getMapId() == bot->GetMapId() ? 1 : 0) +
+                            "|liveSeen=" + std::to_string(diagLive ? 1 : 0) +
+                            "|sweep=" + std::to_string(trace::IntValue("gather_point_sweep", 0)) +
+                            "|waitRange=" + std::to_string(trace::IntValue("goal_spawn_wait_range", 0)) +
+                            "|considered=" + std::to_string(considered));
+                    }
+                }
+
                 if (!target->IsForced() && position && gatherDest &&
                     (trace::IntValue("gather_point_live", 0) != 0 ||
                      trace::IntValue("gather_point_sweep", 0) != 0))
