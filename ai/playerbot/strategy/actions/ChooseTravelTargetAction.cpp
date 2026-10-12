@@ -22,6 +22,8 @@
 #include <iomanip>
 #include <mutex>
 #include <chrono>
+#include <cctype>
+#include <algorithm>
 
 using namespace ai;
 
@@ -1208,6 +1210,50 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 "|left=" + std::to_string(ordered.size()) +
                 "|bags=" + std::to_string((uint32)bagUsed) +
                 "|held=" + std::to_string(goalNearby ? 0 : 1));
+        }
+
+        // A128 (2026-10-12): a window still spends its hour travelling, because the pools that pass
+        // every gate are 1.3k-8.1k yards away (A127d's read-out: reachedDist 1363/1390/1607/1908/4190/
+        // 7282/8110) while the bot's own low-level node areas are right under it: a seven minute
+        // LootGoSeen sample found live Earthroot in Tirisfal (zone 85) and live nodes in zones 44 and
+        // 3, all inside horde-reachable country. So while a window is running, move this scan's gather
+        // candidates that sit in the skill's own zone list to the front - the bot travels once into a
+        // zone that actually has nodes up, and every scan after that has local candidates (where A126
+        // and A127 can finally work). Nothing is excluded: if no candidate is in those zones the list
+        // is left exactly as it was, so this cannot strand a bot.
+        // Knobs: gather_zone_prefer (0 = off) and gather_zones (comma separated zone names, matched
+        // case-insensitively; the switch file lowercases every value, hence the lowering here).
+        if (trace::IntValue("gather_zone_prefer", 0) != 0)
+        {
+            std::string zoneList = trace::StringValue("gather_zones", "");
+            if (!zoneList.empty())
+            {
+                std::transform(zoneList.begin(), zoneList.end(), zoneList.begin(),
+                    [](unsigned char c) { return (char)std::tolower(c); });
+
+                auto const inPreferredZone = [&](OrderedCandidate const& candidate)
+                {
+                    if (!candidate.destination || candidate.destination->GetPurpose() != preferPurpose ||
+                        candidate.destination->GetEntry() >= 0)
+                        return false;
+                    WorldPosition* point = candidate.destination->GetClosestPoint(WorldPosition(bot));
+                    if (!point)
+                        return false;
+                    std::string zone = point->GetAreaName(false, true);
+                    std::transform(zone.begin(), zone.end(), zone.begin(),
+                        [](unsigned char c) { return (char)std::tolower(c); });
+                    return zoneList.find(zone) != std::string::npos;
+                };
+
+                size_t const preferred = (size_t)std::count_if(ordered.begin(), ordered.end(), inPreferredZone);
+                if (preferred > 0 && preferred < ordered.size())
+                {
+                    std::stable_partition(ordered.begin(), ordered.end(), inPreferredZone);
+                    sPlayerbotAIConfig.logEvent(ai, "GatherZonePrefer", econgoal::SkillLabel(preferSkill),
+                        "preferred=" + std::to_string((uint32)preferred) +
+                        "|candidates=" + std::to_string((uint32)ordered.size()));
+                }
+            }
         }
     }
 
