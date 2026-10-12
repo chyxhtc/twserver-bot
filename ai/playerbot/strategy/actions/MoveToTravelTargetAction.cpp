@@ -399,6 +399,27 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                         }
                     }
 
+                    // A136 (2026-10-12): a herb or vein is a LOCKED container, and the core only creates
+                    // its loot - and only raises the gathering skill - inside Spell::EffectOpenLock. The
+                    // plain use opcode below takes the chest branch instead, which sends no loot and
+                    // grants no skill: measured all day, the module reached live nodes and sent the use
+                    // (17:26:49 Copper Vein, 18:45:50 Peacebloom, both 3-6 yards away) and never saw a
+                    // single ore or herb. So a gather object goes to the loot stack, whose action stops
+                    // the bot, casts the lock's opening spell and then takes the items - the path that
+                    // has always worked for the quest plants (11315 rows in loot.log).
+                    if (IsGatherEntry(workEntry))
+                    {
+                        LootObjectStack* lootStack = AI_VALUE(LootObjectStack*, "available loot");
+                        if (lootStack && lootStack->Add(go->getObjectGuid()))
+                        {
+                            sPlayerbotAIConfig.logEvent(ai, "GatherLootHandoff",
+                                std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                                "dist=" + std::to_string((int)bot->GetDistance(go)));
+                            SetDuration(sPlayerbotAIConfig.globalCoolDown);
+                            return true;
+                        }
+                    }
+
                     std::unique_ptr<WorldPacket> packet(new WorldPacket(CMSG_GAMEOBJ_USE));
                     *packet << go->getObjectGuid();
                     bot->GetSession()->QueuePacket(packet.release());
