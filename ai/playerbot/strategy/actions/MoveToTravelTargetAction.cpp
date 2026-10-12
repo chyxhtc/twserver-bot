@@ -45,6 +45,43 @@ namespace
         float i_range;
     };
 
+    // A155 (2026-10-13): the nearest beast the bot could actually skin, whatever its entry. A
+    // skinning destination is a spawn point, and the beast is frequently not up when the bot gets
+    // there; waiting on one empty point per destination was the whole of the previous behaviour, so
+    // the window churned between far destinations and never had a corpse to work on. A player in that
+    // situation skins whatever beast is standing nearby, so a skinning window does the same: any
+    // living beast in range whose skin its skill would pass is a candidate.
+    class AnySkinnableBeastInRangeCheck
+    {
+    public:
+        AnySkinnableBeastInRangeCheck(WorldObject const* obj, uint32 skinSkill, float range)
+            : i_obj(obj), i_skill(skinSkill), i_range(range) {}
+        WorldObject const& GetFocusObject() const { return *i_obj; }
+        bool operator()(Unit* unit)
+        {
+            if (!unit || !unit->IsAlive() || unit->GetTypeId() != TYPEID_UNIT)
+                return false;
+
+            Creature* creature = (Creature*)unit;
+            if (!creature->GetCreatureInfo() || !creature->GetCreatureInfo()->skinning_loot_id)
+                return false;
+
+            if (creature->GetCreatureType() != CREATURE_TYPE_BEAST)
+                return false;
+
+            uint32 const level = creature->GetLevel();
+            uint32 const req = level < 10 ? 1 : level < 20 ? (level - 10) * 10 : level * 5;
+            if (i_skill < req)
+                return false; // the server would refuse the skin anyway
+
+            return i_obj->IsWithinDistInMap(unit, i_range);
+        }
+    private:
+        WorldObject const* i_obj;
+        uint32 i_skill;
+        float i_range;
+    };
+
     // AiPlayerbot.LastMileTeleport is the default for every bot. The per-bot arm knob
     // "lastmile" overrides it in both directions when it is set, so a controlled bot can be
     // forced back to the old drop-and-park behaviour (lastmile=0) without changing the
@@ -658,8 +695,11 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             lastSkinPull[bot->GetGUIDLow()] = pullNow;
 
                             std::list<Unit*> beasts;
-                            AnyBeastOfEntryInRangeCheck skinCheck(bot, (uint32)beastEntry, (float)skinScan);
-                            MaNGOS::UnitListSearcher<AnyBeastOfEntryInRangeCheck> skinSearcher(beasts, skinCheck);
+                            // A155: any beast the bot could skin, not only the destination's own entry -
+                            // the spawn point is often empty and the window used to leave rather than
+                            // look around.
+                            AnySkinnableBeastInRangeCheck skinCheck(bot, uint32(bot->GetSkillValue(SKILL_SKINNING)), (float)skinScan);
+                            MaNGOS::UnitListSearcher<AnySkinnableBeastInRangeCheck> skinSearcher(beasts, skinCheck);
                             Cell::VisitAllObjects((WorldObject const*)bot, skinSearcher, (float)skinScan);
 
                             Unit* prey = nullptr;
