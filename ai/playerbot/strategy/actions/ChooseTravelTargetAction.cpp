@@ -1838,10 +1838,30 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     // nearest first, same map, not on the skip list, and passing both point gates - and
                     // send the leg there instead. Windows are unaffected otherwise, and the two gates
                     // themselves are unchanged: whichever point is finally used still passes them.
+                    // A141b (2026-10-12): the gates are three, not two. Measured 21:38:54, same
+                    // bot and same minute: Tuzarurth's only two real herb candidates were refused
+                    // with isolated-zone:-1618,-1617 while the other four were quest plants - the
+                    // custom starting-zone gate is judged on the point as well, and it rejects the
+                    // whole entry exactly the same way. One predicate, used by the trigger and by
+                    // the search, so the three gates cannot drift apart again.
+                    auto const pointBlocked = [&](WorldPosition* point)
+                    {
+                        if (point->IsEnemyHomeZoneFor(bot->GetTeam()))
+                            return true;
+                        if (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
+                            point->IsGuardedHostileTownFor(bot))
+                            return true;
+                        AreaTableEntry const* pointArea = point->GetArea();
+                        uint32 const pointZoneId = pointArea ? (pointArea->ZoneId ? pointArea->ZoneId : pointArea->Id) : 0;
+                        if (!sPlayerbotAIConfig.allowIsolatedCustomStartingZones &&
+                            (PlayerbotAIConfig::IsIsolatedCustomZone(pointZoneId) ||
+                             (pointArea && PlayerbotAIConfig::IsIsolatedCustomZone(pointArea->Id))))
+                            return true;
+                        return false;
+                    };
+
                     if (dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
-                        (position->IsEnemyHomeZoneFor(bot->GetTeam()) ||
-                         (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
-                          position->IsGuardedHostileTownFor(bot))))
+                        pointBlocked(position))
                     {
                         WorldPosition* rescuePoint = nullptr;
                         float rescueDist = -1.0f;
@@ -1849,10 +1869,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         {
                             if (point->getMapId() != bot->GetMapId())
                                 continue;
-                            if (point->IsEnemyHomeZoneFor(bot->GetTeam()))
-                                continue;
-                            if (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
-                                point->IsGuardedHostileTownFor(bot))
+                            if (pointBlocked(point))
                                 continue;
 
                             float const dist = point->distance(bot);
