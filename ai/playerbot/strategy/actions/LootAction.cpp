@@ -499,6 +499,17 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
                 return MoveNear(go, 3.0f);
             }
 
+            // A140b (2026-10-12): a player dismounts to gather. Measured on the same 20:14:50 row
+            // (mounted=1 on a live Peacebloom): the loot chain's own "loot available" trigger stands
+            // down entirely while mounted, so this path must not depend on it - and the window's
+            // travel layer mounts these bots for the walk.
+            if (bot->IsMounted())
+            {
+                ai->Unmount();
+                SetDuration(sPlayerbotAIConfig.globalCoolDown);
+                return false;
+            }
+
             // A cast started while running is refused or interrupted before the node is opened.
             if (sServerFacade.isMoving(bot))
             {

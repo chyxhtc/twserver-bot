@@ -2,6 +2,7 @@
 #include "SharedValueContext.h"
 #include "LootValues.h"
 #include "playerbot/strategy/actions/LootAction.h"
+#include "playerbot/EconGoal.h"
 
 #include <cstdlib>
 
@@ -591,6 +592,36 @@ bool ShouldLootObject::Calculate()
 		{
 			if (ItemUsageValue::IsNeededForQuest(bot, entry))
 				return true;
+		}
+	}
+
+	// A140 (2026-10-12): the same chicken and egg as the quest-container case above, for the second
+	// family of containers. An herb node or a vein is a LOCK_KEY_SKILL container whose loot is only
+	// created by the profession spell that opens it (Spell::EffectOpenLock -> SendLoot), so before
+	// that cast there is never anything in go->loot to find and this function always answers no -
+	// measured 20:14:50, Warkryrzith standing on a live Peacebloom three yards away:
+	// skill=182|req=1|inRange=1|possible=0. The window's whole purpose is to raise that one skill,
+	// so while a window runs, a node locked to the bot's own mining or herbalism is worth opening
+	// even though nobody can say in advance what it holds. Same narrow shape as A138 in
+	// LootObjectStack::Refresh: windows only, mining and herbalism only, and only when the bot
+	// really has the skill.
+	if (object->IsGameObject() && econgoal::Active(bot->GetGUIDLow()))
+	{
+		GameObject* nodeGo = static_cast<GameObject*>(object);
+		if (nodeGo->GetGOInfo())
+		{
+			if (LockEntry const* nodeLock = sLockStore.LookupEntry(nodeGo->GetGOInfo()->GetLockId()))
+			{
+				for (int i = 0; i < 8; ++i)
+				{
+					if (nodeLock->Type[i] != LOCK_KEY_SKILL)
+						continue;
+
+					SkillType const nodeSkill = SkillByLockType(LockType(nodeLock->Index[i]));
+					if ((nodeSkill == SKILL_MINING || nodeSkill == SKILL_HERBALISM) && ai->HasSkill(nodeSkill))
+						return true;
+				}
+			}
 		}
 	}
 
