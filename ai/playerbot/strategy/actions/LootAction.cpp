@@ -518,6 +518,35 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
                 return false;
             }
 
+            // A143 (2026-10-12): the two housekeeping steps the chest branch above does and this one
+            // did not, both visible in one minute of trace. Measured 21:30:37, 21:30:57 and 21:31:33,
+            // Warkryrzith on live Silverpine Peacebloom: go-gather-spell2366-lock29-casted1 three
+            // times and not one loot window answered - while 20:20:05, same bot, same entry, same
+            // branch, produced 2x2447. The states that differ are exactly these:
+            //   a loot guid left over from a corpse (21:30:58 he looted corpse 1888; a player who
+            //   already holds a loot guid cannot start another loot interaction), and
+            //   the jump/fall flag (FallStartProbe jump=1 at 21:30:57 and again at 21:31:55 - A136c
+            //   clears exactly this on the work-phase handoff path, which is why the 20:20 gather went
+            //   through and these three did not).
+            if (bot->GetLootGuid())
+            {
+                WorldPacket release(CMSG_LOOT_RELEASE, 8);
+                release << bot->GetLootGuid();
+                bot->GetSession()->QueuePacket(new WorldPacket(release));
+                bot->SetLootGuid(ObjectGuid());
+                SetDuration(sPlayerbotAIConfig.globalCoolDown);
+                return false;
+            }
+
+            if (bot->IsFalling() || ai->IsJumping())
+            {
+                ai->StopMoving();
+                bot->GetMotionMaster()->Clear();
+                bot->SetFallInformation(0.0f);
+                SetDuration(sPlayerbotAIConfig.globalCoolDown);
+                return false;
+            }
+
             bool const casted = ai->CastSpell(gatherSpell, go);
             LootTrace(bot, ai, lootObject.guid,
                 "go-gather-spell" + std::to_string(gatherSpell) +
