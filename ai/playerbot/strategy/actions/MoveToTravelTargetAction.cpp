@@ -405,6 +405,14 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     sPlayerbotAIConfig.logEvent(ai, "QuestObjectiveGoUse",
                         "entry=" + std::to_string(go->GetEntry()),
                         "dist=" + std::to_string((int)bot->GetDistance(go)));
+                    // A133 (2026-10-12): a gather cast needs the bot to stand still for a couple of
+                    // seconds. Measured 17:26:49 (Horbrosh, live Copper Vein, use sent twice, no ore):
+                    // the scans in between keep retargeting the travel leg (swap the spawn, follow a
+                    // sighting), which walks the bot off the node and cancels the cast before the ore
+                    // arrives. Stamp the moment a use goes out so the retarget blocks stand down for a
+                    // few seconds and let the cast finish.
+                    if (workEntry < 0)
+                        SET_AI_VALUE2(time_t, "manual time", "gather use stamp", time(nullptr));
                     SetDuration(sPlayerbotAIConfig.globalCoolDown);
                     return true;
                 }

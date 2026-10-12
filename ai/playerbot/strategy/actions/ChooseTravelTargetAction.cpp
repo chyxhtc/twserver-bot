@@ -1597,7 +1597,12 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         // versions kept ending up at empty points (Horbrosh 17:05:43: guided to a
                         // surveyed pool, then stood at a point with seen=0). The point is owned by the
                         // destination, so nothing dangles.
-                        if (position && position->getMapId() == bot->GetMapId() &&
+                        // A133 (2026-10-12): none of the retargets below may run for a few seconds after
+                        // the work phase sent a gather use - moving the bot cancels the cast before the
+                        // loot arrives (measured 17:26:49, live Copper Vein, use sent, no ore).
+                        time_t const useStamp = AI_VALUE2(time_t, "manual time", "gather use stamp");
+                        bool const useHold = useStamp && time(nullptr) - useStamp < 8;
+                        if (!useHold && position && position->getMapId() == bot->GetMapId() &&
                             trace::IntValue("gather_sightings", 1) != 0)
                         {
                             uint32 const sightEntry = (uint32)(-destination->GetEntry());
@@ -1642,7 +1647,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         // the candidate's own point is on the skip list, travel to the nearest spawn of
                         // the same pool that is not (same map, inside goal_spawn_wait_range, outside an
                         // enemy home zone).
-                        if (waitRange > 0 && position && position->getMapId() == bot->GetMapId())
+                        if (!useHold && waitRange > 0 && position && position->getMapId() == bot->GetMapId())
                         {
                             std::string const chosenId = std::to_string((int)position->getX()) + "_" +
                                 std::to_string((int)position->getY());
@@ -1713,7 +1718,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                             reached->distance(bot) <= (float)waitRange;
                         bool const atPool = reached && reached->getMapId() == bot->GetMapId() &&
                             reached->distance(bot) <= 40.0f;
-                        if (trace::IntValue("gather_point_sweep", 0) != 0 && sweepMinutes > 0 &&
+                        if (!useHold && trace::IntValue("gather_point_sweep", 0) != 0 && sweepMinutes > 0 &&
                             waitRange > 0 && econgoal::Active(bot->GetGUIDLow()) && inPoolArea)
                         {
                             // A127b (2026-10-12, from the user's own play experience): a node that cannot
