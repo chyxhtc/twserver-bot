@@ -927,8 +927,18 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 }
             }
 
+            // A134 (2026-10-12): a gather window gets the same last-mile transfer the quest legs have
+            // had all along. Measured all day: the chain reaches live nodes (17:26) but only after
+            // minutes of walking, and a herb respawns on a 900 second cycle while the sighting that
+            // sent the bot there goes stale - the coincidence keeps failing on the walking time. With
+            // this on, once the leg has failed enough to reach this decision point the bot is dropped
+            // on the destination instead of strolling the last stretch, so "saw it a moment ago" and
+            // "standing on it" are seconds apart. Knob goal_gather_lastmile (0 = off).
+            bool const gatherLastMile = destination && econgoal::Active(bot->GetGUIDLow()) &&
+                trace::IntValue("goal_gather_lastmile", 0) != 0 &&
+                dynamic_cast<GatherTravelDestination*>(destination) != nullptr;
             if (destination && target->getPosition() &&
-                (dynamic_cast<QuestTravelDestination*>(destination) || leavesOutgrownZone) &&
+                (dynamic_cast<QuestTravelDestination*>(destination) || leavesOutgrownZone || gatherLastMile) &&
                 LastMileAllowed(bot) &&
                 sRandomBotFacade.GetValue(bot, "last mile teleport") == 0)
             {
