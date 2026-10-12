@@ -435,7 +435,12 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     std::string const useKey = std::to_string(bot->GetGUIDLow()) + "|" + std::to_string(workEntry);
                     time_t const useNow = time(nullptr);
                     auto const useIt = lastUseProbe.find(useKey);
-                    if (useIt == lastUseProbe.end() || useNow - useIt->second >= MINUTE)
+                    // A129b (2026-10-12): the interesting state - a live object of this entry inside the
+                    // bot's own sight while the work phase runs - showed up twice in two and a half
+                    // hours (13:16 and 14:40, and both were caught by the scan-side probe instead), so a
+                    // one-row-per-minute throttle could walk straight past it. Anything with seen > 0 is
+                    // therefore written at once; the dead-point rows keep the minute throttle.
+                    if (seen > 0 || useIt == lastUseProbe.end() || useNow - useIt->second >= MINUTE)
                     {
                         lastUseProbe[useKey] = useNow;
                         sPlayerbotAIConfig.logEvent(ai, "GatherUseProbe",
