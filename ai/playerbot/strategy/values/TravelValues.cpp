@@ -436,6 +436,16 @@ bool ShouldTravelNamedValue::Calculate()
 
     WorldPosition botPos(bot);
 
+    // A145 (2026-10-12): the two flavour purposes stand down while an econ window runs. Measured in
+    // Warkryrzith's 21:58-22:38 herbalism window: four city legs to Undercity (22:17, 22:20, 22:21 and
+    // 22:25 - the first twenty minutes of the hour are exactly where "city" is allowed) and no
+    // gathering in between, while his two gathers that hour happened in the minutes when the window
+    // had him out in Silverpine. A window is the one hour a bot spends on one skill (A124's own rule
+    // for the quest and vendor purposes), and city/world pvp are the optional flavour trips - they can
+    // have the other forty minutes.
+    if ((name == "city" || name == "pvp") && econgoal::Active(bot->GetGUIDLow()))
+        return false;
+
     if (name == "city")
     {
         if (bot->GetLevel() <= 5)
