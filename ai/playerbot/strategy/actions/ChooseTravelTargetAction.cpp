@@ -1263,6 +1263,48 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     "|candidates=" + std::to_string((uint32)ordered.size()));
             }
         }
+
+        // A130 (2026-10-12): a pool whose local spawns are all on the skip list must stop being the
+        // first choice, or the window spins on it forever. Measured 14:11-14:30: the two herbalism
+        // pilots were handed the same dead Barrens Peacebloom point (-383,-3783) again and again
+        // (GatherUseProbe seen=0|inReach=0|status=4 five times), because the zone preference only
+        // orders candidates by distance and that pool stays the nearest one; the points around it
+        // had been stamped by their own visits, so there was nothing left to try there, yet the
+        // candidate kept winning. Here: a gather candidate that still has at least one spawn inside
+        // goal_spawn_wait_range which is NOT on the skip list is moved ahead of one that has none,
+        // so once a pool is exhausted the window moves on to another pool in the list instead of
+        // cycling. Nothing is dropped - if every candidate is exhausted the order is untouched.
+        {
+            int32 const exhaustRange = trace::IntValue("goal_spawn_wait_range", 0);
+            time_t const exhaustNow = time(nullptr);
+            auto const hasSomethingToTry = [&](OrderedCandidate const& candidate)
+            {
+                if (!candidate.destination || candidate.destination->GetPurpose() != preferPurpose ||
+                    candidate.destination->GetEntry() >= 0 || exhaustRange <= 0)
+                    return false;
+                for (WorldPosition* point : candidate.destination->GetPoints())
+                {
+                    if (point->getMapId() != bot->GetMapId() || point->distance(bot) > (float)exhaustRange)
+                        continue;
+                    std::string const pointId = std::to_string((int)point->getX()) + "_" +
+                        std::to_string((int)point->getY());
+                    time_t const skipUntil = AI_VALUE2(time_t, "manual time",
+                        "gatherpointskip::" + std::to_string(candidate.destination->GetEntry()) + "::" + pointId);
+                    if (skipUntil <= exhaustNow)
+                        return true;
+                }
+                return false;
+            };
+
+            size_t const alive = (size_t)std::count_if(ordered.begin(), ordered.end(), hasSomethingToTry);
+            if (alive > 0 && alive < ordered.size())
+            {
+                std::stable_partition(ordered.begin(), ordered.end(), hasSomethingToTry);
+                sPlayerbotAIConfig.logEvent(ai, "GatherPoolRotate", econgoal::SkillLabel(preferSkill),
+                    "withSomethingToTry=" + std::to_string((uint32)alive) +
+                    "|candidates=" + std::to_string((uint32)ordered.size()));
+            }
+        }
     }
 
     for (auto& candidate : ordered)
