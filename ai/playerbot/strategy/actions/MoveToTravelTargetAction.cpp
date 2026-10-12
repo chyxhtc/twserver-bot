@@ -24,6 +24,27 @@ using namespace ai;
 
 namespace
 {
+    // A147 (2026-10-13): the nearest living creature of one entry within range. A skinning window
+    // has to start its own fight (see the work phase note), and the beast it needs is the pool's
+    // own entry - the same entry the destination points at.
+    class AnyBeastOfEntryInRangeCheck
+    {
+    public:
+        AnyBeastOfEntryInRangeCheck(WorldObject const* obj, uint32 entry, float range)
+            : i_obj(obj), i_entry(entry), i_range(range) {}
+        WorldObject const& GetFocusObject() const { return *i_obj; }
+        bool operator()(Unit* unit)
+        {
+            if (!unit || !unit->IsAlive() || unit->GetEntry() != i_entry)
+                return false;
+            return i_obj->IsWithinDistInMap(unit, i_range);
+        }
+    private:
+        WorldObject const* i_obj;
+        uint32 i_entry;
+        float i_range;
+    };
+
     // AiPlayerbot.LastMileTeleport is the default for every bot. The per-bot arm knob
     // "lastmile" overrides it in both directions when it is set, so a controlled bot can be
     // forced back to the old drop-and-park behaviour (lastmile=0) without changing the
@@ -602,6 +623,68 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                                 sPlayerbotAIConfig.logEvent(ai, "GatherNodeScan",
                                     std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
                                     "live=0|radius=" + std::to_string(nodeScanRange));
+                            }
+                        }
+                    }
+                }
+
+                // A147 (2026-10-13): a skinning window has to start its own fight. Measured 00:48:13,
+                // the first skinning pilot (Sarkhol, level 43, skinning 5) standing in Silverpine:
+                // GrindNoTarget attackers=0 possible=7 skipped=7, every one "ignored (not xp and not
+                // needed for quest)" - seven beasts, no fight, no corpse, no skin. Two framework rules
+                // were in the way and neither is anybody's design decision: the grind filter refuses
+                // anything that gives no xp, and the low-level beast is exactly what a low skinning
+                // skill needs (the required skill scales with the beast's level), and the window's own
+                // strategy string carries -grind so nothing initiates a fight at all. So while a
+                // skinning window runs and the leg is a GatherSkinning destination, the work phase
+                // pulls the nearest beast of that destination's entry it could actually skin; the
+                // corpse loot and the skinning cast stay the ordinary loot path's job.
+                if (econgoal::SkillOf(bot->GetGUIDLow()) == SKILL_SKINNING && target->GetDestination() &&
+                    target->GetDestination()->GetPurpose() == TravelDestinationPurpose::GatherSkinning)
+                {
+                    int32 const skinScan = trace::IntValue("gather_node_scan", 0);
+                    int32 const beastEntry = target->GetDestination()->GetEntry();
+                    if (skinScan > 0 && beastEntry > 0)
+                    {
+                        static std::map<uint32, time_t> lastSkinPull;
+                        time_t const pullNow = time(nullptr);
+                        auto const pullIt = lastSkinPull.find(bot->GetGUIDLow());
+                        if (pullIt == lastSkinPull.end() || pullNow - pullIt->second >= 10)
+                        {
+                            lastSkinPull[bot->GetGUIDLow()] = pullNow;
+
+                            std::list<Unit*> beasts;
+                            AnyBeastOfEntryInRangeCheck skinCheck(bot, (uint32)beastEntry, (float)skinScan);
+                            MaNGOS::UnitListSearcher<AnyBeastOfEntryInRangeCheck> skinSearcher(beasts, skinCheck);
+                            Cell::VisitAllObjects((WorldObject const*)bot, skinSearcher, (float)skinScan);
+
+                            Unit* prey = nullptr;
+                            float preyDist = -1.0f;
+                            for (Unit* unit : beasts)
+                            {
+                                uint32 const level = unit->GetLevel();
+                                uint32 const req = level < 10 ? 1 : level < 20 ? (level - 10) * 10 : level * 5;
+                                if (bot->GetSkillValue(SKILL_SKINNING) < req)
+                                    continue; // the server would refuse the skin anyway
+
+                                float const dist = bot->GetDistance(unit);
+                                if (preyDist >= 0.0f && dist >= preyDist)
+                                    continue;
+
+                                prey = unit;
+                                preyDist = dist;
+                            }
+
+                            if (prey)
+                            {
+                                sPlayerbotAIConfig.logEvent(ai, "SkinPull",
+                                    std::to_string(beastEntry),
+                                    "level=" + std::to_string(prey->GetLevel()) +
+                                    "|dist=" + std::to_string((int)preyDist));
+                                bot->SetSelectionGuid(prey->getObjectGuid());
+                                if (ai->DoSpecificAction("attack anything",
+                                        Event("skinning window", prey->getObjectGuid()), true))
+                                    return true;
                             }
                         }
                     }
