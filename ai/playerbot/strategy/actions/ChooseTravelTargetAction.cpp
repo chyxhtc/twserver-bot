@@ -2028,6 +2028,21 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     // Only quest destinations may trigger a cross-continent transfer;
                     // grind/gather/RPG targets are still dropped when unreachable.
                     bool const questDestination = dynamic_cast<ai::QuestTravelDestination*>(destination) != nullptr;
+                    // A152 (2026-10-13): a gather window may cross the ocean. The route layer hands a
+                    // cross-continent destination to a validated town point (TransferBotToMap) only for
+                    // quests; every other purpose is dropped instead - and that is what kept the
+                    // Kalimdor pilots away from the only pools that can raise their skill, because the
+                    // real herb entries live on the eastern kingdoms: measured 03:00:16, Tuzarurth's 15
+                    // herbalism candidates were one Peacebloom spawn judged enemy-home-zone plus
+                    // fourteen quest plants, while Silverleaf/Peacebloom/Earthroot - the only three herb
+                    // entries with spawns in the database - never appeared for him at all, and the same
+                    // entries WERE offered to a pilot standing on the other continent. The user's rule
+                    // for professions is that the bot travels to the zone that has the content; a
+                    // window is the one place where that is worth an ocean crossing, and the window's
+                    // own gates (level-safe point, guard clearance, blacklist) all still apply there.
+                    bool const gatherWindowDestination =
+                        dynamic_cast<ai::GatherTravelDestination*>(destination) != nullptr &&
+                        econgoal::Active(bot->GetGUIDLow());
                     // A15: a *hand-in* (the bot already holds the quest complete and this taker
                     // is the one that pays) gets the wider waypoint margin; objectives and every
                     // other destination keep the plain one.
@@ -2038,7 +2053,8 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                         handInReserve = relationDest->GetRelation() != 0 &&
                             bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
                     }
-                    if (!RouteIsSurvivable(bot, position, blocker, questDestination, handInReserve))
+                    if (!RouteIsSurvivable(bot, position, blocker,
+                            questDestination || gatherWindowDestination, handInReserve))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - route crosses " + blocker, "debug travel");
                         if (sPlayerbotAIConfig.hasLog("travel_route_gate.csv"))
