@@ -10,6 +10,8 @@
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/TraceSwitch.h"
 #include "playerbot/EconGoal.h"
+#include "playerbot/strategy/values/TravelValues.h"
+#include "playerbot/strategy/values/SharedValueContext.h"
 #include <iomanip>
 #include <map>
 
@@ -27,6 +29,24 @@ namespace
         if (arm >= 0)
             return arm != 0;
         return sPlayerbotAIConfig.lastMileTeleport;
+    }
+
+    // A127i (2026-10-12): "is this a gathering destination" has to be asked of the ENTRY, not of the
+    // destination object's own purpose flag. Horbrosh reached a dead Copper Vein in Westfall at
+    // 10:43:28 with GoWorkProbe seen=0|best=none and nothing was marked, unlike Warkryrzith's
+    // Peacebloom at 09:49:52 - the travel layer can build a destination for the SAME game-object
+    // entry under another purpose (grind/boss), and then the purpose flag does not say "gather"
+    // while the entry plainly does. The entry's own flags are in the shared "entry travel purpose"
+    // map, which is exactly where TravelMgr builds these destinations from.
+    bool IsGatherEntry(int32 entry)
+    {
+        static uint32 const gatherMask =
+            (uint32)TravelDestinationPurpose::GatherHerbalism |
+            (uint32)TravelDestinationPurpose::GatherMining |
+            (uint32)TravelDestinationPurpose::GatherSkinning;
+        auto const& purposes = GAI_VALUE(EntryTravelPurposeMap, "entry travel purpose");
+        auto const it = purposes.find((DestinationEntry)entry);
+        return it != purposes.end() && (it->second & gatherMask) != 0;
     }
 
     // A34/C1 diagnostics, hot switch "travelretry" (default off, see TraceSwitch.h).
@@ -393,12 +413,9 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 // blacklist). Only inside a goal window and only with the sweep knob on, so the blast
                 // radius stays the four pilots.
                 if (seen == 0 && trace::IntValue("gather_point_sweep", 0) != 0 &&
-                    econgoal::Active(bot->GetGUIDLow()) && target->GetDestination())
+                    econgoal::Active(bot->GetGUIDLow()) && target->GetDestination() &&
+                    IsGatherEntry(workEntry))
                 {
-                    TravelDestinationPurpose const purpose = target->GetDestination()->GetPurpose();
-                    if ((purpose == TravelDestinationPurpose::GatherHerbalism ||
-                         purpose == TravelDestinationPurpose::GatherMining ||
-                         purpose == TravelDestinationPurpose::GatherSkinning))
                     {
                         WorldPosition* reachPoint =
                             target->GetDestination()->GetClosestPoint(WorldPosition(bot));
@@ -502,11 +519,9 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 // gather_point_live on; one retarget per bot per entry per 10 seconds.
                 if (seen > 0 && bestGo && bestDist > INTERACTION_DISTANCE &&
                     trace::IntValue("gather_point_live", 0) != 0 &&
-                    econgoal::Active(bot->GetGUIDLow()) && target->GetDestination())
+                    econgoal::Active(bot->GetGUIDLow()) && target->GetDestination() &&
+                    IsGatherEntry(workEntry))
                 {
-                    TravelDestinationPurpose const livePurpose = target->GetDestination()->GetPurpose();
-                    if (livePurpose == TravelDestinationPurpose::GatherHerbalism ||
-                        livePurpose == TravelDestinationPurpose::GatherMining)
                     {
                         static std::map<std::string, time_t> lastLiveRetarget;
                         std::string const liveKey = std::to_string(bot->GetGUIDLow()) + "|" +
