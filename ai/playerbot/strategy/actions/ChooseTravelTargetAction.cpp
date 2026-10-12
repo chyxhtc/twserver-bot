@@ -865,6 +865,34 @@ static bool GatherLootCanRaiseSkill(ai::TravelDestination* destination)
     return false;
 }
 
+// A126/A127 (2026-10-12): the nearest live object of one game-object entry that this bot can
+// actually see, or null when none of that entry is up inside its sight. Both callers need the same
+// answer: A126 to travel to a spawn that is really alive, A127 to know that it has to sweep instead.
+// The caller passes the list so this stays a free function - the AI_VALUE macro needs the action's
+// own context member.
+static GameObject* GatherNearestLiveObject(PlayerbotAI* ai, Player* bot, uint32 goEntry,
+    std::list<ObjectGuid> const& nearestObjects)
+{
+    GameObject* best = nullptr;
+    float bestDist = -1.0f;
+
+    for (ObjectGuid const& guid : nearestObjects)
+    {
+        GameObject* go = ai->GetGameObject(guid);
+        if (!go || go->GetEntry() != goEntry || go->GetMapId() != bot->GetMapId())
+            continue;
+
+        float const dist = bot->GetDistance(go);
+        if (bestDist < 0.0f || dist < bestDist)
+        {
+            best = go;
+            bestDist = dist;
+        }
+    }
+
+    return best;
+}
+
 bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* target, PartitionedTravelList& partitionedList, bool onlyActive)
 {
     bool distanceCheck = true;
@@ -1340,30 +1368,33 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 // really sits on the object (<= 2 yards). The point belongs to the destination, so
                 // nothing here can dangle - never hand TravelTarget a stack WorldPosition.
                 // Hot knob gather_point_live (0 = off, ships off; 1 = judge and travel by the live spawn).
-                if (!target->IsForced() && position &&
-                    trace::IntValue("gather_point_live", 0) != 0 &&
-                    dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
-                    destination->GetEntry() < 0)
+                //
+                // A127 (2026-10-12): when none of this entry is up inside the bot's sight, waiting at
+                // the one spawn the search picked is a coin flip - and the only way to learn whether a
+                // spawn is active is to stand near it (the work probe's list is tens of yards wide).
+                // Measured 07:41: Warkryrzith stood exactly on the Barrens Peacebloom spawn (-3724)
+                // with GoWorkProbe seen=0|best=none, and no GatherPointLive row anywhere all hour.
+                // So while a window is running, if the bot has arrived at its gathering point and
+                // still cannot see an object of that entry, rotate the travelled point through this
+                // pool's spawns near the bot (same map, inside goal_spawn_wait_range, not in an enemy
+                // home zone, at most three tries), one rotation every gather_sweep_min minutes. Over a
+                // one hour window that visits enough of the local cluster to expect a live one, which
+                // is what standing still cannot do. Knobs: gather_point_sweep (0 = off) and
+                // gather_sweep_min (default 3).
+                bool const gatherDest = dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
+                    destination->GetEntry() < 0;
+                if (!target->IsForced() && position && gatherDest &&
+                    (trace::IntValue("gather_point_live", 0) != 0 ||
+                     trace::IntValue("gather_point_sweep", 0) != 0))
                 {
                     uint32 const liveEntry = (uint32)(-destination->GetEntry());
-                    GameObject* bestGo = nullptr;
-                    float bestGoDist = -1.0f;
-                    for (ObjectGuid const& guid : AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los"))
-                    {
-                        GameObject* go = ai->GetGameObject(guid);
-                        if (!go || go->GetEntry() != liveEntry || go->GetMapId() != bot->GetMapId())
-                            continue;
-                        float const dist = bot->GetDistance(go);
-                        if (bestGoDist < 0.0f || dist < bestGoDist)
-                        {
-                            bestGo = go;
-                            bestGoDist = dist;
-                        }
-                    }
+                    std::list<ObjectGuid> const nearestObjects =
+                        AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los");
+                    GameObject* liveGo = GatherNearestLiveObject(ai, bot, liveEntry, nearestObjects);
 
-                    if (bestGo)
+                    if (liveGo && trace::IntValue("gather_point_live", 0) != 0)
                     {
-                        WorldPosition const livePos(bestGo);
+                        WorldPosition const livePos(liveGo);
                         WorldPosition* livePoint = destination->GetClosestPoint(livePos);
                         if (livePoint && livePoint->getMapId() == livePos.getMapId() &&
                             livePoint->distance(livePos) <= 2.0f)
@@ -1377,8 +1408,99 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                                 SET_AI_VALUE2(time_t, "manual time", probeKey, now);
                                 sPlayerbotAIConfig.logEvent(ai, "GatherPointLive",
                                     std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
-                                    "objectDist=" + std::to_string((int)bestGoDist) +
+                                    "objectDist=" + std::to_string((int)bot->GetDistance(liveGo)) +
                                     "|botToPoint=" + std::to_string((int)bot->GetDistance(livePoint->getX(), livePoint->getY(), livePoint->getZ())));
+                            }
+                        }
+                    }
+                    else if (!liveGo)
+                    {
+                        int32 const sweepMinutes = trace::IntValue("gather_sweep_min", 3);
+                        int32 const waitRange = trace::IntValue("goal_spawn_wait_range", 0);
+                        if (trace::IntValue("gather_point_sweep", 0) != 0 && sweepMinutes > 0 &&
+                            waitRange > 0 && econgoal::Active(bot->GetGUIDLow()) &&
+                            position->getMapId() == bot->GetMapId() && position->distance(bot) <= 40.0f)
+                        {
+                            // A127b (2026-10-12, from the user's own play experience): a node that cannot
+                            // be gathered at is not a node to stand on. Herbs grow on high ground where the
+                            // way up has to be found (the Barrens crossroads is the classic one), the
+                            // interact range is tight, and a spawn that has just been picked is gone until
+                            // it respawns - so a point the bot has arrived at and still cannot see an object
+                            // for gets a strike, is skipped for gather_point_skip_min minutes, and after
+                            // gather_point_strikes strikes is skipped for six hours (the blacklist the user
+                            // asked for). Strikes are time-gated to one per point per minute, otherwise a bot
+                            // standing still would blacklist a point within seconds.
+                            time_t const now = time(nullptr);
+
+                            int32 const strikeLimit = std::max(1, trace::IntValue("gather_point_strikes", 3));
+                            int32 const skipMinutes = std::max(1, trace::IntValue("gather_point_skip_min", 10));
+                            int32 const blacklistMinutes = 360;
+                            std::string const pointId =
+                                std::to_string((int)position->getX()) + "_" + std::to_string((int)position->getY());
+                            std::string const strikeKey = std::to_string(bot->GetGUIDLow()) + "::" +
+                                std::to_string(destination->GetEntry()) + "::" + pointId;
+
+                            static std::map<std::string, std::pair<uint32, time_t>> gatherPointStrikes;
+                            if (gatherPointStrikes.size() > 20000)
+                                gatherPointStrikes.clear();
+                            auto& strike = gatherPointStrikes[strikeKey];
+                            if (!strike.second || now - strike.second >= MINUTE)
+                            {
+                                strike.second = now;
+                                ++strike.first;
+
+                                bool const blacklisted = strike.first >= (uint32)strikeLimit;
+                                int32 const holdMinutes = blacklisted ? blacklistMinutes : skipMinutes;
+                                std::string const skipKey = "gatherpointskip::" +
+                                    std::to_string(destination->GetEntry()) + "::" + pointId;
+                                SET_AI_VALUE2(time_t, "manual time", skipKey, now + (time_t)holdMinutes * 60);
+
+                                sPlayerbotAIConfig.logEvent(ai, "GatherPointSkip",
+                                    std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                    "point=" + pointId + "|strikes=" + std::to_string(strike.first) +
+                                    "|holdMin=" + std::to_string(holdMinutes) +
+                                    "|blacklisted=" + std::to_string(blacklisted ? 1 : 0));
+                            }
+
+                            std::vector<WorldPosition*> nearby;
+                            for (WorldPosition* point : destination->GetPoints())
+                                if (point->getMapId() == bot->GetMapId() &&
+                                    point->distance(bot) <= (float)waitRange)
+                                    nearby.push_back(point);
+
+                            if (nearby.size() > 1)
+                            {
+                                size_t const offset =
+                                    (size_t)((now / ((time_t)sweepMinutes * 60)) % (time_t)nearby.size());
+                                for (size_t i = 0; i < nearby.size() && i < 4; ++i)
+                                {
+                                    WorldPosition* sweepPoint = nearby[(offset + i) % nearby.size()];
+                                    if (sweepPoint->distance(bot) <= 5.0f)
+                                        continue; // already standing there
+                                    std::string const sweepId = std::to_string((int)sweepPoint->getX()) + "_" +
+                                        std::to_string((int)sweepPoint->getY());
+                                    time_t const skipUntil = AI_VALUE2(time_t, "manual time",
+                                        "gatherpointskip::" + std::to_string(destination->GetEntry()) + "::" + sweepId);
+                                    if (skipUntil > now)
+                                        continue; // this one is on the skip list (A127b)
+                                    if (sweepPoint->IsEnemyHomeZoneFor(bot->GetTeam()))
+                                        continue; // the gate below would refuse it anyway
+
+                                    position = sweepPoint;
+                                    std::string const probeKey = "gatherpointsweep::" + std::to_string(destination->GetEntry());
+                                    time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
+                                    if (!lastProbe || now - lastProbe >= MINUTE)
+                                    {
+                                        SET_AI_VALUE2(time_t, "manual time", probeKey, now);
+                                        sPlayerbotAIConfig.logEvent(ai, "GatherPointSweep",
+                                            std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                            "nearby=" + std::to_string((uint32)nearby.size()) +
+                                            "|offset=" + std::to_string((uint32)offset) +
+                                            "|taken=" + std::to_string((uint32)i) +
+                                            "|botToPoint=" + std::to_string((int)sweepPoint->distance(bot)));
+                                    }
+                                    break;
+                                }
                             }
                         }
                     }
