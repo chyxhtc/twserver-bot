@@ -9,6 +9,7 @@
 #include "playerbot/TravelMgr.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/EconGoal.h"
 #include <iomanip>
 #include <map>
 
@@ -373,6 +374,65 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     sPlayerbotAIConfig.logEvent(ai, "GoWorkProbe",
                         "entry=" + std::to_string(-workEntry) + " seen=" + std::to_string(seen),
                         "best=" + (bestDist < 0.0f ? std::string("none") : std::to_string((int)bestDist)));
+                }
+
+                // A127g (2026-10-12): a gather point that has nothing on it must be marked where the
+                // state is actually observed. The candidate-loop version only sampled this when a scan
+                // happened to run while the bot stood on the point: measured 09:03:55, Warkryrzith sat
+                // exactly on the swept Silverleaf spawn (946,1151) with GoWorkProbe seen=0 and no
+                // strike was ever recorded, because the next scan found him 440 yards away - so the
+                // dead point stayed in the pool and would be picked again. This branch runs every tick
+                // while the target sits in WORK, so the mark belongs here: stamp the point the bot is
+                // actually standing next to into the same skip key the sweep reads
+                // (gatherpointskip::<entry>::<x>_<y>), ten minutes for the first strikes and six hours
+                // from the third one on, matching the user's own rule (temporary blacklist, then the
+                // blacklist). Only inside a goal window and only with the sweep knob on, so the blast
+                // radius stays the four pilots.
+                if (seen == 0 && trace::IntValue("gather_point_sweep", 0) != 0 &&
+                    econgoal::Active(bot->GetGUIDLow()) && target->GetDestination())
+                {
+                    TravelDestinationPurpose const purpose = target->GetDestination()->GetPurpose();
+                    if ((purpose == TravelDestinationPurpose::GatherHerbalism ||
+                         purpose == TravelDestinationPurpose::GatherMining ||
+                         purpose == TravelDestinationPurpose::GatherSkinning))
+                    {
+                        WorldPosition* reachPoint =
+                            target->GetDestination()->GetClosestPoint(WorldPosition(bot));
+                        if (reachPoint && reachPoint->getMapId() == bot->GetMapId() &&
+                            reachPoint->distance(bot) <= 40.0f)
+                        {
+                            time_t const markNow = time(nullptr);
+                            std::string const pointId = std::to_string((int)reachPoint->getX()) + "_" +
+                                std::to_string((int)reachPoint->getY());
+                            std::string const strikeKey = std::to_string(bot->GetGUIDLow()) + "::" +
+                                std::to_string(workEntry) + "::" + pointId;
+
+                            static std::map<std::string, std::pair<uint32, time_t>> deadPointStrikes;
+                            if (deadPointStrikes.size() > 20000)
+                                deadPointStrikes.clear();
+                            auto& deadStrike = deadPointStrikes[strikeKey];
+                            if (!deadStrike.second || markNow - deadStrike.second >= MINUTE)
+                            {
+                                deadStrike.second = markNow;
+                                ++deadStrike.first;
+
+                                int32 const strikeLimit = std::max(1, trace::IntValue("gather_point_strikes", 3));
+                                int32 const skipMinutes = std::max(1, trace::IntValue("gather_point_skip_min", 10));
+                                bool const blacklisted = deadStrike.first >= (uint32)strikeLimit;
+                                int32 const holdMinutes = blacklisted ? 360 : skipMinutes;
+                                SET_AI_VALUE2(time_t, "manual time",
+                                    "gatherpointskip::" + std::to_string(workEntry) + "::" + pointId,
+                                    markNow + (time_t)holdMinutes * 60);
+
+                                sPlayerbotAIConfig.logEvent(ai, "GatherPointDead",
+                                    std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                                    "point=" + pointId + "|dist=" + std::to_string((int)reachPoint->distance(bot)) +
+                                    "|strikes=" + std::to_string(deadStrike.first) +
+                                    "|holdMin=" + std::to_string(holdMinutes) +
+                                    "|blacklisted=" + std::to_string(blacklisted ? 1 : 0));
+                            }
+                        }
+                    }
                 }
             }
         }
