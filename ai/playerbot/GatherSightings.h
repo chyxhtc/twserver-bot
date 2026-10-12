@@ -93,4 +93,32 @@ namespace ai { namespace gather_sightings
         }
         return false;
     }
+
+    // The fresh sighting of this entry nearest the given position, or null. A132b uses it to point
+    // the travel leg at the spawn the sighting is about instead of at whichever spawn the pool
+    // happened to hand out.
+    inline Sighting const* NearestFresh(uint32 goEntry, uint32 mapId, float x, float y, float maxRadius)
+    {
+        auto const it = Table().find(goEntry);
+        if (it == Table().end())
+            return nullptr;
+
+        time_t const now = time(nullptr);
+        Sighting const* best = nullptr;
+        float bestD2 = maxRadius * maxRadius;
+        for (Sighting const& s : it->second)
+        {
+            if (s.mapId != mapId || now - s.seenAt > TtlSeconds())
+                continue;
+            float const dx = s.x - x;
+            float const dy = s.y - y;
+            float const d2 = dx * dx + dy * dy;
+            if (d2 <= bestD2)
+            {
+                bestD2 = d2;
+                best = &s;
+            }
+        }
+        return best;
+    }
 }}

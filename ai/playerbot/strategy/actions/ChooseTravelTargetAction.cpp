@@ -1315,7 +1315,11 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
         // deposit (zone 46) while the pilots' own pools were all down.
         if (trace::IntValue("gather_sightings", 1) != 0)
         {
-            int32 const sightingRange = 60;
+            // A132b (2026-10-12): 60 yards was too tight to connect a sighting with the spawn the
+            // window would walk to - Horbrosh was steered to a surveyed vein pool in zone 1519 at
+            // 17:03-17:04 and still arrived at a point with seen=0 at 17:05. 150 yards covers the
+            // local cluster a sighting belongs to.
+            int32 const sightingRange = 150;
             time_t const sightingNow = time(nullptr);
             (void)sightingNow;
             auto const nearSighting = [&](OrderedCandidate const& candidate)
@@ -1586,6 +1590,48 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     {
                         int32 const sweepMinutes = trace::IntValue("gather_sweep_min", 3);
                         int32 const waitRange = trace::IntValue("goal_spawn_wait_range", 0);
+
+                        // A132b (2026-10-12): if the world saw a live node of this entry near one of
+                        // this pool's spawns, walk to THAT spawn - the sighting is the only reason this
+                        // pool was preferred, and arriving at any other spawn of it is how the earlier
+                        // versions kept ending up at empty points (Horbrosh 17:05:43: guided to a
+                        // surveyed pool, then stood at a point with seen=0). The point is owned by the
+                        // destination, so nothing dangles.
+                        if (position && position->getMapId() == bot->GetMapId() &&
+                            trace::IntValue("gather_sightings", 1) != 0)
+                        {
+                            uint32 const sightEntry = (uint32)(-destination->GetEntry());
+                            WorldPosition* sightPoint = nullptr;
+                            float sightDist = -1.0f;
+                            for (WorldPosition* point : destination->GetPoints())
+                            {
+                                if (point->getMapId() != bot->GetMapId())
+                                    continue;
+                                if (!gather_sightings::NearestFresh(sightEntry, point->getMapId(),
+                                        point->getX(), point->getY(), 150.0f))
+                                    continue;
+                                float const dist = point->distance(bot);
+                                if (sightDist >= 0.0f && dist >= sightDist)
+                                    continue;
+                                sightPoint = point;
+                                sightDist = dist;
+                            }
+
+                            if (sightPoint && sightPoint != position)
+                            {
+                                position = sightPoint;
+                                time_t const sightNow = time(nullptr);
+                                std::string const probeKey = "gatherpointsighted::" + std::to_string(destination->GetEntry());
+                                time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
+                                if (!lastProbe || sightNow - lastProbe >= MINUTE)
+                                {
+                                    SET_AI_VALUE2(time_t, "manual time", probeKey, sightNow);
+                                    sPlayerbotAIConfig.logEvent(ai, "GatherPointSighted",
+                                        std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                        "botToPoint=" + std::to_string((int)sightDist));
+                                }
+                            }
+                        }
 
                         // A127j (2026-10-12): the skip list has to be consulted when the destination's
                         // point is CHOSEN, not only while hopping inside the pool. Measured: after
