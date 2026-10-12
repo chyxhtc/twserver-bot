@@ -49,6 +49,25 @@ namespace
         return it != purposes.end() && (it->second & gatherMask) != 0;
     }
 
+    // A126c (2026-10-12): the same loot-class rule the candidate filter uses (A120), but asked here,
+    // because this side is where the bot actually walks to an object. Measured 12:33:13: the work
+    // retarget fired on Bloodpetal Sprout (164958) - an entry the purpose map does call herbalism,
+    // but whose loot is a quest item only, so walking there raises nothing. During a window that is
+    // exactly the waste the user's rule 4 is about, so a "gather" entry with no trade-good loot is
+    // not worth a strike, a hop or a walk. Knob gather_skill_loot (0 = off, judge nothing).
+    bool GatherEntryCanRaiseSkill(int32 entry)
+    {
+        if (trace::IntValue("gather_skill_loot", 0) == 0)
+            return true;
+        for (uint32 lootItem : GAI_VALUE2(std::list<uint32>, "entry loot list", entry))
+        {
+            ItemPrototype const* proto = sObjectMgr.GetItemPrototype(lootItem);
+            if (proto && proto->Class == ITEM_CLASS_TRADE_GOODS)
+                return true;
+        }
+        return false;
+    }
+
     // A34/C1 diagnostics, hot switch "travelretry" (default off, see TraceSwitch.h).
     //
     // A bot can sit on a failed travel leg for hours without the last-mile rescue running.
@@ -414,7 +433,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 // radius stays the four pilots.
                 if (seen == 0 && trace::IntValue("gather_point_sweep", 0) != 0 &&
                     econgoal::Active(bot->GetGUIDLow()) && target->GetDestination() &&
-                    IsGatherEntry(workEntry))
+                    IsGatherEntry(workEntry) && GatherEntryCanRaiseSkill(workEntry))
                 {
                     {
                         WorldPosition* reachPoint =
@@ -520,7 +539,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 if (seen > 0 && bestGo && bestDist > INTERACTION_DISTANCE &&
                     trace::IntValue("gather_point_live", 0) != 0 &&
                     econgoal::Active(bot->GetGUIDLow()) && target->GetDestination() &&
-                    IsGatherEntry(workEntry))
+                    IsGatherEntry(workEntry) && GatherEntryCanRaiseSkill(workEntry))
                 {
                     {
                         static std::map<std::string, time_t> lastLiveRetarget;
