@@ -13,6 +13,10 @@
 #include "playerbot/strategy/values/TravelValues.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
 #include "playerbot/GatherSightings.h"
+#include "playerbot/strategy/values/NearestGameObjects.h"
+#include "Maps/GridNotifiers.h"
+#include "Maps/GridNotifiersImpl.h"
+#include "Maps/CellImpl.h"
 #include <iomanip>
 #include <map>
 
@@ -516,6 +520,90 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             "|inReach=" + std::to_string(inReach) +
                             "|best=" + (bestDist < 0.0f ? std::string("none") : std::to_string((int)bestDist)) +
                             "|status=" + std::to_string((uint32)target->GetStatus()));
+                    }
+                }
+
+                // A139 (2026-10-12): ask the world where this node actually is, instead of trusting a
+                // spawn row. A herb or vein entry is pooled and only a fraction of the pool is out at
+                // any moment: measured in tw_world, Silverleaf pool 1022 has 114 members with
+                // max_limit 25, Peacebloom pool 1030 has 86 with 28, Copper Vein pool 1033 has 132
+                // with 40 - so walking to the nearest row of the pool lands on the empty member about
+                // three times out of four. That is exactly what the whole day looks like: 44
+                // GatherUseProbe rows, 40 of them seen=0, and only 4 GatherPointLive rows all day.
+                //
+                // The bot's own sight list only reaches sightDistance (60 yards), which is why
+                // looking around never helped - the live member of the pool is usually a few hundred
+                // yards away. One cell visit answers it, and the answer is handed to the mechanism
+                // that already exists for "somebody else saw a node here": a sighting. A132's
+                // preference and A135's jump then put the bot on that spawn, and the ordinary 60 yard
+                // handoff takes over once it is there. Knob gather_node_scan = radius in yards (0 =
+                // off), one scan per bot per entry per 10 seconds, only inside a running window.
+                if (seen == 0 && econgoal::Active(bot->GetGUIDLow()) && target->GetDestination() &&
+                    IsGatherEntry(workEntry) && GatherEntryCanRaiseSkill(workEntry))
+                {
+                    int32 const nodeScanRange = trace::IntValue("gather_node_scan", 0);
+                    if (nodeScanRange > 0)
+                    {
+                        static std::map<std::string, time_t> lastNodeScan;
+                        std::string const scanKey = std::to_string(bot->GetGUIDLow()) + "|" +
+                            std::to_string(workEntry);
+                        time_t const scanNow = time(nullptr);
+                        auto const scanIt = lastNodeScan.find(scanKey);
+                        if (scanIt == lastNodeScan.end() || scanNow - scanIt->second >= 10)
+                        {
+                            lastNodeScan[scanKey] = scanNow;
+
+                            uint32 const scanEntry = (uint32)(-workEntry);
+                            float const scanRange = (float)nodeScanRange;
+                            std::list<GameObject*> scanned;
+                            ai::GameObjectsInObjectRangeCheck scanCheck(bot, scanRange, scanEntry);
+                            MaNGOS::GameObjectListSearcher<ai::GameObjectsInObjectRangeCheck> scanSearcher(scanned, scanCheck);
+                            Cell::VisitAllObjects((WorldObject const*)bot, scanSearcher, scanRange);
+
+                            GameObject* near = nullptr;
+                            float nearDist = -1.0f;
+                            for (GameObject* node : scanned)
+                            {
+                                if (!node || !sServerFacade.isSpawned(node) ||
+                                    node->getLootState() != GO_READY || !node->GetGOInfo())
+                                    continue;
+
+                                float const nodeDist = bot->GetDistance(node);
+                                if (nearDist >= 0.0f && nodeDist >= nearDist)
+                                    continue;
+
+                                near = node;
+                                nearDist = nodeDist;
+                            }
+
+                            if (near)
+                            {
+                                gather_sightings::Record(near->GetEntry(), near->GetMapId(),
+                                    near->GetPositionX(), near->GetPositionY(), near->GetPositionZ());
+                                sPlayerbotAIConfig.logEvent(ai, "GatherNodeScan",
+                                    std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                                    "live=1|dist=" + std::to_string((int)nearDist) +
+                                    "|radius=" + std::to_string(nodeScanRange));
+
+                                // Point the leg at the spawn this node sits on, then let the walk do the
+                                // rest. The point is owned by the destination, so nothing dangles.
+                                WorldPosition* nodePoint =
+                                    target->GetDestination()->GetClosestPoint(WorldPosition(near));
+                                if (nodePoint && nodePoint->getMapId() == bot->GetMapId() &&
+                                    nodePoint->distance(WorldPosition(near)) <= 2.0f &&
+                                    nodePoint->distance(bot) > 1.0f)
+                                {
+                                    target->SetTarget(target->GetDestination(), nodePoint);
+                                    return true;
+                                }
+                            }
+                            else
+                            {
+                                sPlayerbotAIConfig.logEvent(ai, "GatherNodeScan",
+                                    std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                                    "live=0|radius=" + std::to_string(nodeScanRange));
+                            }
+                        }
                     }
                 }
 
