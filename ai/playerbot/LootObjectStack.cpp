@@ -3,6 +3,7 @@
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/GatherSightings.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
 
@@ -388,6 +389,14 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
             }
             if (!neededForQuest)
             {
+                // A132 (2026-10-12): this branch means the bot has this game object in its loot list
+                // and wants nothing from it for a quest - in other words the object is THERE and the
+                // bot can see it. That is exactly the "the world has a live node here right now"
+                // signal a gather window needs, so record it before the branch returns (outside the
+                // trace switch: the log is optional, the memory is not).
+                gather_sightings::Record(go->GetEntry(), go->GetMapId(),
+                    go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
+
                 // Throttled like the row below: this branch used to be unthrottled and was the
                 // single largest trace producer in the pool.
                 if (LootGoSeenTraceOn(bot))

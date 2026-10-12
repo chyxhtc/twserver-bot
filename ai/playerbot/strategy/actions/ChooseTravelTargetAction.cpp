@@ -13,6 +13,7 @@
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "playerbot/RandomBotFacade.h"
 #include "playerbot/TraceSwitch.h"
+#include "playerbot/GatherSightings.h"
 #include "playerbot/EconGoal.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/QuestGreyRule.h"
@@ -1302,6 +1303,44 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 std::stable_partition(ordered.begin(), ordered.end(), hasSomethingToTry);
                 sPlayerbotAIConfig.logEvent(ai, "GatherPoolRotate", econgoal::SkillLabel(preferSkill),
                     "withSomethingToTry=" + std::to_string((uint32)alive) +
+                    "|candidates=" + std::to_string((uint32)ordered.size()));
+            }
+        }
+
+        // A132 (2026-10-12): prefer the pool the world says is alive. Other bots walking past a live
+        // herb or vein record it in gather_sightings (see that header); here a gather candidate whose
+        // own spawn point sits within reach of such a fresh sighting sorts ahead of one that has none,
+        // so the window goes where a node was seen recently instead of cycling a fixed list. Measured
+        // 17:00: the world did have live Peacebloom (zone 44), a copper vein (zone 38) and an iron
+        // deposit (zone 46) while the pilots' own pools were all down.
+        if (trace::IntValue("gather_sightings", 1) != 0)
+        {
+            int32 const sightingRange = 60;
+            time_t const sightingNow = time(nullptr);
+            (void)sightingNow;
+            auto const nearSighting = [&](OrderedCandidate const& candidate)
+            {
+                if (!candidate.destination || candidate.destination->GetPurpose() != preferPurpose ||
+                    candidate.destination->GetEntry() >= 0)
+                    return false;
+                uint32 const goEntry = (uint32)(-candidate.destination->GetEntry());
+                for (WorldPosition* point : candidate.destination->GetPoints())
+                {
+                    if (point->getMapId() != bot->GetMapId())
+                        continue;
+                    if (gather_sightings::FreshNear(goEntry, point->getMapId(),
+                            point->getX(), point->getY(), (float)sightingRange))
+                        return true;
+                }
+                return false;
+            };
+
+            size_t const seenRecently = (size_t)std::count_if(ordered.begin(), ordered.end(), nearSighting);
+            if (seenRecently > 0 && seenRecently < ordered.size())
+            {
+                std::stable_partition(ordered.begin(), ordered.end(), nearSighting);
+                sPlayerbotAIConfig.logEvent(ai, "GatherSightingPrefer", econgoal::SkillLabel(preferSkill),
+                    "withFreshSighting=" + std::to_string((uint32)seenRecently) +
                     "|candidates=" + std::to_string((uint32)ordered.size()));
             }
         }
