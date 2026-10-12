@@ -326,6 +326,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 // action actually runs while the target sits in WORK). One line per bot per
                 // entry per 30 s says which of them is missing, instead of another blind round.
                 uint32 seen = 0;
+                uint32 inReach = 0;
                 float bestDist = -1.0f;
                 GameObject* bestGo = nullptr;
                 for (ObjectGuid const& guid : AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los"))
@@ -342,6 +343,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     }
                     if (dist > INTERACTION_DISTANCE)
                         continue;
+                    ++inReach;
 
                     bot->SetSelectionGuid(go->getObjectGuid());
 
@@ -417,6 +419,32 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     sPlayerbotAIConfig.logEvent(ai, "GoWorkProbe",
                         "entry=" + std::to_string(-workEntry) + " seen=" + std::to_string(seen),
                         "best=" + (bestDist < 0.0f ? std::string("none") : std::to_string((int)bestDist)));
+                }
+
+                // A129 (2026-10-12, diagnostic): 13:16:03 and 13:22:16 the herbalism pilot stood one
+                // yard from a LIVE Silverleaf (GatherPointLive objectDist=1) and never opened it:
+                // today's 597 QuestObjectiveGoUse rows are all quest objects, none of them a herb, and
+                // no LootAttempt names 1617/1618/1619 either. Either this loop never runs for a gather
+                // destination, or the object is not within interaction distance at the moment the loop
+                // evaluates it (the value list can differ between the loop's read and the one the
+                // retarget block makes a few lines later). One row per bot per entry per minute says
+                // which, with the numbers that decide it.
+                if (IsGatherEntry(workEntry) && GatherEntryCanRaiseSkill(workEntry))
+                {
+                    static std::map<std::string, time_t> lastUseProbe;
+                    std::string const useKey = std::to_string(bot->GetGUIDLow()) + "|" + std::to_string(workEntry);
+                    time_t const useNow = time(nullptr);
+                    auto const useIt = lastUseProbe.find(useKey);
+                    if (useIt == lastUseProbe.end() || useNow - useIt->second >= MINUTE)
+                    {
+                        lastUseProbe[useKey] = useNow;
+                        sPlayerbotAIConfig.logEvent(ai, "GatherUseProbe",
+                            std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                            "seen=" + std::to_string(seen) +
+                            "|inReach=" + std::to_string(inReach) +
+                            "|best=" + (bestDist < 0.0f ? std::string("none") : std::to_string((int)bestDist)) +
+                            "|status=" + std::to_string((uint32)target->GetStatus()));
+                    }
                 }
 
                 // A127g (2026-10-12): a gather point that has nothing on it must be marked where the
