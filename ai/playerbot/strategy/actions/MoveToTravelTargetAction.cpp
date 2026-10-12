@@ -12,6 +12,7 @@
 #include "playerbot/EconGoal.h"
 #include "playerbot/strategy/values/TravelValues.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
+#include "playerbot/GatherSightings.h"
 #include <iomanip>
 #include <map>
 
@@ -924,6 +925,58 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                         << "|dist=" << (int32)botLocation.distance(location)
                         << "|purpose=" << AI_VALUE2(std::string, "manual string", "future travel purpose");
                     sPlayerbotAIConfig.logEvent(ai, "TravelRetryDecision", std::to_string(bot->GetGUIDLow()), out.str());
+                }
+            }
+
+            // A135 (2026-10-12): and when the world has just SEEN a live node of this entry, go there
+            // now rather than later. A134 only fires once a leg has failed enough to reach the retry
+            // decision; the failure mode all day is not a failed leg but time - a sighting is good for
+            // 900 seconds, a node respawns on a 900 second cycle, and walking the last few hundred
+            // yards takes minutes. So while a gather window is running, if one of this destination's
+            // spawns matches a fresh sighting and the bot is still more than 60 yards away, it is put
+            // on that spawn immediately (per bot per entry at most once every two minutes).
+            // Knob goal_seek_sighting (0 = off).
+            bool const gatherSightingsOn = trace::IntValue("goal_seek_sighting", 0) != 0;
+            if (destination && target->getPosition() && gatherSightingsOn &&
+                dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
+                econgoal::Active(bot->GetGUIDLow()))
+            {
+                static std::map<std::string, time_t> lastSightingJump;
+                std::string const jumpKey = std::to_string(bot->GetGUIDLow()) + "|" +
+                    std::to_string(destination->GetEntry());
+                time_t const jumpNow = time(nullptr);
+                auto const jumpIt = lastSightingJump.find(jumpKey);
+                if (jumpIt == lastSightingJump.end() || jumpNow - jumpIt->second >= 120)
+                {
+                    WorldPosition const* jumpTo = nullptr;
+                    float jumpDist = -1.0f;
+                    uint32 const seekEntry = (uint32)(-destination->GetEntry());
+                    for (WorldPosition* point : destination->GetPoints())
+                    {
+                        if (point->getMapId() != bot->GetMapId())
+                            continue;
+                        if (!gather_sightings::NearestFresh(seekEntry, point->getMapId(),
+                                point->getX(), point->getY(), 150.0f))
+                            continue;
+                        float const dist = bot->GetDistance(point->getX(), point->getY(), point->getZ());
+                        if (dist <= 60.0f)
+                            continue;
+                        if (jumpDist >= 0.0f && dist <= jumpDist)
+                            continue;
+                        jumpTo = point;
+                        jumpDist = dist;
+                    }
+
+                    if (jumpTo && bot->TeleportTo(jumpTo->getMapId(), jumpTo->getX(), jumpTo->getY(),
+                            jumpTo->getZ(), bot->GetOrientation(), 0))
+                    {
+                        lastSightingJump[jumpKey] = jumpNow;
+                        target->SetTarget(destination, const_cast<WorldPosition*>(jumpTo));
+                        sPlayerbotAIConfig.logEvent(ai, "GatherSightingJump",
+                            std::to_string((int)destination->GetEntry()) + "|" + destination->GetTitle(),
+                            "dist=" + std::to_string((int)jumpDist));
+                        return true;
+                    }
                 }
             }
 
