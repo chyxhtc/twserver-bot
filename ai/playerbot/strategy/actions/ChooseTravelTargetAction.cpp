@@ -1417,9 +1417,19 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     {
                         int32 const sweepMinutes = trace::IntValue("gather_sweep_min", 3);
                         int32 const waitRange = trace::IntValue("goal_spawn_wait_range", 0);
+                        // A127c (2026-10-12): "the bot has arrived" has to be measured against the
+                        // spawn the bot is actually standing next to, not against the candidate's own
+                        // point - A116 hands the candidate the pool's nearest CLEAN spawn, which for a
+                        // pool spread over a zone can be a different place entirely. Measured 08:11:
+                        // Warkryrzith stood 31 yards from a Peacebloom spawn with GoWorkProbe seen=0,
+                        // while the candidate point was elsewhere, so the first version of this gate
+                        // (position within 40 yards) never fired and no GatherPointSweep/Skip row
+                        // appeared. Compare against the destination's own closest point instead.
+                        WorldPosition* reached = destination->GetClosestPoint(WorldPosition(bot));
+                        bool const atPool = reached && reached->getMapId() == bot->GetMapId() &&
+                            reached->distance(bot) <= 40.0f;
                         if (trace::IntValue("gather_point_sweep", 0) != 0 && sweepMinutes > 0 &&
-                            waitRange > 0 && econgoal::Active(bot->GetGUIDLow()) &&
-                            position->getMapId() == bot->GetMapId() && position->distance(bot) <= 40.0f)
+                            waitRange > 0 && econgoal::Active(bot->GetGUIDLow()) && atPool)
                         {
                             // A127b (2026-10-12, from the user's own play experience): a node that cannot
                             // be gathered at is not a node to stand on. Herbs grow on high ground where the
@@ -1436,7 +1446,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                             int32 const skipMinutes = std::max(1, trace::IntValue("gather_point_skip_min", 10));
                             int32 const blacklistMinutes = 360;
                             std::string const pointId =
-                                std::to_string((int)position->getX()) + "_" + std::to_string((int)position->getY());
+                                std::to_string((int)reached->getX()) + "_" + std::to_string((int)reached->getY());
                             std::string const strikeKey = std::to_string(bot->GetGUIDLow()) + "::" +
                                 std::to_string(destination->GetEntry()) + "::" + pointId;
 
