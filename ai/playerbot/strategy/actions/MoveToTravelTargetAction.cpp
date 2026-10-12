@@ -211,6 +211,55 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 {
     TravelTarget* target = AI_VALUE(TravelTarget*, "travel target");
 
+    // A156 (2026-10-13): a skinning window hunts from wherever it stands. A147/A155 put the pull in
+    // the work phase, and the work phase is only reached once a travel target has arrived and settled -
+    // which is exactly what the skinning pilot never did tonight: his destination was re-picked on every
+    // scan (721 rabbit, then 883, 1131, 7904 and finally Hyjal 11621 yards away), so the pull never ran
+    // and no beast was ever killed, let alone skinned. Hunting does not need a settled destination:
+    // while a skinning window runs, any living beast the bot could skin within gather_node_scan yards
+    // is a target, whatever the travel state. Out of combat only, so a real fight is never interrupted.
+    if (econgoal::SkillOf(bot->GetGUIDLow()) == SKILL_SKINNING && !bot->IsInCombat())
+    {
+        int32 const skinScan = trace::IntValue("gather_node_scan", 0);
+        if (skinScan > 0)
+        {
+            static std::map<uint32, time_t> lastSkinPull;
+            time_t const pullNow = time(nullptr);
+            auto const pullIt = lastSkinPull.find(bot->GetGUIDLow());
+            if (pullIt == lastSkinPull.end() || pullNow - pullIt->second >= 10)
+            {
+                lastSkinPull[bot->GetGUIDLow()] = pullNow;
+
+                std::list<Unit*> beasts;
+                AnySkinnableBeastInRangeCheck skinCheck(bot, uint32(bot->GetSkillValue(SKILL_SKINNING)), (float)skinScan);
+                MaNGOS::UnitListSearcher<AnySkinnableBeastInRangeCheck> skinSearcher(beasts, skinCheck);
+                Cell::VisitAllObjects((WorldObject const*)bot, skinSearcher, (float)skinScan);
+
+                Unit* prey = nullptr;
+                float preyDist = -1.0f;
+                for (Unit* unit : beasts)
+                {
+                    float const dist = bot->GetDistance(unit);
+                    if (preyDist >= 0.0f && dist >= preyDist)
+                        continue;
+                    prey = unit;
+                    preyDist = dist;
+                }
+
+                if (prey)
+                {
+                    sPlayerbotAIConfig.logEvent(ai, "SkinPull", std::to_string(prey->GetEntry()),
+                        "level=" + std::to_string(prey->GetLevel()) +
+                        "|dist=" + std::to_string((int)preyDist) + "|where=travel");
+                    bot->SetSelectionGuid(prey->getObjectGuid());
+                    if (ai->DoSpecificAction("attack anything",
+                            Event("skinning window", prey->getObjectGuid()), true))
+                        return true;
+                }
+            }
+        }
+    }
+
     // A76 probe (2026-10-10): the A72 freeze has two live shapes - status=3 TRAVEL with
     // travelsValue=1, or status=2 READY - both with moving=0 for up to 260 s, and the A75 gate
     // probe shows they are NOT refusals inside isUseful (Subish logged 16 frozen samples and not
