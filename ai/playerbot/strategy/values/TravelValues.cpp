@@ -685,6 +685,19 @@ bool ShouldLeaveOutgrownZoneValue::Calculate()
     if (!bot->IsAlive())
         return false;
 
+    // A142 (2026-10-12): an econ window deliberately sends a bot into a zone it has outlevelled -
+    // the low-level zones are the only places a low profession skill can still be raised
+    // (Silverleaf, Peacebloom, Earthroot, Copper Vein), and those pools live there and nowhere else
+    // level-appropriate. Measured 21:07:25: Tharuputarr stood at the Barrens Peacebloom spawn
+    // (level 55 in a level 10-25 zone) and Warkryrzith in Tirisfal - both logged LeaveOutgrownZone
+    // in the middle of a gather leg, and both immediately took a city or Grind target with an empty
+    // gather scan instead, so the hour's purpose was lost to the level policy. While a window runs,
+    // the leave request therefore stands down: the window's own travel layer already picks the
+    // gather destination (and is allowed to pick a far one), and the normal rule resumes the moment
+    // the window ends. Outside windows nothing changes.
+    if (econgoal::Active(bot->GetGUIDLow()))
+        return false;
+
     // Below level 10 the start zone is normally home, but not when its mobs are all grey:
     // see greyOnlyLowbie below, which is the only way a bot under 10 may leave.
     if (bot->GetLevel() < 8)
