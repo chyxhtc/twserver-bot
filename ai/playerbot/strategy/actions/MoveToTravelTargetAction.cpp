@@ -424,6 +424,12 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             // blocks leave him alone for the next eight seconds.
                             SET_AI_VALUE2(time_t, "manual time", "gather use stamp", time(nullptr));
                             ai->StopMoving();
+                            // A136c (2026-10-12): and drop the fall/jump state. The A78 watchdog clears it
+                            // exactly the same way when it decides a bot is stuck, and the traces show the
+                            // bot jumping in place on the node for minutes - which is enough to keep the
+                            // loot action in its "stop, wait, try again" loop for ever.
+                            bot->GetMotionMaster()->Clear();
+                            bot->SetFallInformation(0.0f);
                             SetDuration(sPlayerbotAIConfig.globalCoolDown);
                             return true;
                         }
