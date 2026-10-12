@@ -480,6 +480,30 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             std::string const strikeKey = std::to_string(bot->GetGUIDLow()) + "::" +
                                 std::to_string(workEntry) + "::" + pointId;
 
+                            // A131 (2026-10-12): a herb node respawns on a 900 second cycle, and the hop
+                            // chain walks the local cluster in ten-odd minutes - so the bot keeps passing
+                            // points in the window when they are NOT up, which is exactly the shape of all
+                            // 16 GatherUseProbe rows so far (seen=0|inReach=0). Standing on the point for
+                            // a short while before deciding it is dead raises the chance of being there
+                            // when it pops, at the cost of a few fewer points per hour. Knob
+                            // gather_point_hold_sec (0 = off, the old behaviour); the wait is per bot per
+                            // entry per point and only delays the strike, never suppresses it.
+                            if (int32 const holdSec = trace::IntValue("gather_point_hold_sec", 0))
+                            {
+                                static std::map<std::string, time_t> pointFirstSeen;
+                                if (pointFirstSeen.size() > 20000)
+                                    pointFirstSeen.clear();
+                                auto const seenIt = pointFirstSeen.find(strikeKey);
+                                if (seenIt == pointFirstSeen.end())
+                                {
+                                    pointFirstSeen[strikeKey] = markNow;
+                                    return true; // first tick here: start the clock, do not blame the point
+                                }
+                                if (markNow - seenIt->second < (time_t)holdSec)
+                                    return true; // waiting on purpose: hold the target, do not hop yet
+                                pointFirstSeen[strikeKey] = markNow;
+                            }
+
                             static std::map<std::string, std::pair<uint32, time_t>> deadPointStrikes;
                             if (deadPointStrikes.size() > 20000)
                                 deadPointStrikes.clear();
