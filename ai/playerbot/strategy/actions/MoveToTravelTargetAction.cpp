@@ -415,6 +415,15 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             sPlayerbotAIConfig.logEvent(ai, "GatherLootHandoff",
                                 std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
                                 "dist=" + std::to_string((int)bot->GetDistance(go)));
+                            // A136b (2026-10-12): hand it over AND stand still. Measured 19:04:25
+                            // (Warkryrzith transferred onto a Peacebloom, object handed over): the loot
+                            // action's first rule is "if the bot is moving, stop it and wait", and the
+                            // trace after the handoff is nothing but FallStartProbe rows every minute or
+                            // two - jumping in place on the node - so it never reached the opening cast.
+                            // The stamp is the same one the plain-use path sets, so the three retarget
+                            // blocks leave him alone for the next eight seconds.
+                            SET_AI_VALUE2(time_t, "manual time", "gather use stamp", time(nullptr));
+                            ai->StopMoving();
                             SetDuration(sPlayerbotAIConfig.globalCoolDown);
                             return true;
                         }
