@@ -1505,6 +1505,66 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                     {
                         int32 const sweepMinutes = trace::IntValue("gather_sweep_min", 3);
                         int32 const waitRange = trace::IntValue("goal_spawn_wait_range", 0);
+
+                        // A127j (2026-10-12): the skip list has to be consulted when the destination's
+                        // point is CHOSEN, not only while hopping inside the pool. Measured: after
+                        // Warkryrzith's Barrens spawn reached three strikes and was blacklisted at
+                        // 12:33:49, the next scan handed him the very same point again at 12:50:29,
+                        // because A116 picks the pool's nearest clean spawn and knows nothing about the
+                        // skip list - so the blacklist stopped the hops but not the returns. Here: when
+                        // the candidate's own point is on the skip list, travel to the nearest spawn of
+                        // the same pool that is not (same map, inside goal_spawn_wait_range, outside an
+                        // enemy home zone).
+                        if (waitRange > 0 && position && position->getMapId() == bot->GetMapId())
+                        {
+                            std::string const chosenId = std::to_string((int)position->getX()) + "_" +
+                                std::to_string((int)position->getY());
+                            time_t const chosenSkip = AI_VALUE2(time_t, "manual time",
+                                "gatherpointskip::" + std::to_string(destination->GetEntry()) + "::" + chosenId);
+                            if (chosenSkip > time(nullptr))
+                            {
+                                WorldPosition* altPoint = nullptr;
+                                float altDist = -1.0f;
+                                for (WorldPosition* point : destination->GetPoints())
+                                {
+                                    if (point->getMapId() != bot->GetMapId())
+                                        continue;
+                                    float const dist = point->distance(bot);
+                                    if (dist > (float)waitRange || dist <= 5.0f)
+                                        continue;
+                                    if (altDist >= 0.0f && dist >= altDist)
+                                        continue;
+                                    std::string const altId = std::to_string((int)point->getX()) + "_" +
+                                        std::to_string((int)point->getY());
+                                    time_t const altSkip = AI_VALUE2(time_t, "manual time",
+                                        "gatherpointskip::" + std::to_string(destination->GetEntry()) + "::" + altId);
+                                    if (altSkip > time(nullptr))
+                                        continue;
+                                    if (point->IsEnemyHomeZoneFor(bot->GetTeam()))
+                                        continue;
+                                    altPoint = point;
+                                    altDist = dist;
+                                }
+
+                                if (altPoint)
+                                {
+                                    position = altPoint;
+                                    time_t const nowSkip = time(nullptr);
+                                    std::string const probeKey = "gatherpointmoved::" + std::to_string(destination->GetEntry());
+                                    time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
+                                    if (!lastProbe || nowSkip - lastProbe >= MINUTE)
+                                    {
+                                        SET_AI_VALUE2(time_t, "manual time", probeKey, nowSkip);
+                                        sPlayerbotAIConfig.logEvent(ai, "GatherPointMoved",
+                                            std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                            "from=" + chosenId + "|to=" + std::to_string((int)altPoint->getX()) + "_" +
+                                            std::to_string((int)altPoint->getY()) +
+                                            "|botToNew=" + std::to_string((int)altDist));
+                                    }
+                                }
+                            }
+                        }
+
                         // A127c (2026-10-12): "the bot has arrived" has to be measured against the
                         // spawn the bot is actually standing next to, not against the candidate's own
                         // point - A116 hands the candidate the pool's nearest CLEAN spawn, which for a
