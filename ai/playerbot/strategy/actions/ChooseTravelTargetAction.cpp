@@ -1570,22 +1570,36 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
 
                             if (nearby.size() > 1)
                             {
-                                size_t const offset =
-                                    (size_t)((now / ((time_t)sweepMinutes * 60)) % (time_t)nearby.size());
-                                for (size_t i = 0; i < nearby.size() && i < 4; ++i)
+                                // A127f (2026-10-12): hop to the NEAREST spawn that is not on the skip list,
+                                // instead of rotating by the clock. Measured 08:59-09:02: the time-rotated
+                                // pick handed the bot a point 457-571 yards away, it walked off, and by 09:11
+                                // it was 500 yards past the cluster with nothing gathered. A nearest-first
+                                // hop walks tens of yards, and each point it reaches and cannot gather at
+                                // takes a strike (A127b) that keeps it out of the next hop - so the window
+                                // walks the local cluster point by point instead of striding out of it.
+                                WorldPosition* sweepPoint = nullptr;
+                                float sweepDist = -1.0f;
+                                for (WorldPosition* point : nearby)
                                 {
-                                    WorldPosition* sweepPoint = nearby[(offset + i) % nearby.size()];
-                                    if (sweepPoint->distance(bot) <= 5.0f)
+                                    float const dist = point->distance(bot);
+                                    if (dist <= 5.0f)
                                         continue; // already standing there
-                                    std::string const sweepId = std::to_string((int)sweepPoint->getX()) + "_" +
-                                        std::to_string((int)sweepPoint->getY());
+                                    if (sweepDist >= 0.0f && dist >= sweepDist)
+                                        continue;
+                                    std::string const sweepId = std::to_string((int)point->getX()) + "_" +
+                                        std::to_string((int)point->getY());
                                     time_t const skipUntil = AI_VALUE2(time_t, "manual time",
                                         "gatherpointskip::" + std::to_string(destination->GetEntry()) + "::" + sweepId);
                                     if (skipUntil > now)
                                         continue; // this one is on the skip list (A127b)
-                                    if (sweepPoint->IsEnemyHomeZoneFor(bot->GetTeam()))
+                                    if (point->IsEnemyHomeZoneFor(bot->GetTeam()))
                                         continue; // the gate below would refuse it anyway
+                                    sweepPoint = point;
+                                    sweepDist = dist;
+                                }
 
+                                if (sweepPoint)
+                                {
                                     position = sweepPoint;
                                     std::string const probeKey = "gatherpointsweep::" + std::to_string(destination->GetEntry());
                                     time_t const lastProbe = AI_VALUE2(time_t, "manual time", probeKey);
@@ -1595,11 +1609,8 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                                         sPlayerbotAIConfig.logEvent(ai, "GatherPointSweep",
                                             std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
                                             "nearby=" + std::to_string((uint32)nearby.size()) +
-                                            "|offset=" + std::to_string((uint32)offset) +
-                                            "|taken=" + std::to_string((uint32)i) +
-                                            "|botToPoint=" + std::to_string((int)sweepPoint->distance(bot)));
+                                            "|botToPoint=" + std::to_string((int)sweepDist));
                                     }
-                                    break;
                                 }
                             }
                         }
