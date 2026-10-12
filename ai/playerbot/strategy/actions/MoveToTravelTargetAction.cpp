@@ -615,6 +615,10 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                                     nodePoint->distance(bot) > 1.0f)
                                 {
                                     target->SetTarget(target->GetDestination(), nodePoint);
+                                    // A149: same as the live-retarget branch below - record the point AND
+                                    // put the leg back into TRAVEL, or the bot stands in the work phase
+                                    // with the node recorded and nothing walking to it.
+                                    target->SetStatus(TravelStatus::TRAVEL_STATUS_TRAVEL);
                                     return true;
                                 }
                             }
@@ -852,6 +856,18 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             {
                                 lastLiveRetarget[liveKey] = liveNow;
                                 target->SetTarget(target->GetDestination(), livePoint);
+                                // A149 (2026-10-13): retargeting is not walking. Measured 01:34-01:36,
+                                // the mining pilot (Gryrmajarth) in Redridge: GatherPointLive
+                                // objectDist=29, GoWorkProbe seen=1|best=29, then GatherWorkLive moved the
+                                // leg to the vein's own spawn twenty-nine yards away - and he stood
+                                // still for 473 seconds in TRAVEL_STATUS_WORK (TravelFreezeProbe
+                                // frozenSec=473, dist=30) while the vein sat there. The work phase only
+                                // runs while the target is NOT in TRAVEL, and this branch never puts it
+                                // back, so no travel code ever moves the bot: the closer point is
+                                // recorded and nothing walks to it. Setting the status back to TRAVEL
+                                // hands the leg to the ordinary mover; when it arrives the status
+                                // returns to WORK and the handoff takes over as usual.
+                                target->SetStatus(TravelStatus::TRAVEL_STATUS_TRAVEL);
                                 sPlayerbotAIConfig.logEvent(ai, "GatherWorkLive",
                                     std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
                                     "objectDist=" + std::to_string((int)bot->GetDistance(bestGo)) +
