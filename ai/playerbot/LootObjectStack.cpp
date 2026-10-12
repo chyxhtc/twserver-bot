@@ -6,6 +6,7 @@
 #include "playerbot/GatherSightings.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
+#include "playerbot/EconGoal.h"
 
 using namespace ai;
 
@@ -368,12 +369,47 @@ void LootObject::Refresh(Player* bot, ObjectGuid guid, bool debug)
     GameObject* go = ai->GetGameObject(guid);
     if (go && sServerFacade.isSpawned(go) && go->getLootState() == GO_READY)
     {
+        // A138 (2026-10-12): a herb node or a vein is a LOCK_KEY_SKILL container, and the
+        // quest-only object policy right below can never accept one: it asks whether the object's
+        // loot holds something one of this bot's quests needs, and raw material is asked for by
+        // spell, not by entry, so every node answers "nothing a quest needs" and is dropped here.
+        // That is the whole reason the loot chain stayed silent on 1618/1617/3724/1731 while it
+        // emptied corpses all day: measured 19:50:01, with the A137 handoff row right next to it,
+        // the object was live and three yards away and the LootObject still came back empty
+        // (skill=0|possible=0|inRange=0). One run of the loot chain before this file is loaded
+        // showed the same thing from the other end: the branch recorded a GatherSighting for the
+        // node (the "the node is really there" signal) and then refused to loot it.
+        //
+        // The exemption is deliberately narrow on two axes: only inside a running econ window
+        // (so the pool's normal levelling keeps ignoring nodes in passing - the user's "second
+        // line"), and only for the mining and herbalism lock types (skinning and lockpicking keep
+        // the old policy, and so does every ordinary chest).
+        bool gatherNodeExempt = false;
+        if (econgoal::Active(bot->GetGUIDLow()))
+        {
+            if (LockEntry const* lockExempt = sLockStore.LookupEntry(go->GetGOInfo()->GetLockId()))
+            {
+                for (int i = 0; i < 8; ++i)
+                {
+                    if (lockExempt->Type[i] != LOCK_KEY_SKILL)
+                        continue;
+
+                    SkillType const lockSkill = SkillByLockType(LockType(lockExempt->Index[i]));
+                    if (lockSkill == SKILL_MINING || lockSkill == SKILL_HERBALISM)
+                    {
+                        gatherNodeExempt = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         // Object-loot policy (AiPlayerbot.LootOpenObjects). A container cannot be told
         // apart from a quest container by type: the Water Pitcher is a plain CHEST, and
         // the quest (753) asks for the item inside it (4755), not for the object. So the
         // "quest only" mode asks the loot table instead: open it only when its loot
         // contains something one of this bot's quests needs. Corpses never reach here.
-        if (sPlayerbotAIConfig.lootOpenObjects != 1)
+        if (!gatherNodeExempt && sPlayerbotAIConfig.lootOpenObjects != 1)
         {
             if (sPlayerbotAIConfig.lootOpenObjects == 0)
                 return;

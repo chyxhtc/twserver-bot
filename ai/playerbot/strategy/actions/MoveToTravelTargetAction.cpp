@@ -430,6 +430,28 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                             // loot action in its "stop, wait, try again" loop for ever.
                             bot->GetMotionMaster()->Clear();
                             bot->SetFallInformation(0.0f);
+                            // A137 (2026-10-12): hand over AND name it as the loot target in the same
+                            // breath. The chain normally picks its target through the "loot available"
+                            // trigger, and for a node that selection is the step that leaves no trace at
+                            // all: measured 19:16-19:38, three pilots, GatherLootHandoff at dist=0 and
+                            // then nothing - no LootAttempt, no GoOpenState, no opening spell - while the
+                            // same chain empties corpses all day. Setting the target here removes that
+                            // dependency, and the row below says in the loot chain's own terms whether
+                            // the object is refused by IsLootPossible or merely never picked.
+                            {
+                                LootObject handoffLoot(bot, go->getObjectGuid());
+                                context->GetValue<LootObject>("loot target")->Set(handoffLoot);
+                                sPlayerbotAIConfig.logEvent(ai, "GatherLootState",
+                                    std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                                    "skill=" + std::to_string(handoffLoot.skillId) +
+                                    "|req=" + std::to_string(handoffLoot.reqSkillValue) +
+                                    "|item=" + std::to_string(handoffLoot.reqItem) +
+                                    "|possible=" + std::to_string(handoffLoot.IsLootPossible(bot) ? 1 : 0) +
+                                    "|inRange=" + std::to_string(handoffLoot.IsInLootRange(bot) ? 1 : 0) +
+                                    "|avail=" + std::to_string(AI_VALUE(bool, "has available loot") ? 1 : 0) +
+                                    "|mounted=" + std::to_string(bot->IsMounted() ? 1 : 0) +
+                                    "|dist=" + std::to_string((int)bot->GetDistance(go)));
+                            }
                             SetDuration(sPlayerbotAIConfig.globalCoolDown);
                             return true;
                         }

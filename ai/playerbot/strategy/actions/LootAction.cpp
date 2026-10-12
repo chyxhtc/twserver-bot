@@ -448,14 +448,26 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
         return true;
     }
 
-    if (lootObject.skillId == SKILL_MINING)
-        return ai->HasSkill(SKILL_MINING) ? ai->CastSpell(MINING, bot) : false;
-
-    if (lootObject.skillId == SKILL_HERBALISM)
+    // A137 (2026-10-12): a herb node or a vein is opened by its profession spell cast ON the
+    // object, and the two branches below used to cast it on the bot itself. The core refuses that
+    // outright: Spell::CheckCast answers SPELL_FAILED_BAD_TARGETS for SPELL_EFFECT_OPEN_LOCK when
+    // there is neither a game-object nor an item target, and Spell::EffectOpenLock - the only
+    // place that calls SendLoot and UpdateGatherSkill, "Open Lock - No GameObject/Item Target!" -
+    // never runs. That is why every gather handoff tonight (GatherLootHandoff, dist=0, three
+    // pilots, 19:16-19:38) was followed by nothing at all: no LootAttempt, no open spell, no herb
+    // - while the same loot chain empties corpses all day. Spells 2366 (Herb Gathering) and 2575
+    // (Mining) carry EffectMiscValue 2 and 3, the herbalism and mining lock types, and the
+    // game-object overload of CastSpell is the one that sets that target unconditionally. The
+    // "unit target" overload would only have attached the object by reading the loot target back,
+    // which is exactly the step that does not happen for a node.
+    //
+    // Herb-like QUEST objects (Bloodpetal Sprout and friends) keep their own path below: they
+    // fall through to the opening-spell tail, which is measured working (11315 looted all night).
+    if (lootObject.skillId == SKILL_MINING || lootObject.skillId == SKILL_HERBALISM)
     {
-        // herb-like quest objects
         bool isForQuest = false;
-        if (go && sObjectMgr.IsGameObjectForQuests(lootObject.guid.GetEntry()))
+        if (lootObject.skillId == SKILL_HERBALISM && go &&
+            sObjectMgr.IsGameObjectForQuests(lootObject.guid.GetEntry()))
         {
             if (go->ActivateToQuest(bot))
             {
@@ -466,7 +478,51 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
 
         if (!isForQuest)
         {
-            return ai->HasSkill(SKILL_HERBALISM) ? ai->CastSpell(HERB_GATHERING, bot) : false;
+            uint32 const gatherSpell = (lootObject.skillId == SKILL_MINING) ? MINING : HERB_GATHERING;
+
+            if (!go || !ai->HasSkill((SkillType)lootObject.skillId))
+            {
+                LootTrace(bot, ai, lootObject.guid,
+                    "go-gather-no-object-or-skill" + std::to_string(lootObject.skillId));
+                return false;
+            }
+
+            // A137b: stand right on it first. The server opens the node from the same interaction
+            // range the plain use opcode uses, and the loot chain can be reached from a scan that
+            // saw the object tens of yards away.
+            float const gatherDist = bot->GetDistance(go);
+            if (gatherDist > INTERACTION_DISTANCE)
+            {
+                LootTrace(bot, ai, lootObject.guid,
+                    "go-gather-out-of-range-dist" + std::to_string((int)gatherDist) +
+                    "-skill" + std::to_string(lootObject.skillId));
+                return MoveNear(go, 3.0f);
+            }
+
+            // A cast started while running is refused or interrupted before the node is opened.
+            if (sServerFacade.isMoving(bot))
+            {
+                ai->StopMoving();
+                SetDuration(sPlayerbotAIConfig.globalCoolDown);
+                return false;
+            }
+
+            bool const casted = ai->CastSpell(gatherSpell, go);
+            LootTrace(bot, ai, lootObject.guid,
+                "go-gather-spell" + std::to_string(gatherSpell) +
+                "-lock" + std::to_string(go->GetGOInfo()->GetLockId()) +
+                "-dist" + std::to_string((int)gatherDist) +
+                "-casted" + (casted ? "1" : "0"));
+            sLog.outDebug("[BOT LOOT] %s: gather guid=%lu skill=%u spell=%u casted=%d",
+                bot->GetName(), lootObject.guid.GetRawValue(), lootObject.skillId, gatherSpell, casted ? 1 : 0);
+
+            if (casted)
+            {
+                SetDuration(sPlayerbotAIConfig.lootDelay);
+                return true;
+            }
+
+            return false;
         }
     }
 
