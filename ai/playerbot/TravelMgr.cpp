@@ -38,6 +38,7 @@ PlayerTravelInfo::PlayerTravelInfo(Player* player)
     currentSkill[SKILL_HERBALISM] = player->GetSkillValue(SKILL_HERBALISM);
     currentSkill[SKILL_FISHING] = player->GetSkillValue(SKILL_FISHING);
     currentSkill[SKILL_SKINNING] = player->GetSkillValue(SKILL_SKINNING);
+    econWindow = econgoal::Active(player->GetGUIDLow()); // A154: see IsEconWindow()
 
     skillMax[SKILL_MINING] = player->GetSkillMax(SKILL_MINING);
     skillMax[SKILL_HERBALISM] = player->GetSkillMax(SKILL_HERBALISM);
@@ -3283,8 +3284,43 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
             // them here so they never reach the route gate and its A*.
             if (!questDestination && IsOtherContinent(center.GetMapId(), position->getMapId()))
             {
-                probeRejectContinent++;
-                continue;
+                // A154 (2026-10-13): a gather window keeps the entry even when the point this
+                // destination handed out is on the other continent - the entry itself usually has spawns
+                // on the bot's own continent too, and this pass only ever looked at the points of the
+                // destination's *closest* distance band, so one cross-ocean point discarded the whole
+                // entry. Measured 03:27: the build produced 22 herbalism destinations for a pilot on the
+                // eastern kingdoms while the scan kept 3, all of them local quest plants - Silverleaf /
+                // Peacebloom / Earthroot (the only herb entries with spawns in the database) never
+                // survived this filter. So for a window's gather purpose, fall back to the destination's
+                // nearest own point on the bot's continent and let the normal level and distance checks
+                // judge that one; the destination keeps owning the point, so nothing dangles.
+                bool const gatherPurpose =
+                    (purposeFlag & ((uint32)TravelDestinationPurpose::GatherHerbalism |
+                                    (uint32)TravelDestinationPurpose::GatherMining |
+                                    (uint32)TravelDestinationPurpose::GatherSkinning)) != 0;
+                WorldPosition* sameContinent = nullptr;
+                float sameContinentDist = -1.0f;
+                if (gatherPurpose && info.IsEconWindow())
+                {
+                    for (WorldPosition* candidate : dest->GetPoints())
+                    {
+                        if (candidate->getMapId() != center.GetMapId())
+                            continue;
+                        float const d = candidate->distance(center);
+                        if (sameContinentDist >= 0.0f && d >= sameContinentDist)
+                            continue;
+                        sameContinent = candidate;
+                        sameContinentDist = d;
+                    }
+                }
+
+                if (!sameContinent)
+                {
+                    probeRejectContinent++;
+                    continue;
+                }
+
+                position = sameContinent;
             }
 
             if (!IsLocationLevelValid(*position, info, purposeFlag, grindZoneFloor))

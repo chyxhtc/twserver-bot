@@ -91,6 +91,10 @@ namespace ai
 		// player and must vendor/repair anywhere.
 		bool IsMasterlessRandom() const { return masterlessRandom; }
 
+		// A154 (2026-10-13): an econ window is running for this bot. The destination filter uses it to
+		// keep a gather entry whose nearest points sit on the other continent (see GetPartitions).
+		bool IsEconWindow() const { return econWindow; }
+
 		bool HasFocusQuest() const {return !focusList.empty();}
 		bool IsFocusQuest(uint32 questId) const { return focusList.find(questId) != focusList.end(); }
 
@@ -102,6 +106,7 @@ namespace ai
 	private:
 		WorldPosition position;
 		Team team = TEAM_NONE;
+	bool econWindow = false;
 		uint32 level = 0;
 		uint32 identitySeed = 0;
 		uint16 currentSkill[MAX_SKILL_TYPE] = {0};
