@@ -288,6 +288,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                 // entry per 30 s says which of them is missing, instead of another blind round.
                 uint32 seen = 0;
                 float bestDist = -1.0f;
+                GameObject* bestGo = nullptr;
                 for (ObjectGuid const& guid : AI_VALUE(std::list<ObjectGuid>, "nearest game objects no los"))
                 {
                     GameObject* go = ai->GetGameObject(guid);
@@ -296,7 +297,10 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                     ++seen;
                     float const dist = bot->GetDistance(go);
                     if (bestDist < 0.0f || dist < bestDist)
+                    {
                         bestDist = dist;
+                        bestGo = go;
+                    }
                     if (dist > INTERACTION_DISTANCE)
                         continue;
 
@@ -482,6 +486,48 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                                         std::to_string((int)hopPoint->getY()) +
                                         "|dist=" + std::to_string((int)hopDist));
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // A126b (2026-10-12): the mirror image of the dead-point branch above. Measured
+                // 10:22:11, Tharuputarr stood in Tirisfal with GoWorkProbe entry=1618 seen=1|best=17 -
+                // a live Peacebloom seventeen yards away - and did nothing, because this work branch
+                // only acts on an object inside INTERACTION_DISTANCE and only the candidate-loop
+                // version of A126 retargets the travel point, which needs a scan to happen. So when a
+                // live object of this very entry is in sight but out of reach, send the travel target
+                // to the spawn point that object sits on (the destination owns that point, so nothing
+                // dangles) and the bot walks over and opens it. Only inside a window and only with
+                // gather_point_live on; one retarget per bot per entry per 10 seconds.
+                if (seen > 0 && bestGo && bestDist > INTERACTION_DISTANCE &&
+                    trace::IntValue("gather_point_live", 0) != 0 &&
+                    econgoal::Active(bot->GetGUIDLow()) && target->GetDestination())
+                {
+                    TravelDestinationPurpose const livePurpose = target->GetDestination()->GetPurpose();
+                    if (livePurpose == TravelDestinationPurpose::GatherHerbalism ||
+                        livePurpose == TravelDestinationPurpose::GatherMining)
+                    {
+                        static std::map<std::string, time_t> lastLiveRetarget;
+                        std::string const liveKey = std::to_string(bot->GetGUIDLow()) + "|" +
+                            std::to_string(workEntry);
+                        time_t const liveNow = time(nullptr);
+                        auto const liveIt = lastLiveRetarget.find(liveKey);
+                        if (liveIt == lastLiveRetarget.end() || liveNow - liveIt->second >= 10)
+                        {
+                            WorldPosition const livePos(bestGo);
+                            WorldPosition* livePoint = target->GetDestination()->GetClosestPoint(livePos);
+                            if (livePoint && livePoint->getMapId() == livePos.getMapId() &&
+                                livePoint->distance(livePos) <= 2.0f &&
+                                livePoint->distance(bot) > 1.0f)
+                            {
+                                lastLiveRetarget[liveKey] = liveNow;
+                                target->SetTarget(target->GetDestination(), livePoint);
+                                sPlayerbotAIConfig.logEvent(ai, "GatherWorkLive",
+                                    std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                                    "objectDist=" + std::to_string((int)bot->GetDistance(bestGo)) +
+                                    "|botToPoint=" + std::to_string((int)livePoint->distance(bot)) +
+                                    "|seen=" + std::to_string(seen));
                             }
                         }
                     }
