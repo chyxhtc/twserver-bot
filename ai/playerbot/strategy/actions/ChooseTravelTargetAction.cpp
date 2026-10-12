@@ -1821,6 +1821,73 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
                 // the point that was actually selected.
                 if (!target->IsForced() && position)
                 {
+                    // A141 (2026-10-12): one bad spawn point must not kill a whole herb entry. The two
+                    // gates below are judged on the ONE point the destination happened to hand out
+                    // (A110 aligned the candidate to the nearest spawn of its entry), and a herb pool
+                    // has hundreds of spawns, so the entire entry - the only thing a low-skill gatherer
+                    // can actually raise - is thrown away by a single unlucky point:
+                    //   measured 20:34:30, Warkryrzith zone 47: GatherHerbalism offered 3, and the only
+                    //   real herb among them, Silverleaf (entry 1617, 763 spawn rows world-wide), was
+                    //   refused with hostile-town while the other two were quest plants the loot filter
+                    //   is meant to drop;
+                    //   measured 20:27:30, Tuzarurth in Feralas: the only real herb there, Peacebloom
+                    //   (entry 3724), was refused with enemy-home-zone.
+                    // Both bots ended the scan with no destination at all and parked for the rest of the
+                    // hour (TravelPark 72, TravelNoTarget GatherHerbalism 48 in that one window). So for
+                    // a gather destination, before refusing, look for another spawn of the SAME entry -
+                    // nearest first, same map, not on the skip list, and passing both point gates - and
+                    // send the leg there instead. Windows are unaffected otherwise, and the two gates
+                    // themselves are unchanged: whichever point is finally used still passes them.
+                    if (dynamic_cast<GatherTravelDestination*>(destination) != nullptr &&
+                        (position->IsEnemyHomeZoneFor(bot->GetTeam()) ||
+                         (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
+                          position->IsGuardedHostileTownFor(bot))))
+                    {
+                        WorldPosition* rescuePoint = nullptr;
+                        float rescueDist = -1.0f;
+                        for (WorldPosition* point : destination->GetPoints())
+                        {
+                            if (point->getMapId() != bot->GetMapId())
+                                continue;
+                            if (point->IsEnemyHomeZoneFor(bot->GetTeam()))
+                                continue;
+                            if (sPlayerbotAIConfig.avoidHostileTowns && !ai->HasRealPlayerMaster() &&
+                                point->IsGuardedHostileTownFor(bot))
+                                continue;
+
+                            float const dist = point->distance(bot);
+                            if (rescueDist >= 0.0f && dist >= rescueDist)
+                                continue;
+
+                            std::string const rescueId = std::to_string((int)point->getX()) + "_" +
+                                std::to_string((int)point->getY());
+                            time_t const skipUntil = AI_VALUE2(time_t, "manual time",
+                                "gatherpointskip::" + std::to_string(destination->GetEntry()) + "::" + rescueId);
+                            if (skipUntil > time(nullptr))
+                                continue;
+
+                            rescuePoint = point;
+                            rescueDist = dist;
+                        }
+
+                        if (rescuePoint)
+                        {
+                            time_t const now = time(nullptr);
+                            std::string const rescueKey = "gatherpointrescue::" + std::to_string(destination->GetEntry());
+                            time_t const lastRescue = AI_VALUE2(time_t, "manual time", rescueKey);
+                            if (!lastRescue || now - lastRescue >= MINUTE)
+                            {
+                                SET_AI_VALUE2(time_t, "manual time", rescueKey, now);
+                                sPlayerbotAIConfig.logEvent(ai, "GatherPointRescue",
+                                    std::to_string(destination->GetEntry()) + "|" + destination->GetTitle(),
+                                    "from=" + std::to_string((int)position->getX()) + "_" + std::to_string((int)position->getY()) +
+                                    "|to=" + std::to_string((int)rescuePoint->getX()) + "_" + std::to_string((int)rescuePoint->getY()) +
+                                    "|dist=" + std::to_string((int)rescueDist));
+                            }
+                            position = rescuePoint;
+                        }
+                    }
+
                     if (position->IsEnemyHomeZoneFor(bot->GetTeam()))
                     {
                         ai->TellDebug(requester, "Skipping " + destination->GetTitle() + " - enemy home zone", "debug travel");
