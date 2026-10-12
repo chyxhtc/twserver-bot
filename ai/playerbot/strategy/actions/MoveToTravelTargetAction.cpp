@@ -431,6 +431,58 @@ bool MoveToTravelTargetAction::Execute(Event& event)
                                     "|holdMin=" + std::to_string(holdMinutes) +
                                     "|blacklisted=" + std::to_string(blacklisted ? 1 : 0));
                             }
+
+                            // A127h (2026-10-12): the hop has to be driven from here as well. Measured:
+                            // after the first dead-point mark at 09:49:52 Warkryrzith stood on the same
+                            // coordinate for twelve minutes with nothing but the ten-minute goal row,
+                            // because the scan-side sweep only runs when a scan happens to run and no
+                            // travel target expires in between. So when the point under the bot is dead,
+                            // send it to the nearest spawn of the same pool that is not on the skip list
+                            // (same map, inside goal_spawn_wait_range, not in an enemy home zone) - one
+                            // hop per bot per entry per 20 seconds at most, so it walks the cluster
+                            // instead of thrashing.
+                            static std::map<std::string, time_t> lastGatherHop;
+                            std::string const hopKey = std::to_string(bot->GetGUIDLow()) + "|" +
+                                std::to_string(workEntry);
+                            time_t const hopNow = time(nullptr);
+                            auto const hopIt = lastGatherHop.find(hopKey);
+                            if (hopIt == lastGatherHop.end() || hopNow - hopIt->second >= 20)
+                            {
+                                int32 const hopRange = trace::IntValue("goal_spawn_wait_range", 0);
+                                WorldPosition* hopPoint = nullptr;
+                                float hopDist = -1.0f;
+                                for (WorldPosition* point : target->GetDestination()->GetPoints())
+                                {
+                                    if (point->getMapId() != bot->GetMapId() ||
+                                        point->distance(bot) > (float)hopRange)
+                                        continue;
+                                    float const dist = point->distance(bot);
+                                    if (dist <= 5.0f || (hopDist >= 0.0f && dist >= hopDist))
+                                        continue;
+                                    std::string const hopId = std::to_string((int)point->getX()) + "_" +
+                                        std::to_string((int)point->getY());
+                                    time_t const skipUntil = AI_VALUE2(time_t, "manual time",
+                                        "gatherpointskip::" + std::to_string(workEntry) + "::" + hopId);
+                                    if (skipUntil > hopNow)
+                                        continue;
+                                    if (point->IsEnemyHomeZoneFor(bot->GetTeam()))
+                                        continue;
+                                    hopPoint = point;
+                                    hopDist = dist;
+                                }
+
+                                if (hopPoint)
+                                {
+                                    lastGatherHop[hopKey] = hopNow;
+                                    target->SetTarget(target->GetDestination(), hopPoint);
+                                    sPlayerbotAIConfig.logEvent(ai, "GatherPointHop",
+                                        std::to_string(-workEntry) + "|" + target->GetDestination()->GetTitle(),
+                                        "from=" + pointId +
+                                        "|to=" + std::to_string((int)hopPoint->getX()) + "_" +
+                                        std::to_string((int)hopPoint->getY()) +
+                                        "|dist=" + std::to_string((int)hopDist));
+                                }
+                            }
                         }
                     }
                 }
