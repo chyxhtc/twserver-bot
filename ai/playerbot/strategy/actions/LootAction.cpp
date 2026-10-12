@@ -1,6 +1,7 @@
 
 #include "playerbot/playerbot.h"
 #include "LootAction.h"
+#include "playerbot/EconGoal.h"
 
 #include "playerbot/LootObjectStack.h"
 #include "playerbot/PlayerbotAIConfig.h"
@@ -1080,6 +1081,18 @@ bool StoreLootAction::IsLootAllowed(ItemQualifier& itemQualifier, PlayerbotAI *a
     //{
 
     bool canLoot = LootStrategyValue::CanLoot(itemQualifier, ai);
+
+    // A146 (2026-10-12): inside an econ window the material a node yields is the whole point of the
+    // hour, and the per-bot loot strategy can still refuse it. Measured 22:43:18, Tuzarurth on a live
+    // Darkshore Peacebloom: the loot window opened with 1x2447 (LootResponse 1618 gold=0 items=1 ->
+    // parsed-slot0-item2447-x1) and the store step answered "item-skip-not-allowed", so his herbalism
+    // still went 5 -> 6 (the core grants that inside EffectOpenLock) while the herb itself stayed in
+    // the node. CanLoot matches the item's usage class against the bot's loot strategy string, and a
+    // crafting material this bot holds no recipe for lands outside that list. Trade goods are the
+    // class the whole gather window exists to collect, so while a window runs they are taken.
+    if (!canLoot && proto->Class == ITEM_CLASS_TRADE_GOODS &&
+        econgoal::Active(ai->GetBot()->GetGUIDLow()))
+        canLoot = true;
 
     //if (canLoot && proto->Bonding == BIND_WHEN_PICKED_UP && ai->HasActivePlayerMaster())
     //    canLoot = sPlayerbotAIConfig.IsInRandomAccountList(sObjectMgr.GetPlayerAccountIdByGUID(ai->GetBot()->getObjectGuid()));
